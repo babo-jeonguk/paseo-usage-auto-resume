@@ -4,6 +4,14 @@ A [Paseo](https://paseo.sh) plugin that continues the same Codex or Claude agent
 
 [한국어 안내](README.ko.md)
 
+## Screenshots
+
+The actual Paseo web interface, captured with sample reservations in an isolated demo host.
+
+![Auto Resume reservations grouped by day, with enabled and skipped jobs](assets/auto-resume.png)
+
+![Provider settings with the public defaults claude and codex](assets/provider-settings.png)
+
 ## Install
 
 Requires **Paseo daemon and app 0.11.x**, with plugins enabled in the daemon configuration.
@@ -18,7 +26,7 @@ By default, the plugin resumes agents whose provider ID is exactly `codex` or `c
 
 ## Select your providers
 
-Open **Settings → Plugins → Usage Auto Resume**. Set **Claude provider ID** and **Codex provider ID**, then press **Save**. Each field replaces that CLI's default ID. For example, choosing `claude-main` for Claude and keeping `codex` for Codex resumes only `claude-main` and `codex`; `claude` and `claude-sub` are excluded. A custom ID must run the corresponding Claude or Codex CLI, normally by extending that built-in provider.
+Open **Settings → Plugins → usage-auto-resume → Settings**. Set **Claude provider ID** and **Codex provider ID**, then press **Save**. Each field replaces that CLI's default ID. For example, choosing `claude-main` for Claude and keeping `codex` for Codex resumes only `claude-main` and `codex`; `claude` and `claude-sub` are excluded. A custom ID must run the corresponding Claude or Codex CLI, normally by extending that built-in provider.
 
 Selection is exact, not a prefix or `extends` match. It is stored per daemon, so the public repository retains standard defaults while your host can use its own aliases. Saving a selection cancels pending reservations for removed providers; restoring an ID does not restore its canceled reservations. If stored settings cannot be read, automatic resumes wait instead of falling back to different providers.
 
@@ -83,7 +91,7 @@ Plugin logs use the `[usage-auto-resume]` prefix in the daemon log. Paseo compil
 
 The official [Paseo registry](https://github.com/getpaseo/plugins#submit-a-plugin) accepts a public GitHub source without an npm release. Submit this repository using the [submission form](https://github.com/getpaseo/plugins/issues/new?template=submit-plugin.yml). Review pins the artifact to an exact commit; acceptance is decided by the registry maintainers.
 
-`OVERVIEW.md` is included for the listing page. This plugin has a visual sidebar screen, so the registry's [review policy](https://github.com/getpaseo/plugins/blob/main/REVIEW.md#images-and-media) also requires an image showing that interface before approval. A suitable screenshot can be shipped in the repository and declared in the manifest's `media` field. This repository's publication does not itself submit or approve a listing.
+`OVERVIEW.md` is included for the listing page. Screenshots of the actual interface are shipped in `assets/` and declared in the manifest's `media` field, as required by the registry's [review policy](https://github.com/getpaseo/plugins/blob/main/REVIEW.md#images-and-media). Publishing the repository does not itself approve a listing.
 
 ## Credits and license
 

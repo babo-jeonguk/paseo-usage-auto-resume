@@ -4,5 +4,9 @@
   "description": "Continue Codex and Claude agents automatically after their usage limit resets",
   "requirements": {
     "paseo": ">=0.11.0 <0.12.0"
-  }
+  },
+  "media": [
+    "assets/auto-resume.png",
+    "assets/provider-settings.png"
+  ]
 }

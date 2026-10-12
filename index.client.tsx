@@ -19,7 +19,7 @@ function AutoResumeItem({ currentScreen, openScreen }: PluginSidebarItemProps) {
 export default function contribute(client: PluginClientContext) {
   const removeSettings = client.addSettingsScreen({
     id: "providers",
-    title: "Usage Auto Resume",
+    title: "Settings",
     icon: "AlarmClock",
     Component: ProviderSettingsScreen,
   });

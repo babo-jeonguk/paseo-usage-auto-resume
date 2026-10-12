@@ -2,6 +2,12 @@
 
 [English](README.md) · [MIT 라이선스](LICENSE)
 
+별도 데모 환경에서 샘플 예약을 사용해 실제 Paseo 웹 화면을 촬영했다.
+
+![날짜별 자동 재개 예약과 켜기·끄기](assets/auto-resume.png)
+
+![기본 claude·codex 대상 설정](assets/provider-settings.png)
+
 Codex 또는 Claude agent가 usage/rate limit으로 멈추면 reset 시각 + 2분에 **같은 agent**에 continue prompt를 한 번 보내는 Paseo plugin이다. 새 agent 생성, provider 전환은 없다.
 
 ## Auto Resume 화면
@@ -16,7 +22,7 @@ Codex 또는 Claude agent가 usage/rate limit으로 멈추면 reset 시각 + 2�
 
 ## 대상
 
-기본 대상은 `codex`와 `claude`다. **Settings → Plugins → Usage Auto Resume**에서 **Claude provider ID**와 **Codex provider ID**를 지정하고 **Save**를 누르면 해당 CLI의 기본 ID를 교체한다. 예를 들어 Claude를 `claude-main`으로, Codex를 `codex`로 저장하면 정확히 이 둘만 처리하고 `claude`와 `claude-sub`는 제외한다. 별칭은 해당 Claude/Codex CLI를 사용해야 하며 일반적으로 기본 provider를 `extends`한다.
+기본 대상은 `codex`와 `claude`다. **Settings → Plugins → usage-auto-resume → Settings**에서 **Claude provider ID**와 **Codex provider ID**를 지정하고 **Save**를 누르면 해당 CLI의 기본 ID를 교체한다. 예를 들어 Claude를 `claude-main`으로, Codex를 `codex`로 저장하면 정확히 이 둘만 처리하고 `claude`와 `claude-sub`는 제외한다. 별칭은 해당 Claude/Codex CLI를 사용해야 하며 일반적으로 기본 provider를 `extends`한다.
 
 설정은 daemon별 `$PASEO_HOME/plugin-settings/usage-auto-resume/providers.json`에 저장되므로 공개 코드의 기본값과 개인 설정을 따로 유지할 수 있다. Prefix나 `extends`만으로 다른 ID를 자동 포함하지 않는다. 선택에서 빠진 provider의 기존 예약은 취소한다. 설정을 읽지 못하면 기본값으로 전환하지 않고 자동 재개를 대기시킨다.
 
