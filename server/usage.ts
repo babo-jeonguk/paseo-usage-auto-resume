@@ -2,12 +2,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { PaseoApi } from "@getpaseo/client";
-
-/**
- * Exact agent provider IDs this plugin resumes. Matching is never by `extends` or prefix:
- * `claude-sub` extends `claude` like `claude-main`, but runs a different subscription.
- */
-export const TARGET_PROVIDERS = new Set(["codex", "claude-main"]);
+import type { UsageSource } from "../shared/settings";
 
 type UsageApi = Pick<PaseoApi, "config" | "providers">;
 type UsageEntry = Awaited<ReturnType<PaseoApi["providers"]["listUsage"]>>["providers"][number];
@@ -24,8 +19,18 @@ const FIVE_HOUR_WINDOW = /five_hour|5h|5-hour|five hour|session|primary/i;
 const FIVE_HOURS_MS = 5 * 3_600_000;
 
 function providerEnv(config: DaemonConfig, provider: string): Record<string, unknown> {
-  const entry = config.providers[provider] as { env?: Record<string, unknown> } | undefined;
-  return entry?.env ?? {};
+  let env: Record<string, unknown> = {};
+  const visited = new Set<string>();
+  let id: string | undefined = provider;
+  while (id) {
+    if (visited.has(id)) throw new Error("Cyclic provider inheritance");
+    visited.add(id);
+    const entry = config.providers[id] as { extends?: string; env?: Record<string, unknown> } | undefined;
+    // The selected alias overrides its ancestors, just as its CLI launch does.
+    env = { ...entry?.env, ...env };
+    id = entry?.extends;
+  }
+  return env;
 }
 
 function envValue(env: Record<string, unknown>, key: string): string | null {
@@ -79,11 +84,10 @@ async function codexEmail(codexHome: string): Promise<string | null> {
 }
 
 /** The account an agent of this provider runs under, read from the same home its CLI uses. */
-async function accountFor(paseo: UsageApi, provider: string): Promise<Account | null> {
-  if (!TARGET_PROVIDERS.has(provider)) return null;
+async function accountFor(paseo: UsageApi, provider: string, source: UsageSource): Promise<Account> {
   const { config } = await paseo.config.get();
   const env = providerEnv(config, provider);
-  if (provider === "codex") {
+  if (source === "codex") {
     const codexHome = envValue(env, "CODEX_HOME") ?? join(homedir(), ".codex");
     return { sourceId: "codex", email: await codexEmail(codexHome) };
   }
@@ -132,9 +136,9 @@ export function resetFromWindows(windows: readonly UsageWindow[], now: Date): Da
 }
 
 /** Reset instant from the account's Paseo usage windows, or null when it cannot be known. */
-export async function usageResetAt(paseo: UsageApi, provider: string, now: Date): Promise<Date | null> {
+export async function usageResetAt(paseo: UsageApi, provider: string, source: UsageSource, now: Date): Promise<Date | null> {
   try {
-    const account = await accountFor(paseo, provider);
+    const account = await accountFor(paseo, provider, source);
     if (!account?.email) return null;
     const { providers } = await paseo.providers.listUsage();
     const entry = entryForAccount(providers, account);

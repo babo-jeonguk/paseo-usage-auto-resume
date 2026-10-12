@@ -1,6 +1,6 @@
 # Usage Auto Resume
 
-A [Paseo](https://paseo.sh) plugin that continues the same Codex or Claude Main agent after a provider usage limit resets. It supports session and weekly limits, persists scheduled resumes across restarts, and gives each pending resume an on/off switch.
+A [Paseo](https://paseo.sh) plugin that continues the same Codex or Claude agent after a provider usage limit resets. It supports session and weekly limits, persists scheduled resumes across restarts, and gives each pending resume an on/off switch.
 
 [한국어 안내](README.ko.md)
 
@@ -14,7 +14,15 @@ paseo plugin install github:babo-jeonguk/paseo-usage-auto-resume
 
 The plugin ID is `usage-auto-resume`. This repository can be installed directly from GitHub; a registry listing is separate.
 
-Only agents whose provider ID is exactly `codex` or `claude-main` are handled. For Claude, use a custom provider with ID `claude-main` extending `claude`. The standard `claude` provider ID, `claude-sub`, `codex-reserve` and other aliases are ignored even if they extend the same base provider. The plugin uses the CLI accounts already signed in on the daemon host.
+By default, the plugin resumes agents whose provider ID is exactly `codex` or `claude`. The plugin uses the CLI accounts already signed in on the daemon host.
+
+## Select your providers
+
+Open **Settings → Plugins → Usage Auto Resume**. Set **Claude provider ID** and **Codex provider ID**, then press **Save**. Each field replaces that CLI's default ID. For example, choosing `claude-main` for Claude and keeping `codex` for Codex resumes only `claude-main` and `codex`; `claude` and `claude-sub` are excluded. A custom ID must run the corresponding Claude or Codex CLI, normally by extending that built-in provider.
+
+Selection is exact, not a prefix or `extends` match. It is stored per daemon, so the public repository retains standard defaults while your host can use its own aliases. Saving a selection cancels pending reservations for removed providers; restoring an ID does not restore its canceled reservations. If stored settings cannot be read, automatic resumes wait instead of falling back to different providers.
+
+Provider settings use Paseo's native settings storage under `$PASEO_HOME/plugin-settings/usage-auto-resume/providers.json`. They are separate from the source code and resume-job file.
 
 ## Use
 
@@ -37,7 +45,7 @@ The prompt asks the parent agent to review saved progress and resume unfinished 
 
 ## Data access
 
-To distinguish accounts, the daemon reads Claude's `oauthAccount.emailAddress` from `.claude.json` or email claims from Codex's `auth.json` tokens, using the provider's configured `CLAUDE_CONFIG_DIR` or `CODEX_HOME`. Only matching account usage entries are used. Tokens are not stored in jobs, logged or sent in the continue prompt.
+To distinguish accounts, the daemon reads the selected provider's configured CLI home. It reads Claude's `oauthAccount.emailAddress` from `.claude.json` or email claims from Codex's `auth.json` tokens, using the provider's configured `CLAUDE_CONFIG_DIR` or `CODEX_HOME`. Only matching account usage entries are used. Tokens are not stored in jobs, logged or sent in the continue prompt.
 
 The plugin reads agent state, recent timeline notices, provider configuration and usage information through Paseo. Resume jobs are stored in:
 
@@ -53,7 +61,7 @@ The default home is `~/.paseo`. The plugin sends a fixed prompt to the existing 
 - A notice's stated reset takes priority over usage windows. Known scheduled jobs do not recheck usage before sending.
 - After a daemon/plugin restart, jobs wait for a lifecycle hook or a request from the Auto Resume screen to supply the API. Due jobs then run subject to the agent checks.
 - The startup scan recovers missed limit stops only for agents active in the preceding 12 hours. Already persisted jobs can wait longer, including for a weekly reset.
-- Support is limited to the exact provider IDs and Paseo version range above.
+- Support is limited to the two selected Claude/Codex provider IDs and the Paseo version range above.
 
 ## Development
 

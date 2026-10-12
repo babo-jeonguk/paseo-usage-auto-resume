@@ -4,7 +4,8 @@ import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import { detectLimitStop } from "./limit";
 import type { ScheduledJob } from "../shared/rpc";
 import type { JobStore, ResumeJob } from "./store";
-import { TARGET_PROVIDERS, usageResetAt } from "./usage";
+import { usageResetAt } from "./usage";
+import { DEFAULT_PROVIDER_SETTINGS, sourceForProvider, type ProviderSettings, type UsageSource } from "../shared/settings";
 
 export const CONTINUE_PROMPT =
   "The provider usage limit should now be reset. Continue the unfinished work from the previous turn. " +
@@ -59,9 +60,15 @@ function skipReason(job: ResumeJob, agent: PaseoAgent | null): string | null {
  * agent once its limit resets. Paseo hands plugins an API only inside hooks and RPCs, so the
  * tick waits until a hook has attached it.
  */
-export function createResumer(options: { store: JobStore; now?: () => Date }) {
+export function createResumer(options: {
+  store: JobStore;
+  now?: () => Date;
+  /** Null means unreadable settings: wait instead of enabling the public defaults. */
+  readSettings?: () => Promise<ProviderSettings | null>;
+}) {
   const { store } = options;
   const now = options.now ?? (() => new Date());
+  const readSettings = options.readSettings ?? (async () => DEFAULT_PROVIDER_SETTINGS);
   let paseo: ResumerApi | null = null;
   let ticking = false;
 
@@ -71,7 +78,10 @@ export function createResumer(options: { store: JobStore; now?: () => Date }) {
 
   async function onTurnEnded(event: TurnEnded, api: ResumerApi): Promise<void> {
     const { agent } = event;
-    if (!TARGET_PROVIDERS.has(agent.provider) || event.outcome.kind === "canceled") return;
+    if (event.outcome.kind === "canceled") return;
+    const settings = await readSettings();
+    const source = settings && sourceForProvider(agent.provider, settings);
+    if (!source) return;
     const observedAt = now();
     const stop = detectLimitStop(event.outcome, event.timeline, observedAt);
     if (!stop) {
@@ -81,17 +91,20 @@ export function createResumer(options: { store: JobStore; now?: () => Date }) {
     }
     const snapshot = await loadAgent(api, agent.id);
     if (!snapshot) return;
-    await schedule(api, snapshot, stop.resetAt, observedAt, { onlyIfNone: false });
+    await schedule(api, snapshot, source, stop.resetAt, observedAt, { onlyIfNone: false });
   }
 
   async function schedule(
     api: ResumerApi,
     agent: PaseoAgent,
+    source: UsageSource,
     stated: Date | null,
     observedAt: Date,
     options: { onlyIfNone: boolean },
   ): Promise<void> {
-    const resetAt = stated ?? (await usageResetAt(api, agent.provider, observedAt));
+    const resetAt = stated ?? (await usageResetAt(api, agent.provider, source, observedAt));
+    const settings = await readSettings();
+    if (!settings || sourceForProvider(agent.provider, settings) !== source) return;
     const key = resetAt ? minuteIso(resetAt) : null;
     await store.update(agent.id, (current) => {
       if (options.onlyIfNone && current) return undefined;
@@ -128,6 +141,8 @@ export function createResumer(options: { store: JobStore; now?: () => Date }) {
    * agent in `error` with the notice as `lastError`; Claude ends idle with a closing notice.
    */
   async function scan(api: ResumerApi): Promise<void> {
+    const settings = await readSettings();
+    if (!settings) return;
     const { entries } = await api.agents.list({
       filter: { statuses: ["idle", "error"] },
       sort: [{ key: "updated_at", direction: "desc" }],
@@ -135,17 +150,18 @@ export function createResumer(options: { store: JobStore; now?: () => Date }) {
     });
     const since = now().getTime() - SCAN_WINDOW_MS;
     for (const { agent } of entries) {
-      if (!TARGET_PROVIDERS.has(agent.provider) || agent.archivedAt) continue;
+      const source = sourceForProvider(agent.provider, settings);
+      if (!source || agent.archivedAt) continue;
       if (Date.parse(agent.updatedAt) < since) continue;
       if (agent.activeTurn || agent.pendingPermissions.length > 0 || agent.attentionReason === "permission") continue;
       const observedAt = new Date(agent.updatedAt);
       let stop = null;
       if (agent.status === "error" && agent.lastError) {
         stop = detectLimitStop({ kind: "failed", error: { message: agent.lastError } }, [], observedAt);
-      } else if (agent.provider === "claude-main") {
+      } else if (source === "claude") {
         stop = detectLimitStop({ kind: "completed" }, await timelineTail(api, agent.id), observedAt);
       }
-      if (stop) await schedule(api, agent, stop.resetAt, observedAt, { onlyIfNone: true });
+      if (stop) await schedule(api, agent, source, stop.resetAt, observedAt, { onlyIfNone: true });
     }
   }
 
@@ -166,6 +182,13 @@ export function createResumer(options: { store: JobStore; now?: () => Date }) {
     left !== null && left.state === right.state && left.dueAt === right.dueAt && left.resetAt === right.resetAt;
 
   async function fire(job: ResumeJob, api: ResumerApi, at: Date): Promise<void> {
+    const settings = await readSettings();
+    if (!settings) return;
+    const source = sourceForProvider(job.provider, settings);
+    if (!source) {
+      await forgetIfUnselected(job);
+      return;
+    }
     if (!job.enabled) {
       log(`skipped ${job.agentId}: turned off in Auto Resume`);
       await store.update(job.agentId, (current) => (isSameJob(current, job) ? null : undefined));
@@ -179,7 +202,7 @@ export function createResumer(options: { store: JobStore; now?: () => Date }) {
       return;
     }
     if (job.resetAt === null) {
-      const resetAt = await usageResetAt(api, job.provider, at);
+      const resetAt = await usageResetAt(api, job.provider, source, at);
       if (resetAt) {
         await store.update(job.agentId, (current) =>
           current && isSameJob(current, job)
@@ -192,6 +215,12 @@ export function createResumer(options: { store: JobStore; now?: () => Date }) {
     }
     // Claim before sending so a crash mid-send never delivers a second continue. The current
     // row decides: the job may have been turned off while the agent was being checked.
+    const currentSettings = await readSettings();
+    if (!currentSettings) return;
+    if (sourceForProvider(job.provider, currentSettings) !== source) {
+      await forgetIfUnselected(job);
+      return;
+    }
     const claimed = await store.update(job.agentId, (current) =>
       current && isSameJob(current, job) && current.enabled ? { ...current, state: "sending" } : undefined,
     );
@@ -203,6 +232,20 @@ export function createResumer(options: { store: JobStore; now?: () => Date }) {
     } catch (error) {
       await store.update(job.agentId, (current) => (current?.state === "sending" ? null : undefined));
       console.error(`[usage-auto-resume] could not continue ${job.agentId}`, String(error));
+    }
+  }
+
+  async function forgetIfUnselected(job: ResumeJob): Promise<void> {
+    await store.update(job.agentId, (current) => (isSameJob(current, job) ? null : undefined));
+    log(`canceled ${job.agentId}: provider is no longer selected`);
+  }
+
+  /** Settings changes also retire reservations created under an earlier selection. */
+  async function reconcileProviders(): Promise<void> {
+    const settings = await readSettings();
+    if (!settings) return;
+    for (const job of await store.list()) {
+      if (job.state === "pending" && !sourceForProvider(job.provider, settings)) await forgetIfUnselected(job);
     }
   }
 
@@ -228,7 +271,7 @@ export function createResumer(options: { store: JobStore; now?: () => Date }) {
     const first = paseo === null;
     paseo = api;
     if (!first) return Promise.resolve();
-    return scan(api)
+    return reconcileProviders().then(() => scan(api))
       .catch((error) => console.error("[usage-auto-resume] startup scan failed", String(error)))
       .then(tick);
   }
@@ -279,5 +322,5 @@ export function createResumer(options: { store: JobStore; now?: () => Date }) {
     return changed;
   }
 
-  return { attach, onTurnEnded, onTurnStarted, forget, tick, recover, scan, listScheduled, setEnabled };
+  return { attach, onTurnEnded, onTurnStarted, forget, tick, recover, scan, listScheduled, setEnabled, reconcileProviders };
 }

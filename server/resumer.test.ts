@@ -8,6 +8,7 @@ import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import type { PluginLifecycleEvents, PluginTurnOutcome } from "@getpaseo/plugin/server";
 import { CONTINUE_PROMPT, createResumer, type ResumerApi } from "./resumer";
 import { createJobStore, type JobStore } from "./store";
+import { DEFAULT_PROVIDER_SETTINGS, type ProviderSettings } from "../shared/settings";
 
 const START = new Date("2026-10-06T03:00:00.000Z");
 const MINUTE = 60_000;
@@ -35,7 +36,7 @@ beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "usage-auto-resume-"));
   store = createJobStore(join(dir, "jobs.json"));
   clock = START;
-  await signIn(join(dir, "claude-main"), ".claude.json", { oauthAccount: { emailAddress: MAIN_EMAIL } });
+  await signIn(join(dir, "claude"), ".claude.json", { oauthAccount: { emailAddress: MAIN_EMAIL } });
   await signIn(join(dir, "claude-sub"), ".claude.json", { oauthAccount: { emailAddress: SUB_EMAIL } });
   await signIn(join(dir, "codex"), "auth.json", { tokens: { id_token: jwt({ email: CODEX_EMAIL }), access_token: "opaque" } });
   process.env.CODEX_HOME = join(dir, "codex");
@@ -54,7 +55,9 @@ const advance = (ms: number) => {
 interface FakeOptions {
   timelines?: Record<string, AgentTimelineItem[]>;
   usage?: Array<{ providerId: string; displayName: string; windows: Array<Record<string, unknown>> }>;
-  claudeMainConfigDir?: string;
+  claudeConfigDir?: string;
+  claudeAliasEnv?: Record<string, string>;
+  readSettings?: () => Promise<ProviderSettings | null>;
 }
 
 /** Daemon stand-in: agent snapshots by ID, recorded sends, and no way to create agents. */
@@ -106,7 +109,10 @@ function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOption
           providers: {
             "claude-main": {
               extends: "claude",
-              env: { CLAUDE_CONFIG_DIR: options.claudeMainConfigDir ?? join(dir, "claude-main") },
+              env: options.claudeAliasEnv ?? { CLAUDE_CONFIG_DIR: options.claudeConfigDir ?? join(dir, "claude") },
+            },
+            "claude": {
+              env: { CLAUDE_CONFIG_DIR: options.claudeConfigDir ?? join(dir, "claude") },
             },
             "claude-sub": { extends: "claude", env: { CLAUDE_CONFIG_DIR: join(dir, "claude-sub") } },
           },
@@ -152,7 +158,7 @@ const claudeNotice = (text: string): AgentTimelineItem[] => [
 async function setup(agents: Record<string, Partial<PaseoAgent>>, options?: FakeOptions) {
   const map = new Map(Object.entries(agents));
   const fake = fakePaseo(map, options);
-  const resumer = createResumer({ store, now: () => clock });
+  const resumer = createResumer({ store, now: () => clock, readSettings: options?.readSettings });
   await resumer.attach(fake.api);
   return { ...fake, agents: map, resumer };
 }
@@ -178,9 +184,9 @@ test("Codex 5h limit: schedules reset + 2 minutes and continues the same agent",
   assert.equal(sent.length, 1, "one continue per limit stop");
 });
 
-test("claude-main limit: continues after the reset in the notice", async () => {
-  const { api, sent, resumer } = await setup({ m1: { provider: "claude-main" } });
-  await resumer.onTurnEnded(turnEnded("m1", "claude-main", { kind: "completed" }, claudeNotice(CLAUDE_LIMIT)), api);
+test("claude limit: continues after the reset in the notice", async () => {
+  const { api, sent, resumer } = await setup({ m1: { provider: "claude" } });
+  await resumer.onTurnEnded(turnEnded("m1", "claude", { kind: "completed" }, claudeNotice(CLAUDE_LIMIT)), api);
 
   assert.equal((await store.list())[0]?.dueAt, "2026-10-06T06:02:00.000Z");
   clock = new Date("2026-10-06T06:02:00.000Z");
@@ -189,8 +195,8 @@ test("claude-main limit: continues after the reset in the notice", async () => {
 });
 
 test("a long answer followed by a separate Claude limit notice schedules and resumes once", async () => {
-  const { api, sent, resumer } = await setup({ m1: { provider: "claude-main" } });
-  await resumer.onTurnEnded(turnEnded("m1", "claude-main", { kind: "completed" }, [
+  const { api, sent, resumer } = await setup({ m1: { provider: "claude" } });
+  await resumer.onTurnEnded(turnEnded("m1", "claude", { kind: "completed" }, [
     { type: "user_message", text: "Continue the research" },
     { type: "assistant_message", text: "Research is still running. ".padEnd(834, "."), messageId: "answer" },
     { type: "assistant_message", text: CLAUDE_LIMIT, messageId: "limit" },
@@ -207,7 +213,7 @@ test("a long answer followed by a separate Claude limit notice schedules and res
 });
 
 test("startup scan also detects a separate limit notice after a long Claude answer", async () => {
-  await setup({ m1: { provider: "claude-main" } }, { timelines: { m1: [
+  await setup({ m1: { provider: "claude" } }, { timelines: { m1: [
     { type: "user_message", text: "Continue the research" },
     { type: "assistant_message", text: "Research is still running. ".padEnd(834, "."), messageId: "answer" },
     { type: "assistant_message", text: CLAUDE_LIMIT, messageId: "limit" },
@@ -216,18 +222,19 @@ test("startup scan also detects a separate limit notice after a long Claude answ
 });
 
 test("a structured limit code uses the existing usage-window fallback", async () => {
-  const { api, resumer } = await setup({ m1: { provider: "claude-main" } }, { usage: [{
+  const { api, resumer } = await setup({ m1: { provider: "claude" } }, { usage: [{
     providerId: "claude", displayName: `Claude (${MAIN_EMAIL})`,
     windows: [{ id: "five_hour", label: "Session", usedPct: 100, resetsAt: "2026-10-06T04:00:00.000Z" }],
   }] });
-  await resumer.onTurnEnded(turnEnded("m1", "claude-main", {
+  await resumer.onTurnEnded(turnEnded("m1", "claude", {
     kind: "failed", error: { code: "rate_limit_exceeded", message: "Request rejected" },
   }), api);
   assert.equal((await store.list())[0]?.dueAt, "2026-10-06T04:02:00.000Z");
 });
 
-test("claude-sub and other providers are ignored", async () => {
-  const { api, sent, resumer } = await setup({ s1: { provider: "claude-sub" }, r1: { provider: "codex-reserve" } });
+test("custom aliases are not automatically enabled by the public defaults", async () => {
+  const { api, sent, resumer } = await setup({ s1: { provider: "claude-sub" }, m1: { provider: "claude-main" }, r1: { provider: "codex-reserve" } });
+  await resumer.onTurnEnded(turnEnded("m1", "claude-main", { kind: "completed" }, claudeNotice(CLAUDE_LIMIT)), api);
   await resumer.onTurnEnded(turnEnded("s1", "claude-sub", { kind: "completed" }, claudeNotice(CLAUDE_LIMIT)), api);
   await resumer.onTurnEnded(turnEnded("s1", "claude-sub", failed("Claude AI usage limit reached|1791266400")), api);
   await resumer.onTurnEnded(turnEnded("r1", "codex-reserve", failed(CODEX_LIMIT)), api);
@@ -295,13 +302,13 @@ test("an agent waiting for permission or running is left alone", async () => {
 });
 
 test("context-limit and ordinary errors are not scheduled", async () => {
-  const { api, resumer } = await setup({ a1: { provider: "codex" }, m1: { provider: "claude-main" } });
+  const { api, resumer } = await setup({ a1: { provider: "codex" }, m1: { provider: "claude" } });
   await resumer.onTurnEnded(
     turnEnded("a1", "codex", failed("Codex ran out of room in the model's context window. Start a new thread.")),
     api,
   );
-  await resumer.onTurnEnded(turnEnded("m1", "claude-main", failed("prompt is too long: 212000 tokens > 200000 maximum")), api);
-  await resumer.onTurnEnded(turnEnded("m1", "claude-main", failed("Claude run failed")), api);
+  await resumer.onTurnEnded(turnEnded("m1", "claude", failed("prompt is too long: 212000 tokens > 200000 maximum")), api);
+  await resumer.onTurnEnded(turnEnded("m1", "claude", failed("Claude run failed")), api);
   await resumer.onTurnEnded(turnEnded("a1", "codex", { kind: "canceled", reason: "interrupted" }), api);
   assert.deepEqual(await store.list(), []);
 });
@@ -317,8 +324,8 @@ test("without a reset in the notice, the account's 5-hour usage window is used",
       ],
     },
   ];
-  const { api, sent, resumer } = await setup({ m1: { provider: "claude-main" } }, { usage });
-  await resumer.onTurnEnded(turnEnded("m1", "claude-main", failed("Claude usage limit reached")), api);
+  const { api, sent, resumer } = await setup({ m1: { provider: "claude" } }, { usage });
+  await resumer.onTurnEnded(turnEnded("m1", "claude", failed("Claude usage limit reached")), api);
   assert.equal((await store.list())[0]?.dueAt, "2026-10-06T04:32:12.345Z");
 
   clock = new Date("2026-10-06T04:32:12.345Z");
@@ -334,8 +341,8 @@ test("only the usage entry of the agent's own account is used", async () => {
     { providerId: "codex", displayName: "Codex (opencode@example.com)", windows: [{ id: "five_hour", label: "5-hour", usedPct: 100, resetsAt: "2026-10-06T03:40:00.000Z" }] },
     { providerId: "codex", displayName: `Codex (${CODEX_EMAIL})`, windows: [{ id: "five_hour", label: "5-hour", usedPct: 100, resetsAt: "2026-10-06T04:50:00.000Z" }] },
   ];
-  const { api, resumer } = await setup({ m1: { provider: "claude-main" }, a1: { provider: "codex" } }, { usage });
-  await resumer.onTurnEnded(turnEnded("m1", "claude-main", failed("Claude usage limit reached")), api);
+  const { api, resumer } = await setup({ m1: { provider: "claude" }, a1: { provider: "codex" } }, { usage });
+  await resumer.onTurnEnded(turnEnded("m1", "claude", failed("Claude usage limit reached")), api);
   await resumer.onTurnEnded(turnEnded("a1", "codex", failed("Rate limit exceeded")), api);
   const jobs = Object.fromEntries((await store.list()).map((job) => [job.agentId, job.resetAt]));
   assert.deepEqual(jobs, { m1: "2026-10-06T04:30:00.000Z", a1: "2026-10-06T04:50:00.000Z" });
@@ -343,8 +350,8 @@ test("only the usage entry of the agent's own account is used", async () => {
 
 test("an account that cannot be identified falls back to the 15-minute recheck", async () => {
   const usage = [{ providerId: "claude", displayName: `Claude (${MAIN_EMAIL})`, windows: [{ id: "five_hour", label: "5-hour", usedPct: 100, resetsAt: "2026-10-06T04:30:00.000Z" }] }];
-  const { api, resumer } = await setup({ m1: { provider: "claude-main" } }, { usage, claudeMainConfigDir: join(dir, "signed-out") });
-  await resumer.onTurnEnded(turnEnded("m1", "claude-main", failed("Claude usage limit reached")), api);
+  const { api, resumer } = await setup({ m1: { provider: "claude" } }, { usage, claudeConfigDir: join(dir, "signed-out") });
+  await resumer.onTurnEnded(turnEnded("m1", "claude", failed("Claude usage limit reached")), api);
   const [job] = await store.list();
   assert.equal(job?.resetAt, null);
   assert.equal(job?.dueAt, "2026-10-06T03:15:00.000Z", "unknown reset rechecks in 15 minutes");
@@ -418,12 +425,12 @@ test("startup scan schedules a Codex agent that hit its limit before the plugin 
   assert.deepEqual(sent, [{ agentId: "c1", text: CONTINUE_PROMPT }]);
 });
 
-test("startup scan finds a Claude Main closing notice and ignores everything else", async () => {
+test("startup scan finds a Claude closing notice and ignores everything else", async () => {
   clock = new Date("2026-10-06T03:10:00.000Z");
   const recent = "2026-10-06T03:05:00.000Z";
   await setup(
     {
-      m1: { provider: "claude-main", status: "idle", updatedAt: recent },
+      m1: { provider: "claude", status: "idle", updatedAt: recent },
       s1: { provider: "claude-sub", status: "error", lastError: CODEX_LIMIT, updatedAt: recent },
       e1: { provider: "codex", status: "error", lastError: "Codex turn failed", updatedAt: recent },
       o1: { provider: "codex", status: "error", lastError: CODEX_LIMIT, updatedAt: "2026-10-05T15:05:00.000Z" },
@@ -507,4 +514,118 @@ test("jobs saved before the toggle existed load as turned on", async () => {
   const legacy = { agentId: "a1", provider: "codex", resetAt: null, dueAt: "2026-10-06T03:15:00.000Z", baseline: null, attempts: 0, state: "pending" };
   await writeFile(join(dir, "jobs.json"), JSON.stringify({ version: 1, jobs: [legacy] }));
   assert.equal((await store.list())[0]?.enabled, true);
+});
+
+const LOCAL_PROVIDERS: ProviderSettings = { claudeProvider: "claude-main", codexProvider: "codex" };
+
+test("a local Claude Main selection resumes only that alias using its own account windows", async () => {
+  const { api, sent, resumer } = await setup({
+    m1: { provider: "claude-main" }, c1: { provider: "claude" }, s1: { provider: "claude-sub" },
+  }, {
+    readSettings: async () => LOCAL_PROVIDERS,
+    usage: [
+      { providerId: "claude", displayName: `Claude (${SUB_EMAIL})`, windows: [{ id: "five_hour", usedPct: 100, resetsAt: "2026-10-06T04:00:00.000Z" }] },
+      { providerId: "claude", displayName: `Claude (${MAIN_EMAIL})`, windows: [{ id: "seven_day", usedPct: 100, resetsAt: "2026-10-09T00:00:00.000Z" }] },
+    ],
+  });
+  for (const [id, provider] of [["m1", "claude-main"], ["c1", "claude"], ["s1", "claude-sub"]]) {
+    await resumer.onTurnEnded(turnEnded(id!, provider!, failed("Usage limit reached")), api);
+  }
+  const [job] = await store.list();
+  assert.equal((await store.list()).length, 1);
+  assert.equal(job?.agentId, "m1");
+  assert.equal(job?.dueAt, "2026-10-09T00:02:00.000Z");
+  advance(Date.parse(job!.dueAt) - clock.getTime());
+  await resumer.tick();
+  assert.deepEqual(sent.map((message) => message.agentId), ["m1"]);
+});
+
+test("startup recovery understands the selected Claude alias's closing notice", async () => {
+  await setup({ m1: { provider: "claude-main" } }, {
+    readSettings: async () => LOCAL_PROVIDERS,
+    timelines: { m1: claudeNotice(CLAUDE_LIMIT) },
+  });
+  assert.equal((await store.list())[0]?.dueAt, "2026-10-06T06:02:00.000Z");
+});
+
+test("saving a new provider selection cancels reservations for removed providers", async () => {
+  let selection = LOCAL_PROVIDERS;
+  const { api, sent, resumer } = await setup({ m1: { provider: "claude-main" } }, { readSettings: async () => selection });
+  await resumer.onTurnEnded(turnEnded("m1", "claude-main", failed(CLAUDE_LIMIT)), api);
+  selection = DEFAULT_PROVIDER_SETTINGS;
+  await resumer.reconcileProviders();
+  assert.deepEqual(await store.list(), []);
+  advance(24 * 60 * MINUTE);
+  await resumer.tick();
+  assert.deepEqual(sent, []);
+});
+
+test("delivery checks the latest selection even when a settings notification was missed", async () => {
+  let selection = LOCAL_PROVIDERS;
+  const { api, sent, resumer } = await setup({ m1: { provider: "claude-main" } }, { readSettings: async () => selection });
+  await resumer.onTurnEnded(turnEnded("m1", "claude-main", failed(CLAUDE_LIMIT)), api);
+  selection = DEFAULT_PROVIDER_SETTINGS;
+  advance(3 * 60 * MINUTE + 2 * MINUTE);
+  await resumer.tick();
+  assert.deepEqual(sent, []);
+  assert.deepEqual(await store.list(), []);
+});
+
+test("unreadable settings pause saved jobs and never fall back to different providers", async () => {
+  let selection: ProviderSettings | null = LOCAL_PROVIDERS;
+  const { api, sent, resumer } = await setup({ m1: { provider: "claude-main" }, c1: { provider: "claude" } }, { readSettings: async () => selection });
+  await resumer.onTurnEnded(turnEnded("m1", "claude-main", failed(CLAUDE_LIMIT)), api);
+  selection = null;
+  await resumer.onTurnEnded(turnEnded("c1", "claude", failed(CLAUDE_LIMIT)), api);
+  await resumer.reconcileProviders();
+  advance(3 * 60 * MINUTE + 2 * MINUTE);
+  await resumer.tick();
+  assert.equal(sent.length, 0);
+  assert.equal((await store.list())[0]?.agentId, "m1");
+  selection = LOCAL_PROVIDERS;
+  await resumer.tick();
+  assert.deepEqual(sent.map((message) => message.agentId), ["m1"]);
+});
+
+test("provider selection is checked again if it changes while the due agent is loaded", async () => {
+  let selection = LOCAL_PROVIDERS;
+  const { api, sent, resumer } = await setup({ m1: { provider: "claude-main" } }, { readSettings: async () => selection });
+  await resumer.onTurnEnded(turnEnded("m1", "claude-main", failed(CLAUDE_LIMIT)), api);
+  const originalRef = api.agents.ref;
+  api.agents.ref = (id) => {
+    const handle = originalRef(id);
+    return Object.assign(handle, {
+      refresh: async () => {
+        selection = DEFAULT_PROVIDER_SETTINGS;
+        return { agent: { id, provider: "claude-main", status: "idle", lastUserMessageAt: "2026-10-06T02:00:00.000Z", pendingPermissions: [] }, project: null };
+      },
+    });
+  };
+  advance(3 * 60 * MINUTE + 2 * MINUTE);
+  await resumer.tick();
+  assert.deepEqual(sent, []);
+  assert.deepEqual(await store.list(), []);
+});
+
+test("the selected alias inherits the base CLI home unless it overrides it", async () => {
+  const { api, resumer } = await setup({ m1: { provider: "claude-main" } }, {
+    readSettings: async () => LOCAL_PROVIDERS,
+    claudeAliasEnv: {},
+    usage: [{ providerId: "claude", displayName: `Claude (${MAIN_EMAIL})`, windows: [{ id: "five_hour", usedPct: 100, resetsAt: "2026-10-06T04:00:00.000Z" }] }],
+  });
+  await resumer.onTurnEnded(turnEnded("m1", "claude-main", failed("Usage limit reached")), api);
+  assert.equal((await store.list())[0]?.resetAt, "2026-10-06T04:00:00.000Z");
+});
+
+test("the selected alias's own CLI home takes precedence over the base home", async () => {
+  const { api, resumer } = await setup({ m1: { provider: "claude-main" } }, {
+    readSettings: async () => LOCAL_PROVIDERS,
+    claudeAliasEnv: { CLAUDE_CONFIG_DIR: join(dir, "claude-sub") },
+    usage: [
+      { providerId: "claude", displayName: `Claude (${MAIN_EMAIL})`, windows: [{ id: "five_hour", usedPct: 100, resetsAt: "2026-10-06T04:00:00.000Z" }] },
+      { providerId: "claude", displayName: `Claude (${SUB_EMAIL})`, windows: [{ id: "five_hour", usedPct: 100, resetsAt: "2026-10-06T04:30:00.000Z" }] },
+    ],
+  });
+  await resumer.onTurnEnded(turnEnded("m1", "claude-main", failed("Usage limit reached")), api);
+  assert.equal((await store.list())[0]?.resetAt, "2026-10-06T04:30:00.000Z");
 });
