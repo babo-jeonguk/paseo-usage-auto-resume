@@ -1,0 +1,8 @@
+{
+  "id": "usage-auto-resume",
+  "name": "Usage Auto Resume",
+  "description": "Continue Codex and Claude Main agents automatically after their usage limit resets",
+  "requirements": {
+    "paseo": ">=0.11.0 <0.12.0"
+  }
+}

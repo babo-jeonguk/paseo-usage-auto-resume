@@ -1,0 +1,78 @@
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import { z } from "zod";
+
+const JobSchema = z.object({
+  agentId: z.string(),
+  provider: z.string(),
+  /** Reset instant (minute precision) the job waits for; null while it is unknown. */
+  resetAt: z.string().nullable(),
+  dueAt: z.string(),
+  /** The agent's `lastUserMessageAt` when its limited turn ended; any later message cancels. */
+  baseline: z.string().nullable(),
+  /** Consecutive automatic continues that hit a limit again. */
+  attempts: z.number().int().nonnegative(),
+  state: z.enum(["pending", "sending", "sent"]),
+  /** Unchecked in the Auto Resume screen: the due time passes without a continue. */
+  enabled: z.boolean().default(true),
+});
+
+export type ResumeJob = z.infer<typeof JobSchema>;
+
+const FileSchema = z.object({ version: z.literal(1), jobs: z.array(JobSchema) });
+
+export function defaultStorePath(): string {
+  const home = process.env.PASEO_HOME || join(homedir(), ".paseo");
+  return join(home, "plugin-data", "usage-auto-resume", "jobs.json");
+}
+
+/** One job per agent, persisted so a daemon or plugin restart keeps the schedule. */
+export function createJobStore(path = defaultStorePath()) {
+  // Hooks and the tick share one process; a promise chain serializes read-modify-write.
+  let tail: Promise<unknown> = Promise.resolve();
+  const serialize = <T>(work: () => Promise<T>): Promise<T> => {
+    const next = tail.then(work, work);
+    tail = next.catch(() => undefined);
+    return next;
+  };
+
+  async function read(): Promise<ResumeJob[]> {
+    try {
+      const parsed = FileSchema.safeParse(JSON.parse(await readFile(path, "utf8")));
+      if (parsed.success) return parsed.data.jobs;
+      console.error("[usage-auto-resume] job file failed validation; starting empty");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        console.error("[usage-auto-resume] could not read job file; starting empty", String(error));
+      }
+    }
+    return [];
+  }
+
+  async function write(jobs: ResumeJob[]): Promise<void> {
+    await mkdir(dirname(path), { recursive: true });
+    const temp = `${path}.${randomUUID()}.tmp`;
+    await writeFile(temp, JSON.stringify({ version: 1, jobs }, null, 2), "utf8");
+    await rename(temp, path);
+  }
+
+  return {
+    list: () => serialize(read),
+    /** Applies `change` to the agent's job: a job replaces it, null removes it, undefined keeps it. */
+    update: (agentId: string, change: (current: ResumeJob | null) => ResumeJob | null | undefined) =>
+      serialize(async () => {
+        const jobs = await read();
+        const index = jobs.findIndex((job) => job.agentId === agentId);
+        const current = index === -1 ? null : jobs[index]!;
+        const next = change(current);
+        if (next === undefined || (next === null && current === null)) return next ?? current;
+        const rest = jobs.filter((job) => job.agentId !== agentId);
+        await write(next ? [...rest, next] : rest);
+        return next;
+      }),
+  };
+}
+
+export type JobStore = ReturnType<typeof createJobStore>;
