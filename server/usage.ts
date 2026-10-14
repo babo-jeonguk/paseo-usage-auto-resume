@@ -83,71 +83,13 @@ async function codexEmail(codexHome: string): Promise<string | null> {
   );
 }
 
-function extractEmailFromObject(data: unknown): string | null {
-  if (!data || typeof data !== "object") return null;
-  const direct =
-    text(field(data, "email")) ??
-    text(field(field(data, "user"), "email")) ??
-    text(field(field(data, "account"), "email")) ??
-    text(field(field(data, "oauthAccount"), "emailAddress"));
-  if (direct) return direct;
-
-  const tokens = field(data, "tokens") ?? field(data, "token") ?? data;
-  const access = jwtClaims(field(tokens, "access_token") ?? field(data, "access_token"));
-  const id = jwtClaims(field(tokens, "id_token") ?? field(data, "id_token"));
-
-  return (
-    text(field(id, "email")) ??
-    text(field(access, "email")) ??
-    text(field(field(access, "https://api.openai.com/profile"), "email")) ??
-    text(field(field(id, "https://api.openai.com/profile"), "email"))
-  );
-}
-
-/** Antigravity stores CLI configuration under `~/.gemini/antigravity-cli`, or a configured directory. */
-async function antigravityEmail(configDir: string | null): Promise<string | null> {
-  const fileNames = ["auth.json", "credentials.json", "settings.json", ".antigravity.json"];
-  if (configDir) {
-    if (configDir.endsWith(".json")) {
-      const email = extractEmailFromObject(await readJson(configDir));
-      if (email) return email;
-    }
-    for (const name of fileNames) {
-      const email = extractEmailFromObject(await readJson(join(configDir, name)));
-      if (email) return email;
-    }
-  }
-
-  const defaultDirs = [
-    join(homedir(), ".gemini", "antigravity-cli"),
-    join(homedir(), ".antigravity"),
-    join(homedir(), ".gemini"),
-  ];
-
-  for (const dir of defaultDirs) {
-    for (const name of fileNames) {
-      const email = extractEmailFromObject(await readJson(join(dir, name)));
-      if (email) return email;
-    }
-  }
-
-  return null;
-}
-
 /** The account an agent of this provider runs under, read from the same home its CLI uses. */
-async function accountFor(paseo: UsageApi, provider: string, source: UsageSource): Promise<Account> {
+async function accountFor(paseo: UsageApi, provider: string, source: Exclude<UsageSource, "antigravity">): Promise<Account> {
   const { config } = await paseo.config.get();
   const env = providerEnv(config, provider);
   if (source === "codex") {
     const codexHome = envValue(env, "CODEX_HOME") ?? join(homedir(), ".codex");
     return { sourceId: "codex", email: await codexEmail(codexHome) };
-  }
-  if (source === "antigravity") {
-    const configDir =
-      envValue(env, "ANTIGRAVITY_CONFIG_DIR") ??
-      envValue(env, "ANTIGRAVITY_HOME") ??
-      envValue(env, "GEMINI_CONFIG_DIR");
-    return { sourceId: "antigravity", email: await antigravityEmail(configDir) };
   }
   return { sourceId: "claude", email: await claudeEmail(envValue(env, "CLAUDE_CONFIG_DIR")) };
 }
@@ -195,6 +137,8 @@ export function resetFromWindows(windows: readonly UsageWindow[], now: Date): Da
 
 /** Reset instant from the account's Paseo usage windows, or null when it cannot be known. */
 export async function usageResetAt(paseo: UsageApi, provider: string, source: UsageSource, now: Date): Promise<Date | null> {
+  // Paseo 0.11 has no Antigravity usage source, so only the notice can state its reset.
+  if (source === "antigravity") return null;
   try {
     const account = await accountFor(paseo, provider, source);
     if (!account?.email) return null;

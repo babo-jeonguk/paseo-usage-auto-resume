@@ -3,7 +3,7 @@
 Captured on October 12, 2026 from the real Paseo 0.11.2 bundled web app and the Usage Auto Resume plugin, using Chromium through Playwright at a 1440 × 960 desktop viewport.
 
 - `auto-resume.png` shows three sample reservations in an isolated daemon and demo workspace. The enabled and skipped states, countdowns, day grouping and titles are rendered by the plugin. Reservations were seeded as demo data; they are not records of real provider-limit failures. The demo agents received no task prompts.
-- `provider-settings.png` shows the real settings screen with the public defaults `claude` and `codex`.
+- `provider-settings.png` shows the real settings screen with the public defaults `claude`, `codex` and `antigravity`. It was recaptured on October 14, 2026 for v1.1.0 from the same bundled web app at the same viewport, in an isolated daemon with no agents.
 
 No production conversation content, account emails or credentials are included. The screenshots are direct browser captures; the displayed interface was not retouched.
 

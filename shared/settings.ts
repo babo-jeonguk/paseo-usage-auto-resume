@@ -30,17 +30,9 @@ export const DEFAULT_PROVIDER_SETTINGS = ProviderSettingsSchema.parse({});
 export const providerSettings = defineSettings({
   id: "providers",
   scope: "host",
-  version: 2,
+  // Version 1 values without antigravityProvider still parse; the schema default fills it in.
+  version: 1,
   schema: ProviderSettingsSchema,
-  migrate: (values: unknown, fromVersion: number) => {
-    if (fromVersion < 2 && typeof values === "object" && values !== null) {
-      return {
-        antigravityProvider: "antigravity",
-        ...values,
-      };
-    }
-    return values;
-  },
 });
 
 /** Exact selection only: another alias extending the same CLI is a separate opt-in. */

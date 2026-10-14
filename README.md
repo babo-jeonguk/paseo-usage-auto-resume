@@ -10,7 +10,7 @@ The actual Paseo web interface, captured with sample reservations in an isolated
 
 ![Auto Resume reservations grouped by day, with enabled and skipped jobs](assets/auto-resume.png)
 
-![Provider settings with the public defaults claude and codex](assets/provider-settings.png)
+![Provider settings with the public defaults claude, codex and antigravity](assets/provider-settings.png)
 
 ## Install
 
@@ -53,7 +53,7 @@ The prompt asks the parent agent to review saved progress and resume unfinished 
 
 ## Data access
 
-To distinguish accounts, the daemon reads the selected provider's configured CLI home. It reads Claude's `oauthAccount.emailAddress` from `.claude.json`, email claims from Codex's `auth.json` tokens, or Antigravity's `auth.json`/`credentials.json`/`settings.json` account email, using the provider's configured `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, or `ANTIGRAVITY_CONFIG_DIR` (or `ANTIGRAVITY_HOME`). Only matching account usage entries are used. Tokens are not stored in jobs, logged or sent in the continue prompt.
+To distinguish accounts, the daemon reads the selected provider's configured CLI home. It reads Claude's `oauthAccount.emailAddress` from `.claude.json` or email claims from Codex's `auth.json` tokens, using the provider's configured `CLAUDE_CONFIG_DIR` or `CODEX_HOME`. Only matching account usage entries are used. Paseo has no Antigravity usage information, so Antigravity resumes use the reset time stated in the notice, else the 15-minute recheck; no Antigravity files are read. Tokens are not stored in jobs, logged or sent in the continue prompt.
 
 The plugin reads agent state, recent timeline notices, provider configuration and usage information through Paseo. Resume jobs are stored in:
 
