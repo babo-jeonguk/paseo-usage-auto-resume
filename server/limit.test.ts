@@ -99,6 +99,25 @@ test("explicit rate-limit failure codes work without matching provider wording",
   } }, [prompt], observedAt), { resetAt: new Date("2026-10-06T05:00:00.000Z") });
 });
 
+test("Antigravity Google quota refusal carries compact relative reset units", () => {
+  const message =
+    'Cloud Code Assist API error (429): {"error":{"code":429,"message":"Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 6h53m44s.","status":"RESOURCE_EXHAUSTED"}}';
+  const stop = detectLimitStop(failed(message), [prompt], observedAt);
+  const expectedMs = observedAt.getTime() + (6 * 3600 + 53 * 60 + 44) * 1000;
+  assert.deepEqual(stop, { resetAt: new Date(expectedMs) });
+});
+
+test("Antigravity's real quota notice: Paseo passes agy's result error through unchanged", () => {
+  const message = "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 97h9m49s.";
+  const stop = detectLimitStop(failed(message), [prompt], observedAt);
+  assert.deepEqual(stop, { resetAt: new Date(observedAt.getTime() + (97 * 3600 + 9 * 60 + 49) * 1000) });
+});
+
+test("only the duration right after the marker counts, not digits in a later request ID", () => {
+  const stop = detectLimitStop(failed("Rate limit reached. Try again in 20s. (request id: req_8h3kd5m2)"), [prompt], observedAt);
+  assert.deepEqual(stop, { resetAt: new Date(observedAt.getTime() + 20_000) });
+});
+
 test("generic failure codes and billing/context errors do not trigger code-based resumes", () => {
   for (const code of ["429", "error", "context_length_exceeded", "insufficient_quota"]) {
     assert.equal(detectLimitStop({ kind: "failed", error: { code, message: "Request rejected" } }, [prompt], observedAt), null);

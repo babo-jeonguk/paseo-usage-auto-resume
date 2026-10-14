@@ -84,7 +84,7 @@ async function codexEmail(codexHome: string): Promise<string | null> {
 }
 
 /** The account an agent of this provider runs under, read from the same home its CLI uses. */
-async function accountFor(paseo: UsageApi, provider: string, source: UsageSource): Promise<Account> {
+async function accountFor(paseo: UsageApi, provider: string, source: Exclude<UsageSource, "antigravity">): Promise<Account> {
   const { config } = await paseo.config.get();
   const env = providerEnv(config, provider);
   if (source === "codex") {
@@ -137,6 +137,8 @@ export function resetFromWindows(windows: readonly UsageWindow[], now: Date): Da
 
 /** Reset instant from the account's Paseo usage windows, or null when it cannot be known. */
 export async function usageResetAt(paseo: UsageApi, provider: string, source: UsageSource, now: Date): Promise<Date | null> {
+  // Paseo 0.11 has no Antigravity usage source, so only the notice can state its reset.
+  if (source === "antigravity") return null;
   try {
     const account = await accountFor(paseo, provider, source);
     if (!account?.email) return null;

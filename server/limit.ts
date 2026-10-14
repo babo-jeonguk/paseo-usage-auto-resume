@@ -125,6 +125,8 @@ const UNIT_MS: Record<string, number> = {
   days: 86_400_000,
 };
 
+const UNIT = "(seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|[smh])";
+
 /** Extracts the renewal instant from a limit notice. */
 export function parseResetAt(text: string, observedAt: Date): Date | null {
   return epochResetAt(text) ?? relativeResetAt(text, observedAt) ?? absoluteResetAt(text, observedAt);
@@ -141,11 +143,15 @@ function epochResetAt(text: string): Date | null {
 function relativeResetAt(text: string, observedAt: Date): Date | null {
   const marker = /(?:try again|resets?|retry|available again|renews?)\s+(?:in|after)\s+/i.exec(text);
   if (!marker) return null;
-  const start = marker.index + marker[0].length;
-  const suffix = text.slice(start, start + 100);
-  const units = /(\d+(?:\.\d+)?)\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|[smh])\b/gi;
+  // Only the duration right after the marker ("2 hours 13 minutes", "6h53m44s"); later digits,
+  // such as a request ID, are not part of it.
+  const duration = new RegExp(`^(?:\\s*(?:,|and)?\\s*\\d+(?:\\.\\d+)?\\s*${UNIT}(?![a-z]))+`, "i").exec(
+    text.slice(marker.index + marker[0].length),
+  );
+  if (!duration) return null;
+  const units = new RegExp(`(\\d+(?:\\.\\d+)?)\\s*${UNIT}`, "gi");
   let totalMs = 0;
-  for (let match = units.exec(suffix); match; match = units.exec(suffix)) {
+  for (let match = units.exec(duration[0]); match; match = units.exec(duration[0])) {
     totalMs += Number(match[1]) * (UNIT_MS[match[2]!.toLowerCase()] ?? 0);
   }
   return totalMs > 0 ? new Date(observedAt.getTime() + totalMs) : null;

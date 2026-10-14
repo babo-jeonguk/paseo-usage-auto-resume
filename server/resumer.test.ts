@@ -17,6 +17,9 @@ const CLAUDE_LIMIT = "You've hit your limit · resets 3pm (Asia/Seoul)";
 const MAIN_EMAIL = "main@example.com";
 const SUB_EMAIL = "sub@example.com";
 const CODEX_EMAIL = "codex@example.com";
+const ANTIGRAVITY_EMAIL = "antigravity@example.com";
+const ANTIGRAVITY_LIMIT =
+  'Cloud Code Assist API error (429): {"error":{"code":429,"message":"Individual quota reached. Resets in 2h.","status":"RESOURCE_EXHAUSTED"}}';
 
 let dir: string;
 let store: JobStore;
@@ -516,7 +519,11 @@ test("jobs saved before the toggle existed load as turned on", async () => {
   assert.equal((await store.list())[0]?.enabled, true);
 });
 
-const LOCAL_PROVIDERS: ProviderSettings = { claudeProvider: "claude-main", codexProvider: "codex" };
+const LOCAL_PROVIDERS: ProviderSettings = {
+  claudeProvider: "claude-main",
+  codexProvider: "codex",
+  antigravityProvider: "antigravity",
+};
 
 test("a local Claude Main selection resumes only that alias using its own account windows", async () => {
   const { api, sent, resumer } = await setup({
@@ -628,4 +635,73 @@ test("the selected alias's own CLI home takes precedence over the base home", as
   });
   await resumer.onTurnEnded(turnEnded("m1", "claude-main", failed("Usage limit reached")), api);
   assert.equal((await store.list())[0]?.resetAt, "2026-10-06T04:30:00.000Z");
+});
+
+test("Antigravity 5h limit: schedules reset + 2 minutes and continues the same agent", async () => {
+  const { api, sent, resumer } = await setup({ g1: { provider: "antigravity" } });
+  await resumer.onTurnEnded(turnEnded("g1", "antigravity", failed(ANTIGRAVITY_LIMIT)), api);
+  const [job] = await store.list();
+  assert.equal(job?.dueAt, "2026-10-06T05:02:00.000Z");
+  assert.equal(job?.resetAt, "2026-10-06T05:00:00.000Z");
+
+  advance(2 * 60 * MINUTE);
+  await resumer.tick();
+  assert.deepEqual(sent, []);
+
+  advance(2 * MINUTE);
+  await resumer.tick();
+  assert.deepEqual(sent, [{ agentId: "g1", text: CONTINUE_PROMPT }]);
+});
+
+test("Antigravity limit without a reset in the notice rechecks in 15 minutes; Paseo has no Antigravity usage", async () => {
+  const usage = [
+    {
+      providerId: "antigravity",
+      displayName: `Antigravity (${ANTIGRAVITY_EMAIL})`,
+      windows: [{ id: "gemini-5h", label: "Session", usedPct: 100, resetsAt: "2026-10-06T04:30:00.000Z" }],
+    },
+  ];
+  const { api, resumer } = await setup({ g1: { provider: "antigravity" } }, { usage });
+  await resumer.onTurnEnded(turnEnded("g1", "antigravity", failed("RESOURCE_EXHAUSTED: Quota exceeded")), api);
+  const [job] = await store.list();
+  assert.equal(job?.resetAt, null);
+  assert.equal(job?.dueAt, "2026-10-06T03:15:00.000Z");
+});
+
+test("startup scan schedules an Antigravity agent that hit its limit before the plugin ran", async () => {
+  const { api, resumer } = await setup({
+    g1: {
+      provider: "antigravity",
+      status: "error",
+      lastError: ANTIGRAVITY_LIMIT,
+      updatedAt: "2026-10-06T02:50:00.000Z",
+    },
+  });
+  await resumer.attach(api);
+  const [job] = await store.list();
+  assert.equal(job?.agentId, "g1");
+  assert.equal(job?.provider, "antigravity");
+  assert.equal(job?.resetAt, "2026-10-06T04:50:00.000Z");
+});
+
+test("a custom Antigravity alias selection resumes only that alias", async () => {
+  const customSettings: ProviderSettings = {
+    claudeProvider: "claude",
+    codexProvider: "codex",
+    antigravityProvider: "antigravity-fast",
+  };
+  const { api, resumer } = await setup(
+    {
+      g1: { provider: "antigravity-fast" },
+      g2: { provider: "antigravity" },
+    },
+    { readSettings: async () => customSettings },
+  );
+  await resumer.onTurnEnded(turnEnded("g1", "antigravity-fast", failed("Resource exhausted")), api);
+  await resumer.onTurnEnded(turnEnded("g2", "antigravity", failed("Resource exhausted")), api);
+
+  const jobs = await store.list();
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0]?.agentId, "g1");
+  assert.equal(jobs[0]?.provider, "antigravity-fast");
 });

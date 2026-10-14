@@ -1,6 +1,12 @@
 import type { ScheduledJob } from "../shared/rpc";
 
-const PROVIDER_LABELS: Record<string, string> = { codex: "Codex", claude: "Claude", "claude-main": "Claude Main" };
+const PROVIDER_LABELS: Record<string, string> = {
+  codex: "Codex",
+  claude: "Claude",
+  "claude-main": "Claude Main",
+  antigravity: "Antigravity",
+  "antigravity-main": "Antigravity Main",
+};
 
 export function providerLabel(provider: string): string {
   return PROVIDER_LABELS[provider] ?? provider;
