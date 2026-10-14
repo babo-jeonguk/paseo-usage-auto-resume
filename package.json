@@ -1,7 +1,7 @@
 {
   "name": "usage-auto-resume",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Resume Codex, Claude, and Antigravity agents after their usage limits reset in Paseo",
   "license": "MIT",
   "repository": {
