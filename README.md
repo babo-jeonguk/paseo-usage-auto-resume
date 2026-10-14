@@ -71,6 +71,14 @@ The default home is `~/.paseo`. The plugin sends a fixed prompt to the existing 
 - The startup scan recovers missed limit stops only for agents active in the preceding 12 hours. Already persisted jobs can wait longer, including for a weekly reset.
 - Support is limited to the selected Claude/Codex/Antigravity provider IDs and the Paseo version range above.
 
+## Roadmap
+
+- Planned: turn automatic resume on or off per provider ([#2](https://github.com/babo-jeonguk/paseo-usage-auto-resume/issues/2))
+- Planned: support more providers, using Paseo usage information where it exists ([#3](https://github.com/babo-jeonguk/paseo-usage-auto-resume/issues/3))
+- Exploring: continue a limited task on another selected provider ([#4](https://github.com/babo-jeonguk/paseo-usage-auto-resume/issues/4))
+
+Feedback and contributions are welcome on the linked issues. Real limit notices from other providers are especially helpful.
+
 ## Development
 
 ```bash

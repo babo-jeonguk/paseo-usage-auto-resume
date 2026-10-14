@@ -75,6 +75,14 @@ paseo plugin install "$PWD"
 
 Paseo daemon과 app 모두 0.11.x여야 한다(`paseo-plugin.json`의 `>=0.11.0 <0.12.0`). `config.json`의 root `pluginsEnabled`가 켜져 있어야 한다. 소스를 바꾼 뒤에는 `paseo plugin reload usage-auto-resume`을 실행한다. 로그는 daemon log의 `[usage-auto-resume]` 줄에 남는다.
 
+## 로드맵
+
+- 예정: provider별 자동 재개 켜기/끄기 ([#2](https://github.com/babo-jeonguk/paseo-usage-auto-resume/issues/2))
+- 예정: 지원 provider 확대. Paseo usage 정보가 있으면 함께 쓴다 ([#3](https://github.com/babo-jeonguk/paseo-usage-auto-resume/issues/3))
+- 검토 중: limit에 걸린 작업을 선택한 다른 provider에서 이어서 진행 ([#4](https://github.com/babo-jeonguk/paseo-usage-auto-resume/issues/4))
+
+의견과 기여는 각 이슈에서 받는다. 다른 provider의 실제 limit 메시지가 특히 도움이 된다.
+
 ## 출처
 
 Reset 문구 파싱은 [panrafal/paseo-plugins chat-resume](https://github.com/panrafal/paseo-plugins/tree/main/chat-resume)과 [keefeere/paseo-continuity](https://github.com/keefeere/paseo-continuity)(MIT)를, usage window 판별은 [ortschun/paseo-limits](https://github.com/ortschun/paseo-limits)를 참고했다.
