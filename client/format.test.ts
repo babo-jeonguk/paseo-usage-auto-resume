@@ -50,6 +50,8 @@ test("summary counts agents that will continue and names the next time", () => {
 
 test("labels for provider and place", () => {
   assert.equal(providerLabel("claude-main"), "Claude Main");
+  assert.equal(providerLabel("antigravity"), "Antigravity");
+  assert.equal(providerLabel("antigravity-main"), "Antigravity Main");
   assert.equal(placeLabel(job({ projectName: "DoneFolio", workspaceName: "DoneFolio" })), "DoneFolio");
   assert.equal(placeLabel(job({ projectName: "DoneFolio", workspaceName: "issue-233" })), "DoneFolio · issue-233");
   assert.equal(placeLabel(job({})), null);

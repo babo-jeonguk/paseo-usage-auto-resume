@@ -91,12 +91,20 @@ test("a long discussion stays excluded even when its last chunk mentions a limit
 });
 
 test("explicit rate-limit failure codes work without matching provider wording", () => {
-  for (const code of ["rate_limit", "rate_limit_exceeded", "rate_limit_error", "usage_limit_reached", "usage_limit_exceeded"]) {
+  for (const code of ["rate_limit", "rate_limit_exceeded", "rate_limit_error", "usage_limit_reached", "usage_limit_exceeded", "resource_exhausted", "quota_exceeded"]) {
     assert.deepEqual(detectLimitStop({ kind: "failed", error: { code, message: "Request rejected" } }, [prompt], observedAt), { resetAt: null });
   }
   assert.deepEqual(detectLimitStop({ kind: "failed", error: {
     code: "rate_limit_exceeded", message: `Diagnostic details. ${"detail ".repeat(150)} Retry in 2 hours.`,
   } }, [prompt], observedAt), { resetAt: new Date("2026-10-06T05:00:00.000Z") });
+});
+
+test("Antigravity Google quota refusal carries compact relative reset units", () => {
+  const message =
+    'Cloud Code Assist API error (429): {"error":{"code":429,"message":"Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 6h53m44s.","status":"RESOURCE_EXHAUSTED"}}';
+  const stop = detectLimitStop(failed(message), [prompt], observedAt);
+  const expectedMs = observedAt.getTime() + (6 * 3600 + 53 * 60 + 44) * 1000;
+  assert.deepEqual(stop, { resetAt: new Date(expectedMs) });
 });
 
 test("generic failure codes and billing/context errors do not trigger code-based resumes", () => {

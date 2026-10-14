@@ -158,7 +158,7 @@ export function createResumer(options: {
       let stop = null;
       if (agent.status === "error" && agent.lastError) {
         stop = detectLimitStop({ kind: "failed", error: { message: agent.lastError } }, [], observedAt);
-      } else if (source === "claude") {
+      } else if (source === "claude" || source === "antigravity") {
         stop = detectLimitStop({ kind: "completed" }, await timelineTail(api, agent.id), observedAt);
       }
       if (stop) await schedule(api, agent, source, stop.resetAt, observedAt, { onlyIfNone: true });

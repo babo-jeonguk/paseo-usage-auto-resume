@@ -15,7 +15,8 @@ function ProviderForm({ settings, theme }: { settings: ReadySettings; theme: Plu
     parsed.success ? null : parsed.error.issues.find((issue) => issue.path[0] === key)?.message;
   const changed = parsed.success && (
     parsed.data.claudeProvider !== settings.values.claudeProvider ||
-    parsed.data.codexProvider !== settings.values.codexProvider
+    parsed.data.codexProvider !== settings.values.codexProvider ||
+    parsed.data.antigravityProvider !== settings.values.antigravityProvider
   );
 
   return (
@@ -36,6 +37,14 @@ function ProviderForm({ settings, theme }: { settings: ReadySettings; theme: Plu
             initialValue={draft.codexProvider}
             onChangeText={(codexProvider) => setDraft((current) => ({ ...current, codexProvider }))}
             error={errorFor("codexProvider")}
+            disabled={settings.saving}
+          />
+          <SettingsInput
+            label="Antigravity provider ID"
+            hint="Use antigravity for the default provider, or your Antigravity alias."
+            initialValue={draft.antigravityProvider}
+            onChangeText={(antigravityProvider) => setDraft((current) => ({ ...current, antigravityProvider }))}
+            error={errorFor("antigravityProvider")}
             disabled={settings.saving}
           />
           <SettingsAction
@@ -79,7 +88,7 @@ export function ProviderSettingsScreen({ theme }: PluginSurfaceProps) {
             {settings.status === "invalid" ? (
               <SettingsAction
                 label="Reset provider selection"
-                hint="Selects the public defaults claude and codex, and cancels reservations for other providers."
+                hint="Selects the public defaults claude, codex, and antigravity, and cancels reservations for other providers."
                 actionLabel="Reset"
                 disabled={settings.saving}
                 onPress={() => void settings.reset()}

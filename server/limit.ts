@@ -13,6 +13,7 @@ const LIMIT_PATTERNS = [
   /quota (?:has been )?(?:reached|exceeded|exhausted)/i,
   /resource[_ ]exhausted/i,
   /too many requests/i,
+  /(?:model[_ ])?capacity[_ ]exhausted/i,
 ];
 
 /** Context overflow and billing stops never renew on a clock, so they are not usage limits. */
@@ -29,7 +30,13 @@ const NOTICE_MAX_CHARS = 800;
 
 /** Explicit renewable-limit codes; a generic HTTP 429 can also mean a billing stop. */
 const LIMIT_CODES = new Set([
-  "rate_limit", "rate_limit_exceeded", "rate_limit_error", "usage_limit_reached", "usage_limit_exceeded",
+  "rate_limit",
+  "rate_limit_exceeded",
+  "rate_limit_error",
+  "usage_limit_reached",
+  "usage_limit_exceeded",
+  "resource_exhausted",
+  "quota_exceeded",
 ]);
 
 export interface LimitStop {
@@ -143,7 +150,7 @@ function relativeResetAt(text: string, observedAt: Date): Date | null {
   if (!marker) return null;
   const start = marker.index + marker[0].length;
   const suffix = text.slice(start, start + 100);
-  const units = /(\d+(?:\.\d+)?)\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|[smh])\b/gi;
+  const units = /(\d+(?:\.\d+)?)\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|[smh])(?=\b|\d)/gi;
   let totalMs = 0;
   for (let match = units.exec(suffix); match; match = units.exec(suffix)) {
     totalMs += Number(match[1]) * (UNIT_MS[match[2]!.toLowerCase()] ?? 0);

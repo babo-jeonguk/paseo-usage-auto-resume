@@ -8,7 +8,7 @@
 
 ![기본 claude·codex 대상 설정](assets/provider-settings.png)
 
-Codex 또는 Claude agent가 usage/rate limit으로 멈추면 reset 시각 + 2분에 **같은 agent**에 continue prompt를 한 번 보내는 Paseo plugin이다. 새 agent 생성, provider 전환은 없다.
+Codex, Claude 또는 Antigravity agent가 usage/rate limit으로 멈추면 reset 시각 + 2분에 **같은 agent**에 continue prompt를 한 번 보내는 Paseo plugin이다. 새 agent 생성, provider 전환은 없다.
 
 ## Auto Resume 화면
 
@@ -22,16 +22,16 @@ Codex 또는 Claude agent가 usage/rate limit으로 멈추면 reset 시각 + 2�
 
 ## 대상
 
-기본 대상은 `codex`와 `claude`다. **Settings → Plugins → usage-auto-resume → Settings**에서 **Claude provider ID**와 **Codex provider ID**를 지정하고 **Save**를 누르면 해당 CLI의 기본 ID를 교체한다. 예를 들어 Claude를 `claude-main`으로, Codex를 `codex`로 저장하면 정확히 이 둘만 처리하고 `claude`와 `claude-sub`는 제외한다. 별칭은 해당 Claude/Codex CLI를 사용해야 하며 일반적으로 기본 provider를 `extends`한다.
+기본 대상은 `codex`, `claude`, `antigravity`다. **Settings → Plugins → usage-auto-resume → Settings**에서 **Claude provider ID**, **Codex provider ID**, **Antigravity provider ID**를 지정하고 **Save**를 누르면 해당 CLI의 기본 ID를 교체한다. 예를 들어 Claude를 `claude-main`으로, Codex를 `codex`로, Antigravity를 `antigravity`로 저장하면 정확히 이 셋만 처리하고 `claude`와 `claude-sub`는 제외한다. 별칭은 해당 Claude/Codex/Antigravity CLI를 사용해야 하며 일반적으로 기본 provider를 `extends`한다.
 
 설정은 daemon별 `$PASEO_HOME/plugin-settings/usage-auto-resume/providers.json`에 저장되므로 공개 코드의 기본값과 개인 설정을 따로 유지할 수 있다. Prefix나 `extends`만으로 다른 ID를 자동 포함하지 않는다. 선택에서 빠진 provider의 기존 예약은 취소한다. 설정을 읽지 못하면 기본값으로 전환하지 않고 자동 재개를 대기시킨다.
 
 ## 동작
 
-1. `agent.turn_ended`에서 limit 종료를 보수적으로 감지한다. 명시적인 renewable limit 오류 코드(`rate_limit`, `rate_limit_exceeded`, `rate_limit_error`, `usage_limit_reached`, `usage_limit_exceeded`)가 있으면 문구·길이에 의존하지 않고 먼저 판정한다. 코드가 없으면 실패 메시지, 해당 turn의 error/warning 항목, turn을 마친 마지막 assistant 메시지(Claude는 limit을 이 형태로 알린다) 중 800자 이하의 짧은 notice를 본다. 마지막 assistant 메시지는 같은 `messageId`의 조각만 합치며, 다른 ID의 앞 답변은 붙이지 않는다. ID가 없으면 마지막 항목만 검사한다. Context window 초과, billing/credit 부족, 일반 오류, 취소된 turn은 대상이 아니다.
+1. `agent.turn_ended`에서 limit 종료를 보수적으로 감지한다. 명시적인 renewable limit 오류 코드(`rate_limit`, `rate_limit_exceeded`, `rate_limit_error`, `usage_limit_reached`, `usage_limit_exceeded`, `resource_exhausted`, `quota_exceeded`)가 있으면 문구·길이에 의존하지 않고 먼저 판정한다. 코드가 없으면 실패 메시지, 해당 turn의 error/warning 항목, turn을 마친 마지막 assistant 메시지(Claude는 limit을 이 형태로 알린다) 중 800자 이하의 짧은 notice를 본다. 마지막 assistant 메시지는 같은 `messageId`의 조각만 합치며, 다른 ID의 앞 답변은 붙이지 않는다. ID가 없으면 마지막 항목만 검사한다. Context window 초과, billing/credit 부족, 일반 오류, 취소된 turn은 대상이 아니다.
 2. Reset 시각은 다음 순서로 정한다.
-   1. Notice에 적힌 시각: `resets 3pm (Asia/Seoul)`, `try again at 4:13 AM`, `try again in 2 hours`, `|<epoch>`, ISO 시각.
-   2. 해당 account의 Paseo usage window(`providers.listUsage()`): 소진된 window가 있으면 그 window, 없으면 5-hour/session window의 `resetsAt`을 쓴다. Paseo 0.11부터 이 목록은 source마다 로그인 account별 항목(`Claude (<email>)`, `Codex (<email>)`)을 돌려주고, 다른 agent가 쓰는 account(Claude Sub의 `CLAUDE_CONFIG_DIR`, OpenCode의 ChatGPT 로그인 등)도 섞인다. 그래서 agent가 실제로 쓰는 account의 email을 그 CLI의 home에서 읽어 같은 email의 항목만 사용한다. 선택한 Claude provider는 `CLAUDE_CONFIG_DIR/.claude.json`의 `oauthAccount.emailAddress`, Codex는 `CODEX_HOME`(기본 `~/.codex`)`/auth.json` token의 email claim만 읽는다. Token 자체는 저장하거나 로그에 남기지 않는다. Email을 알 수 없거나 같은 email의 항목이 없으면 다음 단계로 넘어간다.
+   1. Notice에 적힌 시각: `resets 3pm (Asia/Seoul)`, `try again at 4:13 AM`, `try again in 2 hours`, `Resets in 6h53m44s`, `|<epoch>`, ISO 시각.
+   2. 해당 account의 Paseo usage window(`providers.listUsage()`): 소진된 window가 있으면 그 window, 없으면 5-hour/session window의 `resetsAt`을 쓴다. Paseo 0.11부터 이 목록은 source마다 로그인 account별 항목(`Claude (<email>)`, `Codex (<email>)`, `Antigravity (<email>)`)을 돌려주고, 다른 agent가 쓰는 account도 섞인다. 그래서 agent가 실제로 쓰는 account의 email을 그 CLI의 home에서 읽어 같은 email의 항목만 사용한다. 선택한 Claude provider는 `CLAUDE_CONFIG_DIR/.claude.json`의 `oauthAccount.emailAddress`, Codex는 `CODEX_HOME`(기본 `~/.codex`)`/auth.json` token의 email claim, Antigravity는 `ANTIGRAVITY_CONFIG_DIR`(또는 `~/.gemini/antigravity-cli`)의 `auth.json`/`credentials.json`/`settings.json`의 account email만 읽는다. Token 자체는 저장하거나 로그에 남기지 않는다. Email을 알 수 없거나 같은 email의 항목이 없으면 다음 단계로 넘어간다.
    3. 알 수 없으면 15분 뒤 다시 확인한다. 이때 usage window가 확인되면 그 시각으로 다시 예약하고, 여전히 모르면 continue를 보낸다. 다시 limit에 걸리면 같은 절차를 반복하며, 연속 24회 실패하면 중단한다.
 3. Agent당 job은 하나이며 `(agentId, resetAt)` 기준으로 idempotent하다. 같은 failure가 반복 수신되어도 job은 하나만 남는다.
 4. 실행 시각에 agent를 다시 조회한다. 다음 중 하나라도 해당하면 보내지 않고 job을 취소한다.
