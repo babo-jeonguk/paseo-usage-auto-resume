@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { PaseoApi } from "@getpaseo/client";
+import type { PaseoApi } from "./paseo-types";
 import type { UsageSource } from "../shared/settings";
 
 type UsageApi = Pick<PaseoApi, "config" | "providers">;
