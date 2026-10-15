@@ -1,4 +1,4 @@
-import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
+import type { AgentTimelineItem } from "./paseo-types";
 import type { PluginTurnOutcome } from "@getpaseo/plugin/server";
 
 // Reset-time parsing follows panrafal/paseo-plugins chat-resume (shared/usage.ts, MIT) and

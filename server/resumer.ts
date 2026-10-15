@@ -1,6 +1,5 @@
-import type { PaseoAgent, PaseoApi } from "@getpaseo/client";
+import type { AgentTimelineItem, PaseoAgent, PaseoApi } from "./paseo-types";
 import type { PluginLifecycleEvents } from "@getpaseo/plugin/server";
-import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import { detectLimitStop } from "./limit";
 import type { ScheduledJob } from "../shared/rpc";
 import type { JobStore, ResumeJob } from "./store";
