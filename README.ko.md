@@ -39,6 +39,8 @@ Codex, Claude 또는 Antigravity agent가 usage/rate limit으로 멈추면 reset
    - `lastUserMessageAt`이 달라졌다.
    - agent가 running/closed 상태이거나 archive되었다.
    - permission 또는 input을 기다리고 있다.
+
+   그다음 Claude/Codex는 발송 직전에 해당 account의 usage window를 다시 확인한다. Notice에 없던 주간 window처럼 아직 소진된 window가 있으면 보내지 않고 그 리셋 + 2분으로 미룬다. 미룬 것은 재시도 횟수에 세지 않는다. Usage를 확인할 수 없거나 Antigravity이면 그대로 보낸다.
 5. Plugin이 시작한 뒤 첫 hook에서 한 번 시작 scan을 실행한다. 설치 전이나 재시작 중에 limit으로 멈춰 `turn_ended`를 받지 못한 agent를 찾기 위해서다. 최근 12시간 안에 활동한 대상 agent만 본다. Codex는 `error` 상태의 `lastError`로, 선택한 Claude provider는 `idle` 상태에서 timeline 마지막 20개 항목 중 turn을 끝낸 메시지로 판정한다. 이미 job이 있는 agent는 건드리지 않는다.
 6. 전송은 `agents.ref(id).send()`만 사용한다. 전송 전에 `sending`을 저장하므로 crash 뒤에도 continue가 두 번 가지 않는다. 재개 prompt는 부모 agent에게 대화·작업공간·subagent/task 상태를 확인하고, **usage limit으로 중지된 미완료 서브에이전트도 기존 ID/이름·기존 지시로 이어가도록** 요청한다. 이미 완료된 작업을 다시 하거나 실행 중인 서브에이전트를 중단하지 않고, 사용자의 취소·일시정지를 존중한다. 기존 서브에이전트를 재개할 수 없으면 blocker를 보고하도록 한다. Plugin이 Claude 내부 서브에이전트에 직접 메시지를 보내는 것은 아니며, 실제 재개는 부모 agent가 provider의 resume/messaging 도구로 수행한다.
 

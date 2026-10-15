@@ -3,7 +3,7 @@ import type { PluginLifecycleEvents } from "@getpaseo/plugin/server";
 import { detectLimitStop } from "./limit";
 import type { ScheduledJob } from "../shared/rpc";
 import type { JobStore, ResumeJob } from "./store";
-import { usageResetAt } from "./usage";
+import { usageExhausted, usageResetAt } from "./usage";
 import { DEFAULT_PROVIDER_SETTINGS, sourceForProvider, type ProviderSettings, type UsageSource } from "../shared/settings";
 
 export const CONTINUE_PROMPT =
@@ -209,6 +209,18 @@ export function createResumer(options: {
             : undefined,
         );
         log(`rescheduled ${job.agentId} for its usage reset at ${minuteIso(resetAt)}`);
+        return;
+      }
+    } else {
+      // The notice may name only one window; another (often the weekly one) can still be used up.
+      const exhausted = await usageExhausted(api, job.provider, source, at);
+      if (exhausted) {
+        const resetAt = minuteIso(exhausted.resetAt);
+        await store.update(job.agentId, (current) => {
+          if (!current || !isSameJob(current, job) || !current.enabled) return undefined;
+          log(`postponed ${job.agentId}: usage still exhausted until ${resetAt} (was ${job.resetAt}; window ${exhausted.id})`);
+          return { ...current, resetAt, dueAt: dueFor(exhausted.resetAt, at) };
+        });
         return;
       }
     }
