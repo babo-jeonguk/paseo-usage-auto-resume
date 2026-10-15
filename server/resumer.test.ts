@@ -57,7 +57,9 @@ const advance = (ms: number) => {
 
 interface FakeOptions {
   timelines?: Record<string, AgentTimelineItem[]>;
-  usage?: Array<{ providerId: string; displayName: string; windows: Array<Record<string, unknown>> }>;
+  usage?: Array<{ providerId: string; displayName: string; status?: string; windows: Array<Record<string, unknown>> }>;
+  /** Runs while usage is being read, as a concurrent change would. */
+  duringListUsage?: () => Promise<void>;
   claudeConfigDir?: string;
   claudeAliasEnv?: Record<string, string>;
   readSettings?: () => Promise<ProviderSettings | null>;
@@ -66,6 +68,7 @@ interface FakeOptions {
 /** Daemon stand-in: agent snapshots by ID, recorded sends, and no way to create agents. */
 function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOptions = {}) {
   const sent: Array<{ agentId: string; text: string }> = [];
+  let usageReads = 0;
   const snapshot = (agentId: string, agent: Partial<PaseoAgent>) =>
     ({
       id: agentId,
@@ -123,18 +126,22 @@ function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOption
       }),
     },
     providers: {
-      listUsage: async () => ({
-        requestId: "r",
-        fetchedAt: clock.toISOString(),
-        providers: (options.usage ?? []).map((entry) => ({
-          status: "available",
-          planLabel: null,
-          ...entry,
-        })),
-      }),
+      listUsage: async () => {
+        usageReads += 1;
+        await options.duringListUsage?.();
+        return {
+          requestId: "r",
+          fetchedAt: clock.toISOString(),
+          providers: (options.usage ?? []).map((entry) => ({
+            status: "available",
+            planLabel: null,
+            ...entry,
+          })),
+        };
+      },
     },
   } as unknown as ResumerApi;
-  return { api, sent };
+  return { api, sent, usageReads: () => usageReads };
 }
 
 function turnEnded(
@@ -704,4 +711,133 @@ test("a custom Antigravity alias selection resumes only that alias", async () =>
   assert.equal(jobs.length, 1);
   assert.equal(jobs[0]?.agentId, "g1");
   assert.equal(jobs[0]?.provider, "antigravity-fast");
+});
+
+test("a weekly window still used up at send time postpones the continue to its reset", async () => {
+  const usage: FakeOptions["usage"] = [{
+    providerId: "claude", displayName: `Claude (${MAIN_EMAIL})`,
+    windows: [
+      { id: "five_hour", label: "Session", usedPct: 10, resetsAt: "2026-10-06T08:00:00.000Z" },
+      { id: "seven_day", label: "Weekly", usedPct: 100, resetsAt: "2026-10-09T00:00:00.000Z" },
+    ],
+  }];
+  const { api, sent, resumer } = await setup({ m1: { provider: "claude" } }, { usage });
+  await resumer.onTurnEnded(turnEnded("m1", "claude", { kind: "completed" }, claudeNotice(CLAUDE_LIMIT)), api);
+  assert.equal((await store.list())[0]?.dueAt, "2026-10-06T06:02:00.000Z", "the notice decides the first time");
+
+  clock = new Date("2026-10-06T06:02:00.000Z");
+  await resumer.tick();
+  assert.deepEqual(sent, []);
+  const [job] = await store.list();
+  assert.equal(job?.resetAt, "2026-10-09T00:00:00.000Z");
+  assert.equal(job?.dueAt, "2026-10-09T00:02:00.000Z");
+  assert.equal(job?.attempts, 0, "a postponement is not a retry");
+  assert.equal(job?.enabled, true);
+  assert.equal(job?.state, "pending");
+
+  usage.length = 0;
+  clock = new Date("2026-10-09T00:02:00.000Z");
+  await resumer.tick();
+  await resumer.tick();
+  assert.deepEqual(sent, [{ agentId: "m1", text: CONTINUE_PROMPT }]);
+});
+
+test("a Codex 5-hour window still used up at send time postpones the continue to its reset", async () => {
+  const usage: FakeOptions["usage"] = [{
+    providerId: "codex", displayName: `Codex (${CODEX_EMAIL})`,
+    windows: [{ id: "five_hour", label: "5-hour", usedPct: 100, resetsAt: "2026-10-06T07:30:00.000Z" }],
+  }];
+  const { api, sent, resumer } = await setup({ a1: { provider: "codex" } }, { usage });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+
+  clock = new Date("2026-10-06T05:02:00.000Z");
+  await resumer.tick();
+  assert.deepEqual(sent, []);
+  const [job] = await store.list();
+  assert.equal(job?.resetAt, "2026-10-06T07:30:00.000Z");
+  assert.equal(job?.dueAt, "2026-10-06T07:32:00.000Z");
+
+  clock = new Date("2026-10-06T07:32:00.000Z");
+  await resumer.tick();
+  assert.equal(sent.length, 1, "the window has renewed by its own reset");
+});
+
+test("a 5-hour window that renews later but is not used up does not hold the continue", async () => {
+  const usage = [{
+    providerId: "codex", displayName: `Codex (${CODEX_EMAIL})`,
+    windows: [{ id: "five_hour", label: "5-hour", usedPct: 99, resetsAt: "2026-10-06T09:00:00.000Z" }],
+  }];
+  const { api, sent, resumer } = await setup({ a1: { provider: "codex" } }, { usage });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  clock = new Date("2026-10-06T05:02:00.000Z");
+  await resumer.tick();
+  assert.equal(sent.length, 1);
+});
+
+test("usage that cannot be read at send time does not hold the continue", async () => {
+  const exhausted = [{ id: "five_hour", label: "5-hour", usedPct: 100, resetsAt: "2026-10-06T09:00:00.000Z" }];
+  for (const [name, usage] of [
+    ["no entries", []],
+    ["unavailable", [{ providerId: "codex", displayName: `Codex (${CODEX_EMAIL})`, status: "unavailable", windows: exhausted }]],
+    ["another account", [{ providerId: "codex", displayName: "Codex (opencode@example.com)", windows: exhausted }]],
+  ] as Array<[string, FakeOptions["usage"]]>) {
+    clock = START;
+    const { api, sent, resumer } = await setup({ a1: { provider: "codex" } }, { usage });
+    await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+    clock = new Date("2026-10-06T05:02:00.000Z");
+    await resumer.tick();
+    assert.equal(sent.length, 1, name);
+    await store.update("a1", () => null);
+  }
+});
+
+test("an Antigravity continue is sent without reading usage", async () => {
+  const usage = [{
+    providerId: "antigravity", displayName: `Antigravity (${ANTIGRAVITY_EMAIL})`,
+    windows: [{ id: "gemini-5h", label: "Session", usedPct: 100, resetsAt: "2026-10-06T09:00:00.000Z" }],
+  }];
+  const { api, sent, resumer, usageReads } = await setup({ g1: { provider: "antigravity" } }, { usage });
+  await resumer.onTurnEnded(turnEnded("g1", "antigravity", failed(ANTIGRAVITY_LIMIT)), api);
+  clock = new Date("2026-10-06T05:02:00.000Z");
+  await resumer.tick();
+  assert.equal(sent.length, 1);
+  assert.equal(usageReads(), 0);
+});
+
+test("a job turned off or replaced while usage is read is neither postponed nor sent", async () => {
+  const usage = [{
+    providerId: "codex", displayName: `Codex (${CODEX_EMAIL})`,
+    windows: [{ id: "five_hour", label: "5-hour", usedPct: 100, resetsAt: "2026-10-06T07:30:00.000Z" }],
+  }];
+  const replacement = {
+    agentId: "a1", provider: "codex", resetAt: "2026-10-06T08:00:00.000Z", dueAt: "2026-10-06T08:02:00.000Z",
+    baseline: "2026-10-06T02:00:00.000Z", attempts: 0, state: "pending" as const, enabled: true,
+  };
+  for (const [name, change] of [
+    ["turned off", async (resumer: ReturnType<typeof createResumer>) => {
+      await resumer.setEnabled("a1", "2026-10-06T05:02:00.000Z", false);
+    }],
+    ["replaced", async () => {
+      await store.update("a1", () => replacement);
+    }],
+  ] as Array<[string, (resumer: ReturnType<typeof createResumer>) => Promise<void>]>) {
+    clock = START;
+    let concurrent: (() => Promise<void>) | undefined;
+    const { api, sent, resumer } = await setup({ a1: { provider: "codex" } }, {
+      usage,
+      duringListUsage: async () => {
+        const run = concurrent;
+        concurrent = undefined;
+        await run?.();
+      },
+    });
+    await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+    concurrent = () => change(resumer);
+    clock = new Date("2026-10-06T05:02:00.000Z");
+    await resumer.tick();
+    assert.deepEqual(sent, [], name);
+    const [job] = await store.list();
+    assert.notEqual(job?.dueAt, "2026-10-06T07:32:00.000Z", name);
+    await store.update("a1", () => null);
+  }
 });

@@ -47,7 +47,7 @@ A turn-ending hook detects renewable usage/rate-limit errors from explicit error
 
 The reset time comes from the provider notice first. If the notice has none, the plugin consults the signed-in account's Paseo usage windows. Exhausted windows include weekly limits; when several windows are exhausted, it waits for the latest reset. Otherwise it uses an available five-hour/session reset.
 
-It schedules one job per agent and sends a fixed continue prompt **two minutes after the reset**. Immediately before sending, it checks the agent again. A newer user message, a new turn, a running/closed/archived agent, or a pending permission request cancels the resume. Claiming the job before sending prevents duplicate delivery after a crash, though an interrupted send can therefore be lost.
+It schedules one job per agent and sends a fixed continue prompt **two minutes after the reset**. Immediately before sending, it checks the agent again. A newer user message, a new turn, a running/closed/archived agent, or a pending permission request cancels the resume. For Claude and Codex it also rechecks the account's usage windows: if one is still exhausted (for example a weekly limit the notice did not mention), it postpones the job to that window's reset plus two minutes without counting a retry. If usage cannot be read, or the agent is Antigravity, it sends as scheduled. Claiming the job before sending prevents duplicate delivery after a crash, though an interrupted send can therefore be lost.
 
 The prompt asks the parent agent to review saved progress and resume unfinished work, including unfinished subagents that stopped at the usage limit. Actual subagent continuation depends on the parent's available provider tools; the plugin sends only to the parent.
 
@@ -66,7 +66,7 @@ The default home is `~/.paseo`. The plugin sends a fixed prompt to the existing 
 ## Limitations
 
 - If neither a notice nor matching account usage supplies a reset, the plugin rechecks in 15 minutes. It may then send a continue prompt and retry if the limit persists, stopping after 24 consecutive unsuccessful automatic continues.
-- A notice's stated reset takes priority over usage windows. Known scheduled jobs do not recheck usage before sending.
+- A notice's stated reset takes priority over usage windows when scheduling. Just before sending, Claude and Codex jobs recheck usage and are postponed only while a window is still exhausted. Jobs whose usage cannot be read, and Antigravity jobs, are sent as scheduled.
 - After a daemon/plugin restart, jobs wait for a lifecycle hook or a request from the Auto Resume screen to supply the API. Due jobs then run subject to the agent checks.
 - The startup scan recovers missed limit stops only for agents active in the preceding 12 hours. Already persisted jobs can wait longer, including for a weekly reset.
 - Support is limited to the selected Claude/Codex/Antigravity provider IDs and the Paseo version range above.

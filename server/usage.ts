@@ -115,19 +115,35 @@ function usedPercent(window: UsageWindow): number | null {
   return null;
 }
 
-/** Picks the window holding the agent back: an exhausted one, else its 5-hour/session window. */
-export function resetFromWindows(windows: readonly UsageWindow[], now: Date): Date | null {
-  const future = windows
+/** A window that is used up and renews after `now`. */
+export interface ExhaustedWindow {
+  id: string;
+  resetAt: Date;
+}
+
+function futureWindows(windows: readonly UsageWindow[], now: Date): Array<{ window: UsageWindow; resetAt: Date }> {
+  return windows
     .map((window) => ({ window, resetAt: window.resetsAt ? new Date(window.resetsAt) : null }))
     .filter((entry): entry is { window: UsageWindow; resetAt: Date } =>
       entry.resetAt !== null && entry.resetAt.getTime() > now.getTime(),
     );
-  const exhausted = future.filter((entry) => (usedPercent(entry.window) ?? 0) >= 100);
-  if (exhausted.length > 0) {
-    // Every exhausted window must renew before the agent can work again.
-    return new Date(Math.max(...exhausted.map((entry) => entry.resetAt.getTime())));
+}
+
+/** The used-up window that renews last, since every one must renew before the agent can work again. */
+export function exhaustedWindow(windows: readonly UsageWindow[], now: Date): ExhaustedWindow | null {
+  let latest: ExhaustedWindow | null = null;
+  for (const entry of futureWindows(windows, now)) {
+    if ((usedPercent(entry.window) ?? 0) < 100) continue;
+    if (!latest || entry.resetAt.getTime() > latest.resetAt.getTime()) latest = { id: entry.window.id, resetAt: entry.resetAt };
   }
-  const session = future.find(
+  return latest;
+}
+
+/** Picks the window holding the agent back: an exhausted one, else its 5-hour/session window. */
+export function resetFromWindows(windows: readonly UsageWindow[], now: Date): Date | null {
+  const exhausted = exhaustedWindow(windows, now);
+  if (exhausted) return exhausted.resetAt;
+  const session = futureWindows(windows, now).find(
     (entry) =>
       FIVE_HOUR_WINDOW.test(`${entry.window.id} ${entry.window.label}`) &&
       entry.resetAt.getTime() - now.getTime() <= FIVE_HOURS_MS,
@@ -135,8 +151,8 @@ export function resetFromWindows(windows: readonly UsageWindow[], now: Date): Da
   return session?.resetAt ?? null;
 }
 
-/** Reset instant from the account's Paseo usage windows, or null when it cannot be known. */
-export async function usageResetAt(paseo: UsageApi, provider: string, source: UsageSource, now: Date): Promise<Date | null> {
+/** The usage windows of the account the agent runs under, or null when they cannot be known. */
+async function accountWindows(paseo: UsageApi, provider: string, source: UsageSource): Promise<UsageWindow[] | null> {
   // Paseo 0.11 has no Antigravity usage source, so only the notice can state its reset.
   if (source === "antigravity") return null;
   try {
@@ -145,9 +161,26 @@ export async function usageResetAt(paseo: UsageApi, provider: string, source: Us
     const { providers } = await paseo.providers.listUsage();
     const entry = entryForAccount(providers, account);
     if (!entry || entry.status !== "available") return null;
-    return resetFromWindows(entry.windows, now);
+    return entry.windows;
   } catch (error) {
     console.error("[usage-auto-resume] could not read usage windows", String(error));
     return null;
   }
+}
+
+/** Reset instant from the account's Paseo usage windows, or null when it cannot be known. */
+export async function usageResetAt(paseo: UsageApi, provider: string, source: UsageSource, now: Date): Promise<Date | null> {
+  const windows = await accountWindows(paseo, provider, source);
+  return windows && resetFromWindows(windows, now);
+}
+
+/** The account's window that is still used up, or null when none is or usage cannot be known. */
+export async function usageExhausted(
+  paseo: UsageApi,
+  provider: string,
+  source: UsageSource,
+  now: Date,
+): Promise<ExhaustedWindow | null> {
+  const windows = await accountWindows(paseo, provider, source);
+  return windows && exhaustedWindow(windows, now);
 }
