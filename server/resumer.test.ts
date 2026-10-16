@@ -841,3 +841,107 @@ test("a job turned off or replaced while usage is read is neither postponed nor 
     await store.update("a1", () => null);
   }
 });
+
+test("rescheduling moves only the due time and turns the job on", async () => {
+  const { api, resumer } = await setup({ a1: { provider: "codex" } });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  await resumer.setEnabled("a1", "2026-10-06T05:02:00.000Z", false);
+  const before = (await store.list())[0]!;
+
+  const result = await resumer.reschedule("a1", "2026-10-06T05:02:00.000Z", "2026-10-06T07:00:00.000Z");
+
+  assert.deepEqual(result, { changed: true, dueAt: "2026-10-06T07:00:00.000Z" });
+  assert.deepEqual((await store.list())[0], { ...before, dueAt: "2026-10-06T07:00:00.000Z", enabled: true });
+});
+
+test("a rescheduled job continues once, at its new time", async () => {
+  const { api, sent, resumer } = await setup({ a1: { provider: "codex" } });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  await resumer.reschedule("a1", "2026-10-06T05:02:00.000Z", "2026-10-06T05:30:00.000Z");
+
+  clock = new Date("2026-10-06T05:29:00.000Z");
+  await resumer.tick();
+  assert.deepEqual(sent, [], "not at the old time");
+
+  clock = new Date("2026-10-06T05:30:00.000Z");
+  await resumer.tick();
+  await resumer.tick();
+  assert.deepEqual(sent, [{ agentId: "a1", text: CONTINUE_PROMPT }]);
+});
+
+test("rescheduling before the reset or more than a week out is refused with the reason", async () => {
+  const { api, resumer } = await setup({ a1: { provider: "codex" } });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  const dueAt = "2026-10-06T05:02:00.000Z";
+
+  assert.deepEqual(await resumer.reschedule("a1", dueAt, "2026-10-06T05:01:00.000Z"), {
+    changed: false,
+    reason: "too-early",
+    earliest: "2026-10-06T05:02:00.000Z",
+  });
+  assert.deepEqual(await resumer.reschedule("a1", dueAt, "2026-10-13T04:01:00.000Z"), { changed: false, reason: "too-late" });
+  assert.equal((await store.list())[0]?.dueAt, dueAt, "a refused time leaves the job alone");
+
+  assert.equal((await resumer.reschedule("a1", dueAt, "2026-10-13T04:00:00.000Z")).changed, true, "7 days + 1 hour is allowed");
+});
+
+test("without a known reset, the earliest new time is a minute from now", async () => {
+  const { resumer } = await setup({});
+  await store.update("a1", () => ({
+    agentId: "a1", provider: "codex", resetAt: null, dueAt: "2026-10-06T03:15:00.000Z",
+    baseline: null, attempts: 0, state: "pending", enabled: true,
+  }));
+
+  assert.deepEqual(await resumer.reschedule("a1", "2026-10-06T03:15:00.000Z", "2026-10-06T03:00:30.000Z"), {
+    changed: false,
+    reason: "too-early",
+    earliest: "2026-10-06T03:01:00.000Z",
+  });
+  assert.equal((await resumer.reschedule("a1", "2026-10-06T03:15:00.000Z", "2026-10-06T03:01:00.000Z")).changed, true);
+});
+
+test("rescheduling a job that moved, ran, or is being sent reports why nothing changed", async () => {
+  const { api, resumer } = await setup({ a1: { provider: "codex" } });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  const shown = "2026-10-06T05:02:00.000Z";
+  const plusTen = "2026-10-06T05:12:00.000Z";
+
+  assert.equal((await resumer.reschedule("a1", shown, plusTen)).changed, true);
+  assert.deepEqual(await resumer.reschedule("a1", shown, plusTen), { changed: false, reason: "changed" }, "a second +10m from the same screen");
+  assert.deepEqual(await resumer.reschedule("missing", shown, plusTen), { changed: false, reason: "changed" });
+
+  await store.update("a1", (job) => job && { ...job, state: "sending" });
+  assert.deepEqual(await resumer.reschedule("a1", plusTen, "2026-10-06T05:22:00.000Z"), { changed: false, reason: "sending" });
+
+  await store.update("a1", (job) => job && { ...job, state: "sent" });
+  assert.deepEqual(await resumer.reschedule("a1", plusTen, "2026-10-06T05:22:00.000Z"), { changed: false, reason: "changed" });
+});
+
+test("after rescheduling, the toggle follows the new time", async () => {
+  const { api, sent, resumer } = await setup({ a1: { provider: "codex" } });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  await resumer.reschedule("a1", "2026-10-06T05:02:00.000Z", "2026-10-06T05:30:00.000Z");
+
+  assert.equal(await resumer.setEnabled("a1", "2026-10-06T05:02:00.000Z", false), false, "old time");
+  assert.equal(await resumer.setEnabled("a1", "2026-10-06T05:30:00.000Z", false), true);
+
+  clock = new Date("2026-10-06T05:30:00.000Z");
+  await resumer.tick();
+  assert.deepEqual(sent, []);
+});
+
+test("turning all off or on changes only the pending jobs the screen showed", async () => {
+  const { api, resumer } = await setup({ a1: { provider: "codex" }, a2: { provider: "codex" }, a3: { provider: "codex" } });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  await resumer.onTurnEnded(turnEnded("a2", "codex", failed(CODEX_LIMIT)), api);
+  const shown = (await resumer.listScheduled(api)).map(({ agentId, dueAt }) => ({ agentId, dueAt }));
+  await store.update("a2", (job) => job && { ...job, state: "sending" });
+  await resumer.onTurnEnded(turnEnded("a3", "codex", failed(CODEX_LIMIT)), api);
+
+  assert.equal(await resumer.setAllEnabled(false, shown), 1);
+  const enabled = async () => Object.fromEntries((await store.list()).map((job) => [job.agentId, job.enabled]));
+  assert.deepEqual(await enabled(), { a1: false, a2: true, a3: true }, "a sending job and one scheduled after the screen loaded stay on");
+
+  assert.equal(await resumer.setAllEnabled(true, shown), 1);
+  assert.deepEqual(await enabled(), { a1: true, a2: true, a3: true });
+});

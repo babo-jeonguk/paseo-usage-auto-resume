@@ -29,3 +29,34 @@ export const setEnabledRpc = defineRpc({
   /** False when the job already ran, was canceled, or was rescheduled since it was shown. */
   output: z.object({ changed: z.boolean() }),
 });
+
+export const RescheduleResultSchema = z.discriminatedUnion("changed", [
+  z.object({ changed: z.literal(true), dueAt: z.string() }),
+  z.object({
+    changed: z.literal(false),
+    /**
+     * `changed`: the job already ran, was canceled, or moved since it was shown.
+     * `sending`: the continue is being delivered. `too-early`: before `earliest` (the limit
+     * reset plus grace, or a minute from now). `too-late`: more than a week out.
+     */
+    reason: z.enum(["changed", "sending", "too-early", "too-late"]),
+    earliest: z.string().optional(),
+  }),
+]);
+
+export type RescheduleResult = z.infer<typeof RescheduleResultSchema>;
+
+export const rescheduleRpc = defineRpc({
+  name: "auto-resume.reschedule",
+  /** `dueAt` is the time the screen showed; `newDueAt` replaces it. */
+  input: z.object({ agentId: z.string(), dueAt: z.string(), newDueAt: z.iso.datetime() }),
+  output: RescheduleResultSchema,
+});
+
+export const setAllEnabledRpc = defineRpc({
+  name: "auto-resume.set-all-enabled",
+  /** The rows the screen showed; jobs scheduled since, or being sent, are left alone. */
+  input: z.object({ enabled: z.boolean(), jobs: z.array(z.object({ agentId: z.string(), dueAt: z.string() })) }),
+  /** How many jobs flipped. */
+  output: z.object({ changed: z.number().int().nonnegative() }),
+});

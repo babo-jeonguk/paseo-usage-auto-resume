@@ -1,7 +1,7 @@
 import type { AgentTimelineItem, PaseoAgent, PaseoApi } from "./paseo-types";
 import type { PluginLifecycleEvents } from "@getpaseo/plugin/server";
 import { detectLimitStop } from "./limit";
-import type { ScheduledJob } from "../shared/rpc";
+import type { RescheduleResult, ScheduledJob } from "../shared/rpc";
 import type { JobStore, ResumeJob } from "./store";
 import { usageExhausted, usageResetAt } from "./usage";
 import { DEFAULT_PROVIDER_SETTINGS, sourceForProvider, type ProviderSettings, type UsageSource } from "../shared/settings";
@@ -17,6 +17,8 @@ export const CONTINUE_PROMPT =
 const GRACE_MS = 2 * 60_000;
 const UNKNOWN_RECHECK_MS = 15 * 60_000;
 const MIN_DELAY_MS = 60_000;
+/** A week plus an hour reaches past a weekly reset; a user-chosen time beyond it is a typo. */
+const MAX_AHEAD_MS = 7 * 24 * 3_600_000 + 3_600_000;
 /** Stops a limit that never renews from being retried forever (6 hours of rechecks). */
 const MAX_ATTEMPTS = 24;
 /** Startup scan looks at agents active this recently; older stops are left to the user. */
@@ -333,5 +335,66 @@ export function createResumer(options: {
     return changed;
   }
 
-  return { attach, onTurnEnded, onTurnStarted, forget, tick, recover, scan, listScheduled, setEnabled, reconcileProviders };
+  /**
+   * Turns the jobs the screen showed on or off and counts the ones that flipped. Jobs scheduled
+   * after the screen loaded are not in `jobs`, and one being sent is no longer pending.
+   */
+  async function setAllEnabled(enabled: boolean, jobs: ReadonlyArray<{ agentId: string; dueAt: string }>): Promise<number> {
+    let changed = 0;
+    for (const { agentId, dueAt } of jobs) {
+      await store.update(agentId, (current) => {
+        if (current?.state !== "pending" || current.dueAt !== dueAt || current.enabled === enabled) return undefined;
+        changed += 1;
+        log(`${enabled ? "turned on" : "turned off"} ${agentId}`);
+        return { ...current, enabled };
+      });
+    }
+    return changed;
+  }
+
+  /**
+   * Moves one pending job to `newDueAt` and turns it on, like changing an alarm's time;
+   * `dueAt` pins the job the screen showed.
+   */
+  async function reschedule(agentId: string, dueAt: string, newDueAt: string): Promise<RescheduleResult> {
+    let result: RescheduleResult = { changed: false, reason: "changed" };
+    const at = now();
+    const target = new Date(newDueAt);
+    await store.update(agentId, (current) => {
+      if (current?.state === "sending" && current.dueAt === dueAt) result = { changed: false, reason: "sending" };
+      if (current?.state !== "pending" || current.dueAt !== dueAt) return undefined;
+      // Sending before the reset would only hit the limit again.
+      const earliest = new Date(
+        Math.max(at.getTime() + MIN_DELAY_MS, current.resetAt ? Date.parse(current.resetAt) + GRACE_MS : 0),
+      );
+      if (target < earliest) {
+        result = { changed: false, reason: "too-early", earliest: earliest.toISOString() };
+        return undefined;
+      }
+      if (target.getTime() > at.getTime() + MAX_AHEAD_MS) {
+        result = { changed: false, reason: "too-late" };
+        return undefined;
+      }
+      const next = target.toISOString();
+      result = { changed: true, dueAt: next };
+      log(`rescheduled ${agentId} for ${next} (was ${current.dueAt}${current.enabled ? "" : "; turned on"})`);
+      return { ...current, dueAt: next, enabled: true };
+    });
+    return result;
+  }
+
+  return {
+    attach,
+    onTurnEnded,
+    onTurnStarted,
+    forget,
+    tick,
+    recover,
+    scan,
+    listScheduled,
+    setEnabled,
+    setAllEnabled,
+    reschedule,
+    reconcileProviders,
+  };
 }
