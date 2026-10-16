@@ -502,6 +502,7 @@ test("startup scan keeps a job that already exists", async () => {
     attempts: 3,
     state: "pending",
     enabled: true,
+    renewable: true,
   }));
   await setup({ c1: { provider: "codex", status: "error", lastError: CODEX_LIMIT, updatedAt: "2026-10-06T03:05:00.000Z" } });
   const [job] = await store.list();
@@ -891,7 +892,7 @@ test("a job turned off or replaced while usage is read is neither postponed nor 
   }];
   const replacement = {
     agentId: "a1", provider: "codex", resetAt: "2026-10-06T08:00:00.000Z", dueAt: "2026-10-06T08:02:00.000Z",
-    baseline: "2026-10-06T02:00:00.000Z", attempts: 0, state: "pending" as const, enabled: true,
+    baseline: "2026-10-06T02:00:00.000Z", attempts: 0, state: "pending" as const, enabled: true, renewable: true,
   };
   for (const [name, change] of [
     ["turned off", async (resumer: ReturnType<typeof createResumer>) => {
@@ -969,7 +970,7 @@ test("without a known reset, the earliest new time is a minute from now", async 
   const { resumer } = await setup({});
   await store.update("a1", () => ({
     agentId: "a1", provider: "codex", resetAt: null, dueAt: "2026-10-06T03:15:00.000Z",
-    baseline: null, attempts: 0, state: "pending", enabled: true,
+    baseline: null, attempts: 0, state: "pending", enabled: true, renewable: true,
   }));
 
   assert.deepEqual(await resumer.reschedule("a1", "2026-10-06T03:15:00.000Z", "2026-10-06T03:00:30.000Z"), {
@@ -1065,6 +1066,26 @@ test("unknown auth holds a notice with a reset instead of using its clock as aut
   await resumer.tick();
   assert.deepEqual(sent, []);
   assert.equal((await store.list())[0]?.attempts, 0, "status checks are not model retries");
+});
+
+test("a notice's reset stays evidence while auth is unknown, and continues once auth is verified ready", async () => {
+  let check: SubscriptionCheck = unknownCheck();
+  const { api, resumer, sent } = await setup({ a1: { provider: "codex" } }, { readSubscription: async () => check });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  advance(3 * 60 * MINUTE);
+  check = { auth: "subscription", status: "ready", identity: "account-model" };
+  await resumer.tick();
+  assert.deepEqual(sent, [{ agentId: "a1", text: CONTINUE_PROMPT }]);
+});
+
+test("a reservation saved by v1.2.0 continues after upgrading once its account is verified ready", async () => {
+  const legacy = { agentId: "a1", provider: "codex", resetAt: "2026-10-06T02:50:00.000Z", dueAt: "2026-10-06T02:52:00.000Z", baseline: "2026-10-06T02:00:00.000Z", attempts: 0, state: "pending", enabled: true };
+  await writeFile(join(dir, "jobs.json"), JSON.stringify({ version: 1, jobs: [legacy] }));
+  const { resumer, sent } = await setup({ a1: { provider: "codex" } }, {
+    readSubscription: async () => ({ auth: "subscription", status: "ready", identity: "account-model" }),
+  });
+  await resumer.tick();
+  assert.deepEqual(sent, [{ agentId: "a1", text: CONTINUE_PROMPT }]);
 });
 
 test("credit recovery requires positive readiness, not unrelated quota percentages", async () => {

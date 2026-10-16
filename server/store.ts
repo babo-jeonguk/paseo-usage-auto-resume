@@ -20,8 +20,11 @@ const JobSchema = z.object({
   reason: z.enum(["quota", "credits"]).optional(),
   waiting: z.enum(["auth", "usage", "credits"]).optional(),
   identity: z.string().optional(),
-  /** A provider reset notice or an observed exhausted applicable quota established the cause. */
-  renewable: z.boolean().optional(),
+  /**
+   * A provider reset notice or an observed exhausted applicable quota established the cause.
+   * Jobs saved by v1.2.0 predate this field; each came from a detected limit stop.
+   */
+  renewable: z.boolean().default(true),
   launch: z.object({ env: z.record(z.string(), z.string()), authEnv: z.record(z.string(), z.boolean()) }).optional(),
 });
 

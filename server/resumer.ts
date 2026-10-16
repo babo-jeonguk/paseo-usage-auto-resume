@@ -158,7 +158,8 @@ export function createResumer(options: {
         state: "pending",
         enabled: true,
         reason: creditBlocked ? "credits" : "quota",
-        renewable: check.auth === "subscription" && (!!stated || check.status === "limited"),
+        // A stated reset is evidence even while authentication is unknown; the send still needs a verified ready check.
+        renewable: !!stated || check.auth === "subscription" && check.status === "limited",
         waiting,
         identity: check.identity,
         launch,
