@@ -71,7 +71,7 @@ The default home is `~/.paseo`. The plugin sends a fixed prompt to the existing 
 
 ## Limitations
 
-- A session opened before the capture hook was installed has unverified per-agent overrides. Its reservation waits until an interactive session open/refresh supplies context. New reservations retain sanitized launch context across plugin restarts; older jobs remain readable but cannot bypass verification.
+- A session opened before the plugin loaded has no captured launch context. Its reservation is checked with the daemon environment and the provider's configured environment, the way v1.2.0 found the account; values that other plugins add at session open are not seen. Reservations created with captured context keep it across plugin restarts.
 - The installed agy 1.3.6 read-only quota response has no account identity. Antigravity reservations therefore wait for verification instead of guessing an account from its home directory. API/ADC routes remain excluded. Slash status probes require agy 1.1.15 or later and zero-turn structured output.
 - Claude on macOS waits because this implementation does not read Keychain credentials. Unrecognized quota shapes or multi-argument custom launchers also wait. Known one-command launchers use native account/status protocols.
 - Claude budget/credit notices require affirmative credit recovery metadata; ordinary quota percentages alone cannot clear them.

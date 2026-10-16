@@ -89,10 +89,9 @@ test("persisted launch context contains only paths and presence flags, never key
   assert.doesNotMatch(JSON.stringify(context), /private/);
 });
 
-test("uncaptured sessions, custom wrappers, and explicit API environments are never probed as subscriptions", async () => {
+test("custom wrappers and explicit API environments are never probed as subscriptions", async () => {
   let probes = 0;
   const read = createSubscriptionReader({ run: async () => { probes++; throw new Error("must not execute"); } });
-  assert.equal((await read(api(), agent("codex"), "codex", at)).auth, "unknown");
   assert.equal((await read(api({ claude: { command: ["wrapper", "claude"] } }), agent("claude"), "claude", at, captureLaunch({ env: {} }))).auth, "unknown");
   const launch = captureLaunch({ env: { ANTHROPIC_API_KEY: "key" } });
   assert.equal((await read(api(), agent("claude"), "claude", at, launch)).auth, "api");
@@ -135,6 +134,26 @@ test("read-only Codex status and usage bind workspace/model identity without ref
     assert.equal((await read(api(), agent("codex"), "codex", at, launch)).auth, "unknown");
     assert.equal(await (await import("node:fs/promises")).readFile(join(home, "auth.json"), "utf8"), auth);
   } finally { await rm(home, { recursive: true, force: true }); }
+});
+
+test("an uncaptured session is checked as the daemon and provider configuration launch it", async () => {
+  const home = await mkdtemp(join(tmpdir(), "resume-auth-"));
+  await writeFile(join(home, "auth.json"), JSON.stringify({ auth_mode: "chatgpt", tokens: { access_token: "test-token", account_id: "business-workspace" } }));
+  const saved = process.env.ANTHROPIC_API_KEY;
+  try {
+    const read = createSubscriptionReader({
+      codex: async () => ({ account: { account: { type: "chatgpt" } }, config: { config: { model_provider: "openai" } } }),
+      fetch: async () => response({ ...baseUsage, model_usage: { [model]: { available: false, available_at: until } } }),
+    });
+    const check = await read(api({ "codex-sub": { extends: "codex", env: { CODEX_HOME: home } } }), agent("codex-sub"), "codex", at);
+    assert.equal(check.auth, "subscription");
+    assert.equal(check.status, "limited");
+    process.env.ANTHROPIC_API_KEY = "daemon-key";
+    assert.equal((await read(api(), agent("claude"), "claude", at)).auth, "api");
+  } finally {
+    if (saved === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = saved;
+    await rm(home, { recursive: true, force: true });
+  }
 });
 
 test("unsupported agy versions never execute slash probes", async () => {
