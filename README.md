@@ -10,11 +10,11 @@ The actual Paseo web interface, captured with sample reservations in an isolated
 
 ![Auto Resume reservations grouped by day, with enabled and skipped jobs](assets/auto-resume.png)
 
-![Provider settings with the public defaults claude, codex and antigravity](assets/provider-settings.png)
+![Provider settings with a switch for each Claude, Codex and Antigravity provider](assets/provider-settings.png)
 
 ## Install
 
-Requires **Paseo daemon and app 0.11.x**, with plugins enabled in the daemon configuration.
+Requires **Paseo daemon and app 0.11.0 or later**, with plugins enabled in the daemon configuration.
 
 ```bash
 paseo plugin install github:babo-jeonguk/paseo-usage-auto-resume
@@ -22,13 +22,13 @@ paseo plugin install github:babo-jeonguk/paseo-usage-auto-resume
 
 The plugin ID is `usage-auto-resume`. This repository can be installed directly from GitHub; a registry listing is separate.
 
-By default, the plugin resumes agents whose provider ID is exactly `codex`, `claude`, or `antigravity`. The plugin uses the CLI accounts already signed in on the daemon host.
+By default, the plugin resumes agents of every provider that runs Claude, Codex, or Antigravity: the built-in `claude`, `codex`, and `antigravity`, and any provider that extends one of them, such as `claude-main` or `codex-sub`. The plugin uses the CLI accounts already signed in on the daemon host.
 
-## Select your providers
+## Turn providers on or off
 
-Open **Settings → Plugins → usage-auto-resume → Settings**. Set **Claude provider ID**, **Codex provider ID**, and **Antigravity provider ID**, then press **Save**. Each field replaces that CLI's default ID. For example, choosing `claude-main` for Claude and keeping `codex` and `antigravity` resumes only `claude-main`, `codex`, and `antigravity`; `claude` and `claude-sub` are excluded. A custom ID must run the corresponding Claude, Codex, or Antigravity CLI, normally by extending that built-in provider.
+Open **Settings → Plugins → usage-auto-resume → Settings**. The screen lists every Claude, Codex, and Antigravity provider the daemon knows, grouped by CLI, with its ID, the account it signs in as, and its pending reservations. Each switch takes effect immediately. A provider is found by following its `extends` chain to a built-in provider, so `codex-reserve` extending `codex` is listed under Codex even when it shares the `codex` account.
 
-Selection is exact, not a prefix or `extends` match. It is stored per daemon, so the public repository retains standard defaults while your host can use its own aliases. Saving a selection cancels pending reservations for removed providers; restoring an ID does not restore its canceled reservations. If stored settings cannot be read, automatic resumes wait instead of falling back to different providers.
+Every provider starts on, including one added to Paseo later. Turning a provider off means its agents are never scheduled, and its pending reservations are canceled, including ones turned off in the Auto Resume list. Turning it back on does not restore them. The next limit stop is scheduled as usual, and after a restart the startup scan may find a recent stop again. The switches are stored per daemon. Hosts upgrading from the earlier one-ID-per-CLI settings start with every provider on. If stored settings cannot be read, automatic resumes wait instead of falling back to the defaults.
 
 Provider settings use Paseo's native settings storage under `$PASEO_HOME/plugin-settings/usage-auto-resume/providers.json`. They are separate from the source code and resume-job file.
 
@@ -55,7 +55,7 @@ The prompt asks the parent agent to review saved progress and resume unfinished 
 
 ## Data access
 
-To distinguish accounts, the daemon reads the selected provider's configured CLI home. It reads Claude's `oauthAccount.emailAddress` from `.claude.json` or email claims from Codex's `auth.json` tokens, using the provider's configured `CLAUDE_CONFIG_DIR` or `CODEX_HOME`. Only matching account usage entries are used. Paseo has no Antigravity usage information, so Antigravity resumes use the reset time stated in the notice, else the 15-minute recheck; no Antigravity files are read. Tokens are not stored in jobs, logged or sent in the continue prompt.
+To distinguish accounts, the daemon reads the provider's configured CLI home. It reads Claude's `oauthAccount.emailAddress` from `.claude.json` or email claims from Codex's `auth.json` tokens, using the provider's configured `CLAUDE_CONFIG_DIR` or `CODEX_HOME`. Only matching account usage entries are used. Paseo has no Antigravity usage information, so Antigravity resumes use the reset time stated in the notice, else the 15-minute recheck; no Antigravity files are read. Tokens are not stored in jobs, logged or sent in the continue prompt.
 
 The plugin reads agent state, recent timeline notices, provider configuration and usage information through Paseo. Resume jobs are stored in:
 
@@ -71,11 +71,10 @@ The default home is `~/.paseo`. The plugin sends a fixed prompt to the existing 
 - A notice's stated reset takes priority over usage windows when scheduling. Just before sending, Claude and Codex jobs recheck usage and are postponed only while a window is still exhausted. Jobs whose usage cannot be read, and Antigravity jobs, are sent as scheduled.
 - After a daemon/plugin restart, jobs wait for a lifecycle hook or a request from the Auto Resume screen to supply the API. Due jobs then run subject to the agent checks.
 - The startup scan recovers missed limit stops only for agents active in the preceding 12 hours. Already persisted jobs can wait longer, including for a weekly reset.
-- Support is limited to the selected Claude/Codex/Antigravity provider IDs and the Paseo version range above.
+- Support is limited to providers that run Claude, Codex, or Antigravity, on Paseo 0.11.0 or later.
 
 ## Roadmap
 
-- Planned: turn automatic resume on or off per provider ([#2](https://github.com/babo-jeonguk/paseo-usage-auto-resume/issues/2))
 - Planned: support more providers, using Paseo usage information where it exists ([#3](https://github.com/babo-jeonguk/paseo-usage-auto-resume/issues/3))
 - Exploring: continue a limited task on another selected provider ([#4](https://github.com/babo-jeonguk/paseo-usage-auto-resume/issues/4))
 

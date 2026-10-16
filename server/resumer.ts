@@ -5,7 +5,8 @@ import type { RescheduleResult, ScheduledJob } from "../shared/rpc";
 import type { JobStore, ResumeJob } from "./store";
 import { usageExhausted, usageResetAt } from "./usage";
 import { GRACE_MS, MIN_DELAY_MS, rescheduleWindow } from "../shared/schedule";
-import { DEFAULT_PROVIDER_SETTINGS, sourceForProvider, type ProviderSettings, type UsageSource } from "../shared/settings";
+import { DEFAULT_PROVIDER_SETTINGS, isProviderOn, type ProviderSettings, type UsageSource } from "../shared/settings";
+import { cliFor } from "./providers";
 
 export const CONTINUE_PROMPT =
   "The provider usage limit should now be reset. Continue the unfinished work from the previous turn. " +
@@ -74,11 +75,17 @@ export function createResumer(options: {
     return (await api.agents.ref(agentId).refresh())?.agent ?? null;
   }
 
+  /** The CLI behind a provider that is turned on, or null when its agents are not resumed. */
+  async function resumableSource(api: ResumerApi, provider: string, settings: ProviderSettings): Promise<UsageSource | null> {
+    if (!isProviderOn(provider, settings)) return null;
+    return cliFor((await api.config.get()).config, provider);
+  }
+
   async function onTurnEnded(event: TurnEnded, api: ResumerApi): Promise<void> {
     const { agent } = event;
     if (event.outcome.kind === "canceled") return;
     const settings = await readSettings();
-    const source = settings && sourceForProvider(agent.provider, settings);
+    const source = settings && (await resumableSource(api, agent.provider, settings));
     if (!source) return;
     const observedAt = now();
     const stop = detectLimitStop(event.outcome, event.timeline, observedAt);
@@ -102,7 +109,7 @@ export function createResumer(options: {
   ): Promise<void> {
     const resetAt = stated ?? (await usageResetAt(api, agent.provider, source, observedAt));
     const settings = await readSettings();
-    if (!settings || sourceForProvider(agent.provider, settings) !== source) return;
+    if (!settings || !isProviderOn(agent.provider, settings)) return;
     const key = resetAt ? minuteIso(resetAt) : null;
     await store.update(agent.id, (current) => {
       if (options.onlyIfNone && current) return undefined;
@@ -141,6 +148,7 @@ export function createResumer(options: {
   async function scan(api: ResumerApi): Promise<void> {
     const settings = await readSettings();
     if (!settings) return;
+    const { config } = await api.config.get();
     const { entries } = await api.agents.list({
       filter: { statuses: ["idle", "error"] },
       sort: [{ key: "updated_at", direction: "desc" }],
@@ -148,7 +156,7 @@ export function createResumer(options: {
     });
     const since = now().getTime() - SCAN_WINDOW_MS;
     for (const { agent } of entries) {
-      const source = sourceForProvider(agent.provider, settings);
+      const source = isProviderOn(agent.provider, settings) ? cliFor(config, agent.provider) : null;
       if (!source || agent.archivedAt) continue;
       if (Date.parse(agent.updatedAt) < since) continue;
       if (agent.activeTurn || agent.pendingPermissions.length > 0 || agent.attentionReason === "permission") continue;
@@ -182,9 +190,14 @@ export function createResumer(options: {
   async function fire(job: ResumeJob, api: ResumerApi, at: Date): Promise<void> {
     const settings = await readSettings();
     if (!settings) return;
-    const source = sourceForProvider(job.provider, settings);
+    if (!isProviderOn(job.provider, settings)) {
+      await forgetTurnedOff(job);
+      return;
+    }
+    const source = cliFor((await api.config.get()).config, job.provider);
     if (!source) {
-      await forgetIfUnselected(job);
+      log(`canceled ${job.agentId}: ${job.provider} no longer runs Claude, Codex, or Antigravity`);
+      await store.update(job.agentId, (current) => (isSameJob(current, job) ? null : undefined));
       return;
     }
     if (!job.enabled) {
@@ -227,8 +240,8 @@ export function createResumer(options: {
     // row decides: the job may have been turned off while the agent was being checked.
     const currentSettings = await readSettings();
     if (!currentSettings) return;
-    if (sourceForProvider(job.provider, currentSettings) !== source) {
-      await forgetIfUnselected(job);
+    if (!isProviderOn(job.provider, currentSettings)) {
+      await forgetTurnedOff(job);
       return;
     }
     const claimed = await store.update(job.agentId, (current) =>
@@ -245,17 +258,17 @@ export function createResumer(options: {
     }
   }
 
-  async function forgetIfUnselected(job: ResumeJob): Promise<void> {
+  async function forgetTurnedOff(job: ResumeJob): Promise<void> {
     await store.update(job.agentId, (current) => (isSameJob(current, job) ? null : undefined));
-    log(`canceled ${job.agentId}: provider is no longer selected`);
+    log(`canceled ${job.agentId}: automatic resume is turned off for ${job.provider}`);
   }
 
-  /** Settings changes also retire reservations created under an earlier selection. */
+  /** Turning a provider off also retires the reservations it already has. */
   async function reconcileProviders(): Promise<void> {
     const settings = await readSettings();
     if (!settings) return;
     for (const job of await store.list()) {
-      if (job.state === "pending" && !sourceForProvider(job.provider, settings)) await forgetIfUnselected(job);
+      if (job.state === "pending" && !isProviderOn(job.provider, settings)) await forgetTurnedOff(job);
     }
   }
 

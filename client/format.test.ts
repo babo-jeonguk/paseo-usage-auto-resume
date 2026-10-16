@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { ScheduledJob } from "../shared/rpc";
+import type { DiscoveredProvider, ScheduledJob } from "../shared/rpc";
 import {
   bulkAction,
   dayChoices,
@@ -8,10 +8,12 @@ import {
   dayOffset,
   groupByDay,
   placeLabel,
+  providerHint,
   providerLabel,
   refusalLabel,
   relativeLabel,
   rescheduleProblem,
+  sortProviders,
   summaryLabels,
   timeOnDay,
 } from "./format";
@@ -68,6 +70,30 @@ test("labels for provider and place", () => {
   assert.equal(placeLabel(job({ projectName: "DoneFolio", workspaceName: "DoneFolio" })), "DoneFolio");
   assert.equal(placeLabel(job({ projectName: "DoneFolio", workspaceName: "issue-233" })), "DoneFolio · issue-233");
   assert.equal(placeLabel(job({})), null);
+});
+
+const provider = (overrides: Partial<DiscoveredProvider>): DiscoveredProvider => ({
+  id: "codex",
+  label: "Codex",
+  cli: "codex",
+  paseoEnabled: true,
+  account: null,
+  ...overrides,
+});
+
+test("a provider's switch names its ID, account, and pending reservations", () => {
+  assert.equal(providerHint(provider({ account: "me@example.com" }), 2), "codex · me@example.com · 2 pending reservations");
+  assert.equal(providerHint(provider({ id: "codex-sub" }), 1), "codex-sub · 1 pending reservation");
+  assert.equal(providerHint(provider({ paseoEnabled: false }), 0), "codex · off in Paseo");
+});
+
+test("the CLI's own provider comes first, then the rest by name", () => {
+  const sorted = sortProviders([
+    provider({ id: "codex-sub", label: "Codex Sub" }),
+    provider({ id: "codex-reserve", label: "Codex Reserve" }),
+    provider({}),
+  ]);
+  assert.deepEqual(sorted.map((entry) => entry.id), ["codex", "codex-reserve", "codex-sub"]);
 });
 
 test("a typed time lands on the chosen day in local time", () => {

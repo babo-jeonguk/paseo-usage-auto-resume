@@ -1,4 +1,4 @@
-import type { RescheduleResult, ScheduledJob } from "../shared/rpc";
+import type { DiscoveredProvider, RescheduleResult, ScheduledJob } from "../shared/rpc";
 import { rescheduleWindow } from "../shared/schedule";
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -11,6 +11,24 @@ const PROVIDER_LABELS: Record<string, string> = {
 
 export function providerLabel(provider: string): string {
   return PROVIDER_LABELS[provider] ?? provider;
+}
+
+/** The CLI's own provider first, then the ones built on it by name. */
+export function sortProviders(providers: readonly DiscoveredProvider[]): DiscoveredProvider[] {
+  const rank = (provider: DiscoveredProvider) => (provider.id === provider.cli ? 0 : 1);
+  return [...providers].sort((left, right) => rank(left) - rank(right) || left.label.localeCompare(right.label));
+}
+
+/** ID, the account it signs in as, and what is waiting on it, for a provider's switch. */
+export function providerHint(provider: DiscoveredProvider, pending: number): string {
+  return [
+    provider.id,
+    provider.account,
+    pending ? `${pending} pending reservation${pending === 1 ? "" : "s"}` : null,
+    provider.paseoEnabled ? null : "off in Paseo",
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 const pad = (value: number) => String(value).padStart(2, "0");
