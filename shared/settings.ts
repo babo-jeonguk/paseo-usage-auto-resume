@@ -1,44 +1,41 @@
 import { defineSettings } from "@getpaseo/plugin";
 import { z } from "zod";
 
-const ProviderId = z.string().trim().regex(/^[a-z][a-z0-9-]*$/, "Use a lowercase provider ID, such as claude or claude-main.");
+export type UsageSource = "claude" | "codex" | "antigravity";
+export const USAGE_SOURCES: readonly UsageSource[] = ["claude", "codex", "antigravity"];
 
-export const ProviderSettingsSchema = z
-  .object({
-    claudeProvider: ProviderId.default("claude"),
-    codexProvider: ProviderId.default("codex"),
-    antigravityProvider: ProviderId.default("antigravity"),
-  })
-  .refine((values) => values.claudeProvider !== values.codexProvider, {
-    message: "Claude and Codex must use different provider IDs.",
-    path: ["codexProvider"],
-  })
-  .refine(
-    (values) =>
-      values.antigravityProvider !== values.claudeProvider &&
-      values.antigravityProvider !== values.codexProvider,
-    {
-      message: "Antigravity must use a different provider ID from Claude and Codex.",
-      path: ["antigravityProvider"],
-    },
-  );
+export const ProviderSettingsSchema = z.object({
+  /** Providers turned off by the user; every other Claude, Codex, or Antigravity provider resumes. */
+  disabledProviders: z.array(z.string().min(1)).default([]),
+});
 
 export type ProviderSettings = z.output<typeof ProviderSettingsSchema>;
-export type UsageSource = "claude" | "codex" | "antigravity";
 export const DEFAULT_PROVIDER_SETTINGS = ProviderSettingsSchema.parse({});
+
+/** Version 1 chose one exact provider ID per CLI. Read only to tell a valid file from a damaged one. */
+const LegacyProviderId = z.string().trim().regex(/^[a-z][a-z0-9-]*$/);
+const ProviderSettingsV1Schema = z
+  .object({
+    claudeProvider: LegacyProviderId.default("claude"),
+    codexProvider: LegacyProviderId.default("codex"),
+    antigravityProvider: LegacyProviderId.default("antigravity"),
+  })
+  .refine((values) => new Set([values.claudeProvider, values.codexProvider, values.antigravityProvider]).size === 3);
 
 export const providerSettings = defineSettings({
   id: "providers",
   scope: "host",
-  // Version 1 values without antigravityProvider still parse; the schema default fills it in.
-  version: 1,
+  version: 2,
   schema: ProviderSettingsSchema,
+  // An upgraded host starts with every provider on, like a new install. A version 1 file that
+  // did not parse stays unreadable, so resumes keep waiting instead of taking the defaults.
+  migrate: (values, fromVersion) => {
+    if (fromVersion !== 1) throw new Error(`Unknown provider settings version ${fromVersion}`);
+    ProviderSettingsV1Schema.parse(values);
+    return DEFAULT_PROVIDER_SETTINGS;
+  },
 });
 
-/** Exact selection only: another alias extending the same CLI is a separate opt-in. */
-export function sourceForProvider(provider: string, settings: ProviderSettings): UsageSource | null {
-  if (provider === settings.claudeProvider) return "claude";
-  if (provider === settings.codexProvider) return "codex";
-  if (provider === settings.antigravityProvider) return "antigravity";
-  return null;
+export function isProviderOn(provider: string, settings: ProviderSettings): boolean {
+  return !settings.disabledProviders.includes(provider);
 }

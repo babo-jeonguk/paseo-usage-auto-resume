@@ -60,3 +60,21 @@ export const setAllEnabledRpc = defineRpc({
   /** How many jobs flipped. */
   output: z.object({ changed: z.number().int().nonnegative() }),
 });
+
+export const DiscoveredProviderSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  cli: z.enum(["claude", "codex", "antigravity"]),
+  /** False when the provider is turned off in Paseo itself, so it starts no agents. */
+  paseoEnabled: z.boolean(),
+  /** Email the CLI signs in as; null for Antigravity or when it cannot be read. */
+  account: z.string().nullable(),
+});
+
+export type DiscoveredProvider = z.infer<typeof DiscoveredProviderSchema>;
+
+export const listProvidersRpc = defineRpc({
+  name: "auto-resume.providers",
+  input: z.object({}),
+  output: z.object({ providers: z.array(DiscoveredProviderSchema) }),
+});

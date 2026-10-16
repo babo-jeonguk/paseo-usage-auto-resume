@@ -7,7 +7,7 @@ import type { UsageSource } from "../shared/settings";
 type UsageApi = Pick<PaseoApi, "config" | "providers">;
 type UsageEntry = Awaited<ReturnType<PaseoApi["providers"]["listUsage"]>>["providers"][number];
 type UsageWindow = UsageEntry["windows"][number];
-type DaemonConfig = Awaited<ReturnType<PaseoApi["config"]["get"]>>["config"];
+export type DaemonConfig = Awaited<ReturnType<PaseoApi["config"]["get"]>>["config"];
 
 /** The usage source that reports an agent's subscription, and the account the agent signs in as. */
 interface Account {
@@ -26,7 +26,7 @@ function providerEnv(config: DaemonConfig, provider: string): Record<string, unk
     if (visited.has(id)) throw new Error("Cyclic provider inheritance");
     visited.add(id);
     const entry = config.providers[id] as { extends?: string; env?: Record<string, unknown> } | undefined;
-    // The selected alias overrides its ancestors, just as its CLI launch does.
+    // A provider overrides its ancestors, just as its CLI launch does.
     env = { ...entry?.env, ...env };
     id = entry?.extends;
   }
@@ -84,14 +84,22 @@ async function codexEmail(codexHome: string): Promise<string | null> {
 }
 
 /** The account an agent of this provider runs under, read from the same home its CLI uses. */
-async function accountFor(paseo: UsageApi, provider: string, source: Exclude<UsageSource, "antigravity">): Promise<Account> {
-  const { config } = await paseo.config.get();
+async function accountIn(config: DaemonConfig, provider: string, source: Exclude<UsageSource, "antigravity">): Promise<Account> {
   const env = providerEnv(config, provider);
   if (source === "codex") {
     const codexHome = envValue(env, "CODEX_HOME") ?? join(homedir(), ".codex");
     return { sourceId: "codex", email: await codexEmail(codexHome) };
   }
   return { sourceId: "claude", email: await claudeEmail(envValue(env, "CLAUDE_CONFIG_DIR")) };
+}
+
+/** The email an agent of this provider signs in as, or null when it cannot be read. */
+export async function accountEmail(
+  config: DaemonConfig,
+  provider: string,
+  source: Exclude<UsageSource, "antigravity">,
+): Promise<string | null> {
+  return (await accountIn(config, provider, source)).email;
 }
 
 /**
@@ -156,7 +164,7 @@ async function accountWindows(paseo: UsageApi, provider: string, source: UsageSo
   // Paseo 0.11 has no Antigravity usage source, so only the notice can state its reset.
   if (source === "antigravity") return null;
   try {
-    const account = await accountFor(paseo, provider, source);
+    const account = await accountIn((await paseo.config.get()).config, provider, source);
     if (!account?.email) return null;
     const { providers } = await paseo.providers.listUsage();
     const entry = entryForAccount(providers, account);

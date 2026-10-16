@@ -121,6 +121,8 @@ function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOption
               env: { CLAUDE_CONFIG_DIR: options.claudeConfigDir ?? join(dir, "claude") },
             },
             "claude-sub": { extends: "claude", env: { CLAUDE_CONFIG_DIR: join(dir, "claude-sub") } },
+            "codex-reserve": { extends: "codex" },
+            "antigravity-fast": { extends: "antigravity" },
           },
         },
       }),
@@ -242,17 +244,31 @@ test("a structured limit code uses the existing usage-window fallback", async ()
   assert.equal((await store.list())[0]?.dueAt, "2026-10-06T04:02:00.000Z");
 });
 
-test("custom aliases are not automatically enabled by the public defaults", async () => {
-  const { api, sent, resumer } = await setup({ s1: { provider: "claude-sub" }, m1: { provider: "claude-main" }, r1: { provider: "codex-reserve" } });
+test("every provider built on Claude, Codex, or Antigravity resumes by default; other CLIs never do", async () => {
+  const { api, sent, resumer } = await setup({
+    s1: { provider: "claude-sub" }, m1: { provider: "claude-main" }, r1: { provider: "codex-reserve" }, o1: { provider: "opencode" },
+  });
   await resumer.onTurnEnded(turnEnded("m1", "claude-main", { kind: "completed" }, claudeNotice(CLAUDE_LIMIT)), api);
   await resumer.onTurnEnded(turnEnded("s1", "claude-sub", { kind: "completed" }, claudeNotice(CLAUDE_LIMIT)), api);
-  await resumer.onTurnEnded(turnEnded("s1", "claude-sub", failed("Claude AI usage limit reached|1791266400")), api);
   await resumer.onTurnEnded(turnEnded("r1", "codex-reserve", failed(CODEX_LIMIT)), api);
+  await resumer.onTurnEnded(turnEnded("o1", "opencode", failed(CODEX_LIMIT)), api);
 
-  assert.deepEqual(await store.list(), []);
+  assert.deepEqual((await store.list()).map((job) => job.agentId).sort(), ["m1", "r1", "s1"]);
   advance(24 * 60 * MINUTE);
   await resumer.tick();
-  assert.deepEqual(sent, []);
+  assert.deepEqual(sent.map((message) => message.agentId).sort(), ["m1", "r1", "s1"]);
+});
+
+test("a provider turned off is not scheduled, even when another provider shares its account", async () => {
+  const { api, sent, resumer } = await setup({ c1: { provider: "codex" }, r1: { provider: "codex-reserve" } }, {
+    readSettings: async () => ({ disabledProviders: ["codex-reserve"] }),
+  });
+  await resumer.onTurnEnded(turnEnded("c1", "codex", failed(CODEX_LIMIT)), api);
+  await resumer.onTurnEnded(turnEnded("r1", "codex-reserve", failed(CODEX_LIMIT)), api);
+  assert.deepEqual((await store.list()).map((job) => job.agentId), ["c1"]);
+  advance(24 * 60 * MINUTE);
+  await resumer.tick();
+  assert.deepEqual(sent.map((message) => message.agentId), ["c1"]);
 });
 
 test("the same failure is scheduled once", async () => {
@@ -447,10 +463,13 @@ test("startup scan finds a Claude closing notice and ignores everything else", a
       i1: { provider: "codex", status: "error", lastError: CODEX_LIMIT, updatedAt: "2026-10-05T15:15:00.000Z" },
       p1: { provider: "codex", status: "error", lastError: CODEX_LIMIT, updatedAt: recent, attentionReason: "permission" },
     },
-    { timelines: { m1: claudeNotice(CLAUDE_LIMIT), s1: claudeNotice(CLAUDE_LIMIT) } },
+    {
+      timelines: { m1: claudeNotice(CLAUDE_LIMIT), s1: claudeNotice(CLAUDE_LIMIT) },
+      readSettings: async () => ({ disabledProviders: ["claude-sub"] }),
+    },
   );
   const jobs = await store.list();
-  // o1 stopped 12h05m before the scan, i1 11h55m before: only the 12-hour window counts.
+  // s1's provider is turned off. o1 stopped 12h05m before the scan, i1 11h55m before: only the 12-hour window counts.
   assert.deepEqual(jobs.map((job) => job.agentId), ["m1", "i1"]);
   assert.equal(jobs[0]?.dueAt, "2026-10-06T06:02:00.000Z");
 });
@@ -526,13 +545,11 @@ test("jobs saved before the toggle existed load as turned on", async () => {
   assert.equal((await store.list())[0]?.enabled, true);
 });
 
-const LOCAL_PROVIDERS: ProviderSettings = {
-  claudeProvider: "claude-main",
-  codexProvider: "codex",
-  antigravityProvider: "antigravity",
-};
+/** This host resumes Claude only through Claude Main. */
+const LOCAL_PROVIDERS: ProviderSettings = { disabledProviders: ["claude", "claude-sub"] };
+const CLAUDE_MAIN_OFF: ProviderSettings = { disabledProviders: ["claude-main"] };
 
-test("a local Claude Main selection resumes only that alias using its own account windows", async () => {
+test("with only Claude Main on, only it resumes, using its own account windows", async () => {
   const { api, sent, resumer } = await setup({
     m1: { provider: "claude-main" }, c1: { provider: "claude" }, s1: { provider: "claude-sub" },
   }, {
@@ -554,7 +571,7 @@ test("a local Claude Main selection resumes only that alias using its own accoun
   assert.deepEqual(sent.map((message) => message.agentId), ["m1"]);
 });
 
-test("startup recovery understands the selected Claude alias's closing notice", async () => {
+test("startup recovery understands Claude Main's closing notice", async () => {
   await setup({ m1: { provider: "claude-main" } }, {
     readSettings: async () => LOCAL_PROVIDERS,
     timelines: { m1: claudeNotice(CLAUDE_LIMIT) },
@@ -562,11 +579,57 @@ test("startup recovery understands the selected Claude alias's closing notice", 
   assert.equal((await store.list())[0]?.dueAt, "2026-10-06T06:02:00.000Z");
 });
 
-test("saving a new provider selection cancels reservations for removed providers", async () => {
+test("turning a provider off cancels its pending reservations, including ones turned off in the list", async () => {
+  let selection = DEFAULT_PROVIDER_SETTINGS;
+  const { api, sent, resumer } = await setup(
+    { m1: { provider: "claude-main" }, m2: { provider: "claude-main" }, c1: { provider: "codex" } },
+    { readSettings: async () => selection },
+  );
+  await resumer.onTurnEnded(turnEnded("m1", "claude-main", failed(CLAUDE_LIMIT)), api);
+  await resumer.onTurnEnded(turnEnded("m2", "claude-main", failed(CLAUDE_LIMIT)), api);
+  await resumer.onTurnEnded(turnEnded("c1", "codex", failed(CODEX_LIMIT)), api);
+  const m2 = (await store.list()).find((job) => job.agentId === "m2")!;
+  assert.equal(await resumer.setEnabled("m2", m2.dueAt, false), true);
+  selection = CLAUDE_MAIN_OFF;
+  await resumer.reconcileProviders();
+  assert.deepEqual((await store.list()).map((job) => job.agentId), ["c1"]);
+  selection = DEFAULT_PROVIDER_SETTINGS;
+  advance(24 * 60 * MINUTE);
+  await resumer.tick();
+  assert.deepEqual(sent.map((message) => message.agentId), ["c1"]);
+});
+
+test("turning a provider back on restores nothing; its next limit stop is scheduled", async () => {
+  let selection = CLAUDE_MAIN_OFF;
+  const { api, resumer } = await setup({ m1: { provider: "claude-main" } }, { readSettings: async () => selection });
+  await resumer.onTurnEnded(turnEnded("m1", "claude-main", failed(CLAUDE_LIMIT)), api);
+  assert.deepEqual(await store.list(), []);
+  selection = DEFAULT_PROVIDER_SETTINGS;
+  await resumer.reconcileProviders();
+  assert.deepEqual(await store.list(), []);
+  await resumer.onTurnEnded(turnEnded("m1", "claude-main", failed(CLAUDE_LIMIT)), api);
+  assert.equal((await store.list())[0]?.agentId, "m1");
+});
+
+test("a reservation whose provider no longer runs a supported CLI is canceled at its time", async () => {
+  const { api, sent, resumer } = await setup({ r1: { provider: "codex-reserve" } });
+  await resumer.onTurnEnded(turnEnded("r1", "codex-reserve", failed(CODEX_LIMIT)), api);
+  const config = api.config.get;
+  api.config.get = async () => {
+    const current = await config();
+    return { ...current, config: { ...current.config, providers: { ...current.config.providers, "codex-reserve": { extends: "opencode" } } } } as Awaited<ReturnType<typeof config>>;
+  };
+  advance(24 * 60 * MINUTE);
+  await resumer.tick();
+  assert.deepEqual(sent, []);
+  assert.deepEqual(await store.list(), []);
+});
+
+test("saving with a provider turned off cancels its reservations", async () => {
   let selection = LOCAL_PROVIDERS;
   const { api, sent, resumer } = await setup({ m1: { provider: "claude-main" } }, { readSettings: async () => selection });
   await resumer.onTurnEnded(turnEnded("m1", "claude-main", failed(CLAUDE_LIMIT)), api);
-  selection = DEFAULT_PROVIDER_SETTINGS;
+  selection = CLAUDE_MAIN_OFF;
   await resumer.reconcileProviders();
   assert.deepEqual(await store.list(), []);
   advance(24 * 60 * MINUTE);
@@ -574,18 +637,18 @@ test("saving a new provider selection cancels reservations for removed providers
   assert.deepEqual(sent, []);
 });
 
-test("delivery checks the latest selection even when a settings notification was missed", async () => {
+test("delivery checks the latest settings even when a settings notification was missed", async () => {
   let selection = LOCAL_PROVIDERS;
   const { api, sent, resumer } = await setup({ m1: { provider: "claude-main" } }, { readSettings: async () => selection });
   await resumer.onTurnEnded(turnEnded("m1", "claude-main", failed(CLAUDE_LIMIT)), api);
-  selection = DEFAULT_PROVIDER_SETTINGS;
+  selection = CLAUDE_MAIN_OFF;
   advance(3 * 60 * MINUTE + 2 * MINUTE);
   await resumer.tick();
   assert.deepEqual(sent, []);
   assert.deepEqual(await store.list(), []);
 });
 
-test("unreadable settings pause saved jobs and never fall back to different providers", async () => {
+test("unreadable settings pause saved jobs and never fall back to the defaults", async () => {
   let selection: ProviderSettings | null = LOCAL_PROVIDERS;
   const { api, sent, resumer } = await setup({ m1: { provider: "claude-main" }, c1: { provider: "claude" } }, { readSettings: async () => selection });
   await resumer.onTurnEnded(turnEnded("m1", "claude-main", failed(CLAUDE_LIMIT)), api);
@@ -601,7 +664,7 @@ test("unreadable settings pause saved jobs and never fall back to different prov
   assert.deepEqual(sent.map((message) => message.agentId), ["m1"]);
 });
 
-test("provider selection is checked again if it changes while the due agent is loaded", async () => {
+test("the provider's switch is checked again if it changes while the due agent is loaded", async () => {
   let selection = LOCAL_PROVIDERS;
   const { api, sent, resumer } = await setup({ m1: { provider: "claude-main" } }, { readSettings: async () => selection });
   await resumer.onTurnEnded(turnEnded("m1", "claude-main", failed(CLAUDE_LIMIT)), api);
@@ -610,7 +673,7 @@ test("provider selection is checked again if it changes while the due agent is l
     const handle = originalRef(id);
     return Object.assign(handle, {
       refresh: async () => {
-        selection = DEFAULT_PROVIDER_SETTINGS;
+        selection = CLAUDE_MAIN_OFF;
         return { agent: { id, provider: "claude-main", status: "idle", lastUserMessageAt: "2026-10-06T02:00:00.000Z", pendingPermissions: [] }, project: null };
       },
     });
@@ -621,7 +684,7 @@ test("provider selection is checked again if it changes while the due agent is l
   assert.deepEqual(await store.list(), []);
 });
 
-test("the selected alias inherits the base CLI home unless it overrides it", async () => {
+test("a provider built on Claude inherits its CLI home unless it overrides it", async () => {
   const { api, resumer } = await setup({ m1: { provider: "claude-main" } }, {
     readSettings: async () => LOCAL_PROVIDERS,
     claudeAliasEnv: {},
@@ -631,7 +694,7 @@ test("the selected alias inherits the base CLI home unless it overrides it", asy
   assert.equal((await store.list())[0]?.resetAt, "2026-10-06T04:00:00.000Z");
 });
 
-test("the selected alias's own CLI home takes precedence over the base home", async () => {
+test("a provider's own CLI home takes precedence over the base home", async () => {
   const { api, resumer } = await setup({ m1: { provider: "claude-main" } }, {
     readSettings: async () => LOCAL_PROVIDERS,
     claudeAliasEnv: { CLAUDE_CONFIG_DIR: join(dir, "claude-sub") },
@@ -691,12 +754,8 @@ test("startup scan schedules an Antigravity agent that hit its limit before the 
   assert.equal(job?.resetAt, "2026-10-06T04:50:00.000Z");
 });
 
-test("a custom Antigravity alias selection resumes only that alias", async () => {
-  const customSettings: ProviderSettings = {
-    claudeProvider: "claude",
-    codexProvider: "codex",
-    antigravityProvider: "antigravity-fast",
-  };
+test("an Antigravity provider can be turned off while another built on it resumes", async () => {
+  const customSettings: ProviderSettings = { disabledProviders: ["antigravity"] };
   const { api, resumer } = await setup(
     {
       g1: { provider: "antigravity-fast" },

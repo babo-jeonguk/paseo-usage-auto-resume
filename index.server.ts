@@ -1,7 +1,8 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { discoverProviders } from "./server/providers";
 import { createResumer } from "./server/resumer";
 import { createJobStore } from "./server/store";
-import { listScheduledRpc, rescheduleRpc, setAllEnabledRpc, setEnabledRpc } from "./shared/rpc";
+import { listProvidersRpc, listScheduledRpc, rescheduleRpc, setAllEnabledRpc, setEnabledRpc } from "./shared/rpc";
 import { providerSettings } from "./shared/settings";
 
 const TICK_MS = 30_000;
@@ -43,6 +44,10 @@ export default function contribute(server: PluginServerContext) {
   server.handle(listScheduledRpc, async (_input, { paseo }) => {
     void resumer.attach(paseo);
     return { jobs: await resumer.listScheduled(paseo) };
+  });
+  server.handle(listProvidersRpc, async (_input, { paseo }) => {
+    void resumer.attach(paseo);
+    return { providers: await discoverProviders(paseo) };
   });
   server.handle(setEnabledRpc, async ({ agentId, dueAt, enabled }, { paseo }) => {
     void resumer.attach(paseo);
