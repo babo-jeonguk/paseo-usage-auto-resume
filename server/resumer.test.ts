@@ -9,6 +9,8 @@ import type { PluginLifecycleEvents, PluginTurnOutcome } from "@getpaseo/plugin/
 import { CONTINUE_PROMPT, createResumer, type ResumerApi } from "./resumer";
 import { createJobStore, type JobStore } from "./store";
 import { DEFAULT_PROVIDER_SETTINGS, type ProviderSettings } from "../shared/settings";
+import { accountEmail } from "./usage";
+import { createSubscriptionReader, unknownCheck, type SubscriptionCheck, type SubscriptionReader } from "./subscription";
 
 const START = new Date("2026-10-06T03:00:00.000Z");
 const MINUTE = 60_000;
@@ -56,6 +58,7 @@ const advance = (ms: number) => {
 };
 
 interface FakeOptions {
+  readSubscription?: SubscriptionReader;
   timelines?: Record<string, AgentTimelineItem[]>;
   usage?: Array<{ providerId: string; displayName: string; status?: string; windows: Array<Record<string, unknown>> }>;
   /** Runs while usage is being read, as a concurrent change would. */
@@ -143,7 +146,19 @@ function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOption
       },
     },
   } as unknown as ResumerApi;
-  return { api, sent, usageReads: () => usageReads };
+  const readSubscription: SubscriptionReader = options.readSubscription ?? (async (_api, agent, source) => {
+    if (source === "antigravity") return { auth: "subscription", status: "ready", identity: "fake-agy-account-model" };
+    const email = await accountEmail((await api.config.get()).config, agent.provider, source);
+    if (!email) return unknownCheck();
+    const identity = `${source}:${email}`;
+    if (options.usage === undefined && !options.duringListUsage) return { auth: "subscription", status: "ready", identity };
+    const result = await api.providers.listUsage();
+    const entry = result.providers.find((e) => e.providerId === source && e.displayName.toLowerCase().endsWith(` (${email.toLowerCase()})`));
+    if (!entry || entry.status !== "available" || !entry.windows.length) return { auth: "subscription", status: "unknown", identity };
+    const windows = entry.windows.map((w) => ({ id: w.id, usedPct: w.usedPct ?? 100 - (w.remainingPct ?? 0), resetAt: w.resetsAt ?? null }));
+    return { auth: "subscription", status: windows.some((w) => w.usedPct >= 100) ? "limited" : "ready", identity, windows };
+  });
+  return { api, sent, readSubscription, usageReads: () => usageReads };
 }
 
 function turnEnded(
@@ -170,7 +185,7 @@ const claudeNotice = (text: string): AgentTimelineItem[] => [
 async function setup(agents: Record<string, Partial<PaseoAgent>>, options?: FakeOptions) {
   const map = new Map(Object.entries(agents));
   const fake = fakePaseo(map, options);
-  const resumer = createResumer({ store, now: () => clock, readSettings: options?.readSettings });
+  const resumer = createResumer({ store, now: () => clock, readSettings: options?.readSettings, readSubscription: fake.readSubscription });
   await resumer.attach(fake.api);
   return { ...fake, agents: map, resumer };
 }
@@ -355,6 +370,7 @@ test("without a reset in the notice, the account's 5-hour usage window is used",
   assert.equal((await store.list())[0]?.dueAt, "2026-10-06T04:32:12.345Z");
 
   clock = new Date("2026-10-06T04:32:12.345Z");
+  usage[0]!.windows[0]!.usedPct = 0;
   await resumer.tick();
   assert.equal(sent.length, 1);
 });
@@ -396,6 +412,7 @@ test("an unknown reset rechecks in 15 minutes and follows a window that appeared
   assert.equal((await store.list())[0]?.dueAt, "2026-10-06T05:02:00.000Z");
 
   clock = new Date("2026-10-06T05:02:00.000Z");
+  usage[0]!.windows[0]!.usedPct = 0;
   await resumer.tick();
   assert.equal(sent.length, 1);
 });
@@ -405,7 +422,7 @@ test("the schedule survives a restart and runs once a hook supplies the API", as
   await first.resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), first.api);
 
   advance(5 * 60 * MINUTE);
-  const restarted = createResumer({ store: createJobStore(join(dir, "jobs.json")), now: () => clock });
+  const restarted = createResumer({ store: createJobStore(join(dir, "jobs.json")), now: () => clock, readSubscription: first.readSubscription });
   await restarted.recover();
   await restarted.tick();
   assert.deepEqual(first.sent, [], "no API before a hook");
@@ -550,14 +567,15 @@ const LOCAL_PROVIDERS: ProviderSettings = { disabledProviders: ["claude", "claud
 const CLAUDE_MAIN_OFF: ProviderSettings = { disabledProviders: ["claude-main"] };
 
 test("with only Claude Main on, only it resumes, using its own account windows", async () => {
+  const usage = [
+    { providerId: "claude", displayName: `Claude (${SUB_EMAIL})`, windows: [{ id: "five_hour", usedPct: 100, resetsAt: "2026-10-06T04:00:00.000Z" }] },
+    { providerId: "claude", displayName: `Claude (${MAIN_EMAIL})`, windows: [{ id: "seven_day", usedPct: 100, resetsAt: "2026-10-09T00:00:00.000Z" }] },
+  ];
   const { api, sent, resumer } = await setup({
     m1: { provider: "claude-main" }, c1: { provider: "claude" }, s1: { provider: "claude-sub" },
   }, {
     readSettings: async () => LOCAL_PROVIDERS,
-    usage: [
-      { providerId: "claude", displayName: `Claude (${SUB_EMAIL})`, windows: [{ id: "five_hour", usedPct: 100, resetsAt: "2026-10-06T04:00:00.000Z" }] },
-      { providerId: "claude", displayName: `Claude (${MAIN_EMAIL})`, windows: [{ id: "seven_day", usedPct: 100, resetsAt: "2026-10-09T00:00:00.000Z" }] },
-    ],
+    usage,
   });
   for (const [id, provider] of [["m1", "claude-main"], ["c1", "claude"], ["s1", "claude-sub"]]) {
     await resumer.onTurnEnded(turnEnded(id!, provider!, failed("Usage limit reached")), api);
@@ -567,6 +585,7 @@ test("with only Claude Main on, only it resumes, using its own account windows",
   assert.equal(job?.agentId, "m1");
   assert.equal(job?.dueAt, "2026-10-09T00:02:00.000Z");
   advance(Date.parse(job!.dueAt) - clock.getTime());
+  usage[1]!.windows[0]!.usedPct = 0;
   await resumer.tick();
   assert.deepEqual(sent.map((message) => message.agentId), ["m1"]);
 });
@@ -794,7 +813,7 @@ test("a weekly window still used up at send time postpones the continue to its r
   assert.equal(job?.enabled, true);
   assert.equal(job?.state, "pending");
 
-  usage.length = 0;
+  usage[0]!.windows[1]!.usedPct = 0;
   clock = new Date("2026-10-09T00:02:00.000Z");
   await resumer.tick();
   await resumer.tick();
@@ -817,6 +836,7 @@ test("a Codex 5-hour window still used up at send time postpones the continue to
   assert.equal(job?.dueAt, "2026-10-06T07:32:00.000Z");
 
   clock = new Date("2026-10-06T07:32:00.000Z");
+  usage[0]!.windows[0]!.usedPct = 0;
   await resumer.tick();
   assert.equal(sent.length, 1, "the window has renewed by its own reset");
 });
@@ -833,7 +853,7 @@ test("a 5-hour window that renews later but is not used up does not hold the con
   assert.equal(sent.length, 1);
 });
 
-test("usage that cannot be read at send time does not hold the continue", async () => {
+test("missing, unavailable and other-account usage hold the continue", async () => {
   const exhausted = [{ id: "five_hour", label: "5-hour", usedPct: 100, resetsAt: "2026-10-06T09:00:00.000Z" }];
   for (const [name, usage] of [
     ["no entries", []],
@@ -845,7 +865,8 @@ test("usage that cannot be read at send time does not hold the continue", async 
     await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
     clock = new Date("2026-10-06T05:02:00.000Z");
     await resumer.tick();
-    assert.equal(sent.length, 1, name);
+    assert.equal(sent.length, 0, name);
+    assert.equal((await store.list())[0]?.waiting, "usage");
     await store.update("a1", () => null);
   }
 });
@@ -1003,4 +1024,106 @@ test("turning all off or on changes only the pending jobs the screen showed", as
 
   assert.equal(await resumer.setAllEnabled(true, shown), 1);
   assert.deepEqual(await enabled(), { a1: true, a2: true, a3: true });
+});
+
+test("a usage lookup failure never authorizes an automatic continue", async () => {
+  const { api, sent, resumer } = await setup({ a1: { provider: "codex" } }, {
+    duringListUsage: async () => { throw new Error("usage service offline"); },
+  });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  advance(3 * 60 * MINUTE);
+  await resumer.tick();
+  assert.deepEqual(sent, []);
+  assert.equal((await store.list())[0]?.state, "pending");
+});
+
+test("API auth never schedules even an explicit provider limit code", async () => {
+  const { api, resumer } = await setup({ a1: { provider: "codex" } }, {
+    readSubscription: async () => ({ auth: "api", status: "unknown" }),
+  });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", { kind: "failed", error: { code: "usage_limit_reached", message: CODEX_LIMIT } }), api);
+  assert.deepEqual(await store.list(), []);
+});
+
+test("a generic limit code without reset or observed quota never becomes a ready retry", async () => {
+  const { api, resumer, sent } = await setup({ a1: { provider: "codex" } }, {
+    readSubscription: async () => ({ auth: "subscription", status: "ready", identity: "account-model" }),
+  });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", { kind: "failed", error: { code: "usage_limit_reached", message: "Request rejected" } }), api);
+  advance(15 * MINUTE);
+  await resumer.tick();
+  assert.deepEqual(sent, []);
+  assert.equal((await store.list())[0]?.waiting, "usage");
+});
+
+test("unknown auth holds a notice with a reset instead of using its clock as authorization", async () => {
+  const { api, resumer, sent } = await setup({ a1: { provider: "codex" } }, { readSubscription: async () => unknownCheck() });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  assert.equal((await store.list())[0]?.resetAt, null);
+  assert.equal((await store.list())[0]?.waiting, "auth");
+  advance(4 * 60 * MINUTE);
+  await resumer.tick();
+  assert.deepEqual(sent, []);
+  assert.equal((await store.list())[0]?.attempts, 0, "status checks are not model retries");
+});
+
+test("credit recovery requires positive readiness, not unrelated quota percentages", async () => {
+  let check: SubscriptionCheck = { auth: "subscription", status: "credits", identity: "workspace-model", windows: [{ id: "unrelated", usedPct: 100, resetAt: "2026-10-06T04:00:00Z" }] };
+  const { api, resumer, sent } = await setup({ a1: { provider: "codex" } }, { readSubscription: async () => check });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed("Your workspace is out of credits. Ask your workspace owner to refill in order to continue.")), api);
+  assert.equal((await store.list())[0]?.resetAt, null);
+  assert.equal((await store.list())[0]?.waiting, "credits");
+  clock = new Date("2026-10-06T04:02:00Z");
+  check = { ...check, status: "ready", windows: [] };
+  await resumer.tick();
+  assert.deepEqual(sent, [], "ordinary ready alone does not clear a credit block");
+  check = { ...check, creditRecovery: true };
+  advance(15 * MINUTE);
+  await resumer.tick();
+  await resumer.tick();
+  assert.equal(sent.length, 1);
+});
+
+test("changing workspace or model identity cancels a pending reservation", async () => {
+  let identity = "original-workspace-model";
+  const { api, resumer, sent } = await setup({ a1: { provider: "codex" } }, {
+    readSubscription: async () => ({ auth: "subscription", status: "ready", identity }),
+  });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  identity = "same-email-different-workspace-model";
+  advance(3 * 60 * MINUTE);
+  await resumer.tick();
+  assert.deepEqual(sent, []);
+  assert.deepEqual(await store.list(), []);
+});
+
+test("Business raw response goes through auth, exact-model reset, persisted restart and recovery once", async () => {
+  const home = join(dir, "codex");
+  await signIn(home, "auth.json", { auth_mode: "chatgpt", tokens: { access_token: "private-access-token", account_id: "business-workspace" } });
+  let available = false;
+  const readSubscription = createSubscriptionReader({
+    codex: async () => ({ account: { account: { type: "chatgpt" } }, config: { config: { model_provider: "openai" } } }),
+    fetch: async () => new Response(JSON.stringify({
+      account_id: "business-workspace", rate_limit_reached_type: { type: "workspace_member_credits_depleted" },
+      spend_control: { reached: false }, credits: { has_credits: false },
+      rate_limit: { primary_window: { used_percent: 100, reset_at: 1792160062 } },
+      model_usage: { "gpt-6-astra": { available, available_at: "2026-10-06T04:00:22Z", credits_would_enable: true } },
+    })),
+  });
+  const { api, resumer, sent } = await setup({ a1: { provider: "codex", model: "gpt-6-astra" } }, { readSubscription });
+  resumer.rememberSession({ agentId: "a1", workspaceId: null, provider: "codex", cwd: "/repo", reason: "create", purpose: "interactive", env: { CODEX_HOME: home } });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed("Your workspace is out of credits. Ask your workspace owner to refill in order to continue.")), api);
+  const [job] = await store.list();
+  assert.equal(job?.resetAt, "2026-10-06T04:00:22.000Z");
+  assert.equal(job?.dueAt, "2026-10-06T04:02:22.000Z");
+  assert.doesNotMatch(JSON.stringify(job), /private-access-token/);
+  const restarted = createResumer({ store, now: () => clock, readSubscription });
+  clock = new Date("2026-10-06T04:02:22Z");
+  await restarted.attach(api);
+  assert.deepEqual(sent, [], "timestamp passing is not recovery");
+  available = true;
+  advance(15 * MINUTE);
+  await restarted.tick();
+  await restarted.tick();
+  assert.equal(sent.length, 1);
 });

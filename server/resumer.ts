@@ -1,9 +1,9 @@
 import type { AgentTimelineItem, PaseoAgent, PaseoApi } from "./paseo-types";
-import type { PluginLifecycleEvents } from "@getpaseo/plugin/server";
+import type { PluginLifecycleEvents, PluginSessionOpenRequest } from "@getpaseo/plugin/server";
 import { detectLimitStop } from "./limit";
 import type { RescheduleResult, ScheduledJob } from "../shared/rpc";
 import type { JobStore, ResumeJob } from "./store";
-import { usageExhausted, usageResetAt } from "./usage";
+import { captureLaunch, createSubscriptionReader, unknownCheck, type LaunchContext, type SubscriptionCheck, type SubscriptionReader } from "./subscription";
 import { GRACE_MS, MIN_DELAY_MS, rescheduleWindow } from "../shared/schedule";
 import { DEFAULT_PROVIDER_SETTINGS, isProviderOn, type ProviderSettings, type UsageSource } from "../shared/settings";
 import { cliFor } from "./providers";
@@ -17,7 +17,7 @@ export const CONTINUE_PROMPT =
   "If an existing subagent cannot be resumed, report that blocker instead of silently abandoning its unfinished task.";
 
 const UNKNOWN_RECHECK_MS = 15 * 60_000;
-/** Stops a limit that never renews from being retried forever (6 hours of rechecks). */
+/** Bounds actual automatic continues; read-only verification checks do not consume retries. */
 const MAX_ATTEMPTS = 24;
 /** Startup scan looks at agents active this recently; older stops are left to the user. */
 const SCAN_WINDOW_MS = 12 * 3_600_000;
@@ -31,7 +31,13 @@ function log(message: string): void {
 }
 
 function minuteIso(date: Date): string {
-  return new Date(Math.round(date.getTime() / 60_000) * 60_000).toISOString();
+  return date.toISOString();
+}
+
+function exhaustedReset(check: SubscriptionCheck, at: Date): Date | null {
+  const times = (check.windows ?? []).filter((w) => w.usedPct >= 100).map((w) => w.resetAt ? Date.parse(w.resetAt) : NaN);
+  // Every applicable exhausted window must have a known future reset.
+  return times.length && times.every((time) => Number.isFinite(time) && time > at.getTime()) ? new Date(Math.max(...times)) : null;
 }
 
 function dueFor(resetAt: Date | null, now: Date): string {
@@ -64,12 +70,23 @@ export function createResumer(options: {
   now?: () => Date;
   /** Null means unreadable settings: wait instead of enabling the public defaults. */
   readSettings?: () => Promise<ProviderSettings | null>;
+  readSubscription?: SubscriptionReader;
 }) {
   const { store } = options;
   const now = options.now ?? (() => new Date());
   const readSettings = options.readSettings ?? (async () => DEFAULT_PROVIDER_SETTINGS);
   let paseo: ResumerApi | null = null;
   let ticking = false;
+  const launches = new Map<string, LaunchContext>();
+  const readSubscription = options.readSubscription ?? createSubscriptionReader();
+  const inspect = async (api: ResumerApi, agent: PaseoAgent, source: UsageSource, at: Date, launch?: LaunchContext) => {
+    try { return await readSubscription(api, agent, source, at, launch); }
+    catch { return unknownCheck(); }
+  };
+
+  function rememberSession(request: PluginSessionOpenRequest): void {
+    if (request.purpose === "interactive") launches.set(request.agentId, captureLaunch(request));
+  }
 
   async function loadAgent(api: ResumerApi, agentId: string): Promise<PaseoAgent | null> {
     return (await api.agents.ref(agentId).refresh())?.agent ?? null;
@@ -96,7 +113,7 @@ export function createResumer(options: {
     }
     const snapshot = await loadAgent(api, agent.id);
     if (!snapshot) return;
-    await schedule(api, snapshot, source, stop.resetAt, observedAt, { onlyIfNone: false });
+    await schedule(api, snapshot, source, stop.resetAt, observedAt, { onlyIfNone: false }, stop.kind);
   }
 
   async function schedule(
@@ -106,14 +123,26 @@ export function createResumer(options: {
     stated: Date | null,
     observedAt: Date,
     options: { onlyIfNone: boolean },
+    kind?: "credits",
   ): Promise<void> {
-    const resetAt = stated ?? (await usageResetAt(api, agent.provider, source, observedAt));
+    const previous = (await store.list()).find((job) => job.agentId === agent.id);
+    if (options.onlyIfNone && previous) return;
+    const launch = launches.get(agent.id) ?? previous?.launch;
+    const check = await inspect(api, agent, source, now(), launch);
+    if (check.auth === "api") { await forget(agent.id); return; }
+    const creditBlocked = kind === "credits" || check.status === "credits";
+    const resetAt = check.auth === "subscription"
+      ? (check.status === "credits" ? null : (creditBlocked ? exhaustedReset(check, now()) : stated ?? exhaustedReset(check, now())))
+      : null;
+    const waiting = check.auth !== "subscription" ? "auth" as const
+      : creditBlocked && !resetAt ? "credits" as const
+      : check.status === "unknown" || !resetAt ? "usage" as const : undefined;
     const settings = await readSettings();
     if (!settings || !isProviderOn(agent.provider, settings)) return;
     const key = resetAt ? minuteIso(resetAt) : null;
     await store.update(agent.id, (current) => {
       if (options.onlyIfNone && current) return undefined;
-      if (current?.state === "pending" && current.resetAt === key) return undefined;
+      if (current?.state === "pending" && current.resetAt === key && current.waiting === waiting) return undefined;
       const attempts = current && current.state !== "pending" ? current.attempts + 1 : (current?.attempts ?? 0);
       if (attempts >= MAX_ATTEMPTS) {
         log(`gave up on ${agent.id} after ${attempts} automatic continues hit a limit again`);
@@ -128,6 +157,11 @@ export function createResumer(options: {
         attempts,
         state: "pending",
         enabled: true,
+        reason: creditBlocked ? "credits" : "quota",
+        renewable: check.auth === "subscription" && (!!stated || check.status === "limited"),
+        waiting,
+        identity: check.identity,
+        launch,
       };
       log(`scheduled ${agent.id} (${agent.provider}) for ${job.dueAt}; reset ${key ?? "unknown"}`);
       return job;
@@ -167,7 +201,7 @@ export function createResumer(options: {
       } else if (source === "claude") {
         stop = detectLimitStop({ kind: "completed" }, await timelineTail(api, agent.id), observedAt);
       }
-      if (stop) await schedule(api, agent, source, stop.resetAt, observedAt, { onlyIfNone: true });
+      if (stop) await schedule(api, agent, source, stop.resetAt, observedAt, { onlyIfNone: true }, stop.kind);
     }
   }
 
@@ -181,11 +215,13 @@ export function createResumer(options: {
   }
 
   async function forget(agentId: string): Promise<void> {
+    launches.delete(agentId);
     await store.update(agentId, () => null);
   }
 
   const isSameJob = (left: ResumeJob | null, right: ResumeJob) =>
-    left !== null && left.state === right.state && left.dueAt === right.dueAt && left.resetAt === right.resetAt;
+    left !== null && left.state === right.state && left.dueAt === right.dueAt && left.resetAt === right.resetAt &&
+    left.identity === right.identity && left.reason === right.reason && left.waiting === right.waiting && left.baseline === right.baseline && left.renewable === right.renewable;
 
   async function fire(job: ResumeJob, api: ResumerApi, at: Date): Promise<void> {
     const settings = await readSettings();
@@ -212,29 +248,26 @@ export function createResumer(options: {
       await store.update(job.agentId, (current) => (isSameJob(current, job) ? null : undefined));
       return;
     }
-    if (job.resetAt === null) {
-      const resetAt = await usageResetAt(api, job.provider, source, at);
-      if (resetAt) {
-        await store.update(job.agentId, (current) =>
-          current && isSameJob(current, job)
-            ? { ...current, resetAt: minuteIso(resetAt), dueAt: dueFor(resetAt, at) }
-            : undefined,
-        );
-        log(`rescheduled ${job.agentId} for its usage reset at ${minuteIso(resetAt)}`);
-        return;
-      }
-    } else {
-      // The notice may name only one window; another (often the weekly one) can still be used up.
-      const exhausted = await usageExhausted(api, job.provider, source, at);
-      if (exhausted) {
-        const resetAt = minuteIso(exhausted.resetAt);
-        await store.update(job.agentId, (current) => {
-          if (!current || !isSameJob(current, job) || !current.enabled) return undefined;
-          log(`postponed ${job.agentId}: usage still exhausted until ${resetAt} (was ${job.resetAt}; window ${exhausted.id})`);
-          return { ...current, resetAt, dueAt: dueFor(exhausted.resetAt, at) };
-        });
-        return;
-      }
+    const check = await inspect(api, agent!, source, at, launches.get(job.agentId) ?? job.launch);
+    if (check.auth === "api" || (job.identity && check.identity && job.identity !== check.identity)) {
+      await store.update(job.agentId, (current) => isSameJob(current, job) ? null : undefined);
+      log(`canceled ${job.agentId}: authentication, account or model changed`);
+      return;
+    }
+    const ready = check.auth === "subscription" && check.status === "ready" && !!check.identity &&
+      (job.reason === "credits" ? check.creditRecovery === true : job.renewable === true);
+    if (!ready) {
+      const reset = check.auth === "subscription" && check.status === "limited" ? exhaustedReset(check, at) : null;
+      const waiting = check.auth !== "subscription" ? "auth" as const
+        : check.status === "credits" || job.reason === "credits" && !reset ? "credits" as const
+        : "usage" as const;
+      await store.update(job.agentId, (current) => current && isSameJob(current, job) && current.enabled ? {
+        ...current, resetAt: reset?.toISOString() ?? null, dueAt: dueFor(reset, at),
+        waiting: reset ? undefined : waiting, identity: current.identity ?? check.identity,
+        reason: check.status === "credits" ? "credits" : current.reason,
+        renewable: current.renewable || check.auth === "subscription" && check.status === "limited",
+      } : undefined);
+      return;
     }
     // Claim before sending so a crash mid-send never delivers a second continue. The current
     // row decides: the job may have been turned off while the agent was being checked.
@@ -245,7 +278,7 @@ export function createResumer(options: {
       return;
     }
     const claimed = await store.update(job.agentId, (current) =>
-      current && isSameJob(current, job) && current.enabled ? { ...current, state: "sending" } : undefined,
+      current && isSameJob(current, job) && current.enabled ? { ...current, identity: check.identity, waiting: undefined, state: "sending" } : undefined,
     );
     if (claimed?.state !== "sending") return;
     try {
@@ -327,6 +360,7 @@ export function createResumer(options: {
           dueAt: job.dueAt,
           enabled: job.enabled,
           sending: job.state === "sending",
+          waiting: job.waiting,
         };
       }),
     );
@@ -391,6 +425,7 @@ export function createResumer(options: {
   }
 
   return {
+    rememberSession,
     attach,
     onTurnEnded,
     onTurnStarted,

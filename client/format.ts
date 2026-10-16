@@ -89,9 +89,21 @@ export function summaryLabels(jobs: readonly ScheduledJob[]): { title: string; d
   const skipped = jobs.length - on.length;
   const skippedLabel = skipped > 0 ? `${skipped} skipped` : null;
   if (on.length === 0) return { title: "All turned off", detail: null };
-  const title = on.length === 1 ? "1 agent will continue" : `${on.length} agents will continue`;
-  const next = `Next at ${clockLabel(on[0]!.dueAt)}`;
-  return { title, detail: [next, skippedLabel].filter(Boolean).join(" · ") };
+  const scheduled = on.filter((job) => !job.waiting);
+  const waiting = on.length - scheduled.length;
+  const title = scheduled.length ? (scheduled.length === 1 ? "1 agent will continue" : `${scheduled.length} agents will continue`)
+    : `${waiting} agent${waiting === 1 ? "" : "s"} waiting for verification`;
+  const next = scheduled.length ? `Next at ${clockLabel(scheduled[0]!.dueAt)}` : `Next check at ${clockLabel(on[0]!.dueAt)}`;
+  return { title, detail: [next, scheduled.length && waiting ? `${waiting} waiting` : null, skippedLabel].filter(Boolean).join(" · ") };
+}
+
+export function waitingLabel(job: ScheduledJob): string | null {
+  switch (job.waiting) {
+    case "auth": return "Waiting for account verification";
+    case "usage": return "Waiting for usage verification";
+    case "credits": return "Waiting for credits or limit recovery";
+    default: return null;
+  }
 }
 
 /** Where the agent lives: "Project · workspace", without repeating a name. */

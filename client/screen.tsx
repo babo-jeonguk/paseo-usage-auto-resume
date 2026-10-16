@@ -24,6 +24,7 @@ import {
   rescheduleProblem,
   summaryLabels,
   timeOnDay,
+  waitingLabel,
 } from "./format";
 import { Toggle } from "./toggle";
 
@@ -278,7 +279,7 @@ function TimeEditor(props: {
           {problem}
         </Text>
       ) : (
-        <Text style={styles.editHint}>Continues {relativeLabel(dueAt!, now)}.</Text>
+        <Text style={styles.editHint}>{job.waiting ? "Checks again" : "Continues"} {relativeLabel(dueAt!, now)}.</Text>
       )}
     </View>
   );
@@ -304,7 +305,7 @@ function JobRow(props: {
   const title = job.title ?? "Untitled agent";
   const place = placeLabel(job);
   const countdown = job.resetAt ? relativeLabel(job.dueAt, now) : `${relativeLabel(job.dueAt, now)} · reset unknown`;
-  const status = busy ? "Continuing…" : on ? countdown : "Skipped";
+  const status = busy ? "Continuing…" : on ? waitingLabel(job) ?? countdown : "Skipped";
   const resetSpoken = job.resetAt ? `limit resets at ${clockLabel(job.resetAt)}` : "reset time unknown, checks again";
 
   return (

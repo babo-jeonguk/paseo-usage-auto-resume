@@ -63,6 +63,15 @@ test("summary counts agents that will continue and names the next time", () => {
   assert.deepEqual(summaryLabels([job({ enabled: false })]), { title: "All turned off", detail: null });
 });
 
+test("verification checks are displayed separately from promised continues", () => {
+  assert.deepEqual(summaryLabels([job({ waiting: "credits" })]), {
+    title: "1 agent waiting for verification", detail: "Next check at 18:53",
+  });
+  assert.deepEqual(summaryLabels([job({ waiting: "auth" }), job({ dueAt: new Date(2026, 9, 6, 20, 0).toISOString() })]), {
+    title: "1 agent will continue", detail: "Next at 20:00 · 1 waiting",
+  });
+});
+
 test("labels for provider and place", () => {
   assert.equal(providerLabel("claude-main"), "Claude Main");
   assert.equal(providerLabel("antigravity"), "Antigravity");
