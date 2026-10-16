@@ -79,14 +79,14 @@ export function createSubscriptionReader(deps: {
   };
 
   return async (api, agent, source, at, launch) => {
-    // A missed session-open hook means per-agent overrides are unknown. Preserve the job and wait.
-    if (!launch) return unknownCheck();
     let verifiedIdentity: string | undefined;
     try {
       const { config } = await api.config.get();
       const runtime = providerLaunch(config, agent.provider);
-      const env: NodeJS.ProcessEnv = { ...process.env, ...runtime.env, ...launch.env };
-      for (const [key, present] of Object.entries(launch.authEnv)) env[key] = present ? "<present>" : "";
+      // A missed session-open hook (a session opened before this plugin loaded) leaves the daemon
+      // and provider environment, as v1.2.0 used; only values other session-open hooks add are unseen.
+      const env: NodeJS.ProcessEnv = { ...process.env, ...runtime.env, ...launch?.env };
+      for (const [key, present] of Object.entries(launch?.authEnv ?? {})) env[key] = present ? "<present>" : "";
       // Status probes must not claim a running runtime proxy or inherit a parent Claude session.
       for (const key of Object.keys(env)) if (key.startsWith("RUNTIME_PROXY_") || ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT", "CLAUDE_AGENT_SDK_VERSION"].includes(key)) delete env[key];
       const model = string(agent.runtimeInfo?.model) ?? string(agent.model);

@@ -39,7 +39,7 @@ Claude, Codex, Antigravity를 실행하는 모든 provider가 대상이다. 내�
 5. `Your workspace is out of credits…`는 별도 복구 대기로 관리한다. 일반 5시간 reset으로 복구를 추정하지 않는다. Codex의 정확한 모델에 `model_usage.available_at`이 있으면 확인 시각에 활용하되, 발송은 `available: true`와 spend control 해제가 확인돼야 한다.
 6. 발송 직전에 agent 상태와 사용 가능 상태를 다시 확인한다. 새 메시지, 실행 중/closed/archive 상태, permission 대기는 취소 사유다. 사용량 조회 실패·100%인 과거 창·불명확한 인증은 15분 뒤 읽기 전용 재확인으로 미루며 **continue를 보내지 않는다.**
 7. Agent당 예약 하나, crash 후 중복 전송 방지, provider별 스위치, 수동 시간 변경은 유지한다. 실제 자동 continue가 연속 24회 한도로 실패하면 중단한다. 상태 조회는 모델 재시도로 세지 않는다. 대기 행의 시각은 전송 시각이 아닌 다음 확인 시각으로 표시한다.
-8. 최근 12시간의 시작 scan으로 놓친 중단도 찾는다. 다만 캡처 hook 설치 전에 시작된 세션은 실제 per-agent 환경을 알 수 없어 인증 대기 상태로 둔다. 새 세션/interactive refresh로 캡처된 경로·boolean 플래그·계정/모델 hash는 job에 보존하므로 이후 plugin 재시작에도 사용할 수 있다. 토큰은 저장·로그에 남기지 않는다.
+8. 최근 12시간의 시작 scan으로 놓친 중단도 찾는다. 플러그인 로드 전에 열린 세션은 캡처된 launch context가 없으므로 daemon 환경과 provider 설정 env로 계정을 확인한다(v1.2.0과 같은 계정 선택). 다른 플러그인이 session open 때 추가하는 값은 이 경우 보이지 않는다. 새 세션/interactive refresh로 캡처된 경로·boolean 플래그·계정/모델 hash는 job에 보존하므로 이후 plugin 재시작에도 사용할 수 있다. 토큰은 저장·로그에 남기지 않는다.
 
 **현재 검증 범위:** 설치된 agy 1.3.6의 모델 호출 없는 `/usage` 응답에는 계정 identity가 없어 Antigravity 예약은 확인 대기한다. `/usage`·`/config` 조회는 1.1.15 이상과 zero-turn 응답을 확인한 경우에만 수행한다. Claude macOS Keychain, 다중 인자 custom launcher, 해석하지 못한 quota 형태도 대기한다. Claude credit/budget notice는 일반 사용률만으로 복구 판정하지 않는다.
 
