@@ -12,10 +12,12 @@ Codex, Claude 또는 Antigravity agent가 usage/rate limit으로 멈추면 reset
 
 ## Auto Resume 화면
 
-사이드바(☰) 위쪽 목록의 **Auto Resume**에서 예정된 자동 재개를 날짜별로 본다. 각 행은 전송 시각, 남은 시간, agent 제목, provider, project/workspace를 보여 준다. 행을 누르면 그 agent 대화가 열린다.
+사이드바(☰) 위쪽 목록의 **Auto Resume**에서 예정된 자동 재개를 날짜별로 본다. 각 행은 전송 시각, 남은 시간, agent 제목, provider, project/workspace를 보여 준다. 행의 열기 버튼을 누르면 그 agent 대화가 열린다.
 
 - 모든 예약은 켜진 상태로 생긴다. 필요 없는 것만 스위치로 끈다. 저장 버튼 없이 바로 적용된다.
 - 끈 예약은 예정 시각까지 목록에 남아 다시 켤 수 있다. 예정 시각이 지나면 보내지 않고 목록에서 사라진다. 그 전에 agent에게 직접 메시지를 보내도 사라진다.
+- **+10m**을 누르면 10분 뒤로 미룬다. 시각을 누르면 그 자리에서 새 시각을 입력하고 **Today**, **Tomorrow**, 또는 주간 리셋이라면 예약된 날을 고른다. 리셋 시각 + 2분보다 이르거나 일주일보다 먼 시각은 저장하지 않고 이유를 보여 준다. 꺼진 예약도 시각을 바꾸면 다시 켜진다.
+- 헤더 버튼은 켜진 예약이 하나라도 있으면 모두 끄고, 없으면 모두 켠다. 화면에 보이는 예약만 바꾸며, 이미 전송 중인 예약은 그대로 둔다.
 - 화면은 30초마다 새로 고친다. Desktop은 새로 고침 버튼, mobile은 당겨서 새로 고침을 쓴다.
 
 행 구조는 iOS 시계 앱의 알람 목록을 따랐다. 스위치 사용은 [Apple HIG Toggles](https://developer.apple.com/design/human-interface-guidelines/toggles)(목록 행 안의 스위치, 행 내용이 맥락)와 [NN/g Toggle-Switch Guidelines](https://www.nngroup.com/articles/toggle-switch-guidelines/)(즉시 적용)를 따랐다. 카드·간격·스위치 규격은 Paseo 설정 화면과 같다.
