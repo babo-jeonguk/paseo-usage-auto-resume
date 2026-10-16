@@ -743,7 +743,7 @@ test("Antigravity 5h limit: schedules reset + 2 minutes and continues the same a
   assert.deepEqual(sent, [{ agentId: "g1", text: CONTINUE_PROMPT }]);
 });
 
-test("Antigravity limit without a reset in the notice rechecks in 15 minutes; Paseo has no Antigravity usage", async () => {
+test("Antigravity limit without a reset in the notice retries the continue in 15 minutes", async () => {
   const usage = [
     {
       providerId: "antigravity",
@@ -756,6 +756,19 @@ test("Antigravity limit without a reset in the notice rechecks in 15 minutes; Pa
   const [job] = await store.list();
   assert.equal(job?.resetAt, null);
   assert.equal(job?.dueAt, "2026-10-06T03:15:00.000Z");
+  assert.equal(job?.retries, 1);
+});
+
+test("Antigravity continues at the notice's reset even though agy reports no account", async () => {
+  const readSubscription = createSubscriptionReader({ run: async () => { throw new Error("must not run agy"); } });
+  const { api, sent, resumer } = await setup({ g1: { provider: "antigravity" } }, { readSubscription });
+  await resumer.onTurnEnded(turnEnded("g1", "antigravity", failed(ANTIGRAVITY_LIMIT)), api);
+  const [job] = await store.list();
+  assert.equal(job?.dueAt, "2026-10-06T05:02:00.000Z");
+  assert.equal(job?.waiting, undefined);
+  clock = new Date("2026-10-06T05:02:00.000Z");
+  await resumer.tick();
+  assert.deepEqual(sent, [{ agentId: "g1", text: CONTINUE_PROMPT }]);
 });
 
 test("startup scan schedules an Antigravity agent that hit its limit before the plugin ran", async () => {

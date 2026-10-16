@@ -72,7 +72,7 @@ The default home is `~/.paseo`. The plugin sends a fixed prompt to the existing 
 ## Limitations
 
 - A session opened before the plugin loaded has no captured launch context. Its reservation is checked with the daemon environment and the provider's configured environment, the way v1.2.0 found the account; values that other plugins add at session open are not seen. Reservations created with captured context keep it across plugin restarts.
-- The installed agy 1.3.6 read-only quota response has no account identity. Antigravity reservations therefore wait for verification instead of guessing an account from its home directory. API/ADC routes remain excluded. Slash status probes require agy 1.1.15 or later and zero-turn structured output.
+- agy (1.4.0) reports no account identity and Paseo has no Antigravity usage source, so Antigravity agents follow the notice's stated reset, as v1.2.0 did, without reading quota. A used-up weekly quota behind a 5-hour notice is not seen. Antigravity API routes (`GEMINI_API_KEY`, `AGY_ADC_AUTH`, `GOOGLE_GEMINI_BASE_URL`) remain excluded.
 - Claude on macOS waits because this implementation does not read Keychain credentials. Unrecognized quota shapes or multi-argument custom launchers also wait. Known one-command launchers use native account/status protocols.
 - A stop caused only by credits or a spending cap, with no used-up window, ends after the three retries; refilling credits does not restart it.
 
