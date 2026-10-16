@@ -64,7 +64,7 @@ test("summary counts agents that will continue and names the next time", () => {
 });
 
 test("verification checks are displayed separately from promised continues", () => {
-  assert.deepEqual(summaryLabels([job({ waiting: "credits" })]), {
+  assert.deepEqual(summaryLabels([job({ waiting: "usage" })]), {
     title: "1 agent waiting for verification", detail: "Next check at 18:53",
   });
   assert.deepEqual(summaryLabels([job({ waiting: "auth" }), job({ dueAt: new Date(2026, 9, 6, 20, 0).toISOString() })]), {

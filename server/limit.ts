@@ -25,7 +25,7 @@ const NOT_A_LIMIT = [
   /credit_balance_exhausted|prepaid|prepay|payment[_ ]required|insufficient (?:funds|credits)/i,
 ];
 
-// These are observation candidates, never renewable-limit proof or a guessed five-hour reset.
+// Credits and spending notices are limit stops too; the usage windows decide when to continue.
 const CREDIT_NOTICE = /your workspace is out of credits|you(?:'|’)?re out of usage credits|your AI credits balance is too low|(?:you hit|you(?:'|’)?ve (?:hit|reached)) your .{0,60}(?:spend(?:ing)? (?:cap|limit)|budget)|(?:spend(?:ing)? (?:cap|limit)|shared budget) (?:has been )?(?:reached|exceeded|exhausted)/i;
 
 /** Provider notices are short. Longer text that merely mentions a limit is ordinary output. */
@@ -39,7 +39,6 @@ const LIMIT_CODES = new Set([
 export interface LimitStop {
   /** Reset instant stated by the provider, or null when the notice has none. */
   resetAt: Date | null;
-  kind?: "credits";
 }
 
 export function isLimitNotice(text: string): boolean {
@@ -98,7 +97,7 @@ export function detectLimitStop(
   if (outcome.kind === "failed" && /insufficient_quota|credit_balance_exhausted|billing_error|payment_required|context_length_exceeded/i.test(outcome.error.code ?? "")) return null;
   const texts = notices(outcome, timeline);
   if (texts.some((text) => text.trim().length <= NOTICE_MAX_CHARS && CREDIT_NOTICE.test(text))) {
-    return { resetAt: null, kind: "credits" };
+    return { resetAt: null };
   }
   if (outcome.kind === "failed" && LIMIT_CODES.has(outcome.error.code?.toLowerCase() ?? "")) {
     // Provider codes are more authoritative than wording or notice length. Billing and

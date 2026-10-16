@@ -17,14 +17,11 @@ const JobSchema = z.object({
   state: z.enum(["pending", "sending", "sent"]),
   /** Unchecked in the Auto Resume screen: the due time passes without a continue. */
   enabled: z.boolean().default(true),
-  reason: z.enum(["quota", "credits"]).optional(),
-  waiting: z.enum(["auth", "usage", "credits"]).optional(),
+  /** Continues sent in a row while the agent's usage windows were not used up. */
+  retries: z.number().int().nonnegative().default(0),
+  // Earlier versions waited for "credits" recovery; those jobs now wait on their usage windows.
+  waiting: z.enum(["auth", "usage"]).optional().catch((context) => context.value === "credits" ? "usage" : undefined),
   identity: z.string().optional(),
-  /**
-   * A provider reset notice or an observed exhausted applicable quota established the cause.
-   * Jobs saved by v1.2.0 predate this field; each came from a detected limit stop.
-   */
-  renewable: z.boolean().default(true),
   launch: z.object({ env: z.record(z.string(), z.string()), authEnv: z.record(z.string(), z.boolean()) }).optional(),
 });
 

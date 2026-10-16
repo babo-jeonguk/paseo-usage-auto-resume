@@ -27,13 +27,10 @@ export interface LaunchContext {
 export interface QuotaWindow { id: string; usedPct: number; resetAt: string | null }
 export interface SubscriptionCheck {
   auth: "subscription" | "api" | "unknown";
-  status: "ready" | "limited" | "credits" | "unknown";
+  status: "ready" | "limited" | "unknown";
   /** Account/organization and model scope, hashed; independent of rotating access tokens. */
   identity?: string;
   windows?: QuotaWindow[];
-  reason?: string;
-  /** Affirmative readiness for a previously credit-blocked request, not just a quota countdown. */
-  creditRecovery?: boolean;
 }
 export type SubscriptionReader = (
   api: Pick<PaseoApi, "config">, agent: PaseoAgent, source: UsageSource, at: Date, launch?: LaunchContext,
@@ -185,27 +182,22 @@ function rolling(windows: QuotaWindow[], identity: string): SubscriptionCheck {
   return { auth: "subscription", status: windows.some((w) => w.usedPct >= 100) ? "limited" : "ready", identity, windows };
 }
 
+/**
+ * Credits, spending controls and the reached-limit type only say whether usage could run past a
+ * window. The exact model's availability, else the 5-hour and weekly windows, decide.
+ */
 export function codexUsage(usage: Record<string, unknown>, identity: string, model: string): SubscriptionCheck {
-  const base = { auth: "subscription" as const, identity };
-  if (record(usage.spend_control).reached === true) return { ...base, status: "credits", reason: "Workspace spending limit" };
   const specific = record(record(usage.model_usage)[model]);
-  const type = record(usage.rate_limit_reached_type).type;
-  if (specific.available === true) return { ...base, status: "ready", windows: [], creditRecovery: record(usage.spend_control).reached === false };
+  if (specific.available === true) return { auth: "subscription", status: "ready", identity, windows: [] };
   if (specific.available === false) return {
-    ...base, status: "limited", windows: [{ id: `model:${model}`, usedPct: 100, resetAt: instant(specific.available_at) }],
+    auth: "subscription", status: "limited", identity, windows: [{ id: `model:${model}`, usedPct: 100, resetAt: instant(specific.available_at) }],
   };
-  if (typeof type === "string" && /workspace_.*(?:credits_depleted|usage_limit_reached)/.test(type)) {
-    return { ...base, status: "credits", reason: "Workspace credits or spending limit" };
-  }
-  if (type != null && type !== "rate_limit_reached") return { ...base, status: "unknown" };
   const limit = record(usage.rate_limit);
   const windows = ["primary_window", "secondary_window"].flatMap((id) => {
     const value = record(limit[id]), used = number(value.used_percent);
     return used === undefined ? [] : [{ id, usedPct: used, resetAt: instant(value.reset_at) }];
   });
-  if (limit.allowed === true && limit.limit_reached === false && windows.length && windows.every((w) => w.usedPct < 100)) return { ...base, status: "ready", windows };
-  if (limit.limit_reached === true && windows.some((w) => w.usedPct >= 100)) return { ...base, status: "limited", windows };
-  return { ...base, status: "unknown", windows };
+  return rolling(windows, identity);
 }
 
 export function claudeUsage(usage: Record<string, unknown>, identity: string, model: string): SubscriptionCheck {

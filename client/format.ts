@@ -101,7 +101,6 @@ export function waitingLabel(job: ScheduledJob): string | null {
   switch (job.waiting) {
     case "auth": return "Waiting for account verification";
     case "usage": return "Waiting for usage verification";
-    case "credits": return "Waiting for credits or limit recovery";
     default: return null;
   }
 }

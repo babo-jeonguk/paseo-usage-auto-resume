@@ -49,11 +49,11 @@ A turn-ending hook identifies short limit notices and explicit error codes. Thes
 
 For Codex it reads account/config status without refreshing the login, then queries the exact ChatGPT workspace's usage. For Claude it checks `auth status --json`, verifies the OAuth profile and reads subscription usage. Account/workspace and model scope are bound to the reservation. A change cancels the reservation. Stored OAuth alone never overrides an active API provider.
 
-Ordinary subscription limits use the notice's reset or an actually exhausted applicable window. There is no fallback to an unused five-hour window. Codex workspace-credit notices are monitored separately: an unrelated five-hour reset cannot authorize a continue. When available, the exact model's `model_usage.available_at` schedules a check; `available: true` plus a clear spend control confirms recovery. Missing or ambiguous readiness keeps waiting.
+Every limit stop, including workspace-credit and spending notices, is decided by the applicable 5-hour and weekly windows. Credits only say whether usage could run past a window. A used-up window schedules the continue at its reset; for Codex, the exact model's `model_usage.available_at` counts as that model's window. When no applicable window is used up, the plugin retries the continue after 15, 30 and 60 minutes, then gives up, unless the notice states a reset that is still ahead, which it waits for. A used-up window found later starts the retries over.
 
 Jobs wait two minutes past a known reset. Before sending, the plugin checks both the agent and fresh subscription state. Missing usage, stale 100% windows and unknown authentication postpone a read-only check by 15 minutes; they never authorize a continue. Multiple applicable exhausted windows wait for their latest known reset. New messages, active/closed/archived agents and pending permissions cancel a resume. Claiming before sending prevents duplicate delivery after a crash, though an interrupted send can therefore be lost.
 
-The screen labels verification and credit recovery waits separately. A waiting row's time is the next status check, not a promised continue. Read-only checks do not count as automatic model retries; actual continues remain bounded to 24 consecutive limit stops.
+The screen labels account and usage verification waits separately. A waiting row's time is the next status check, not a promised continue. Read-only checks do not count as automatic model retries; actual continues remain bounded to 24 consecutive limit stops.
 
 The prompt asks the parent agent to review saved progress and resume unfinished work, including unfinished subagents that stopped at the usage limit. Actual subagent continuation depends on the parent's available provider tools; the plugin sends only to the parent.
 
@@ -74,7 +74,7 @@ The default home is `~/.paseo`. The plugin sends a fixed prompt to the existing 
 - A session opened before the plugin loaded has no captured launch context. Its reservation is checked with the daemon environment and the provider's configured environment, the way v1.2.0 found the account; values that other plugins add at session open are not seen. Reservations created with captured context keep it across plugin restarts.
 - The installed agy 1.3.6 read-only quota response has no account identity. Antigravity reservations therefore wait for verification instead of guessing an account from its home directory. API/ADC routes remain excluded. Slash status probes require agy 1.1.15 or later and zero-turn structured output.
 - Claude on macOS waits because this implementation does not read Keychain credentials. Unrecognized quota shapes or multi-argument custom launchers also wait. Known one-command launchers use native account/status protocols.
-- Claude budget/credit notices require affirmative credit recovery metadata; ordinary quota percentages alone cannot clear them.
+- A stop caused only by credits or a spending cap, with no used-up window, ends after the three retries; refilling credits does not restart it.
 
 - Without a known reset or affirmative readiness, the plugin checks again in 15 minutes and sends no continue.
 - A notice can supply a proposed reset, but every continue requires fresh verification. Passing the reset timestamp alone does not clear a stale exhausted window.
