@@ -32,27 +32,24 @@ Claude, Codex, Antigravity를 실행하는 모든 provider가 대상이다. 내�
 
 ## 동작
 
-1. `agent.turn_ended`에서 limit 종료를 보수적으로 감지한다. 명시적인 renewable limit 오류 코드(`rate_limit`, `rate_limit_exceeded`, `rate_limit_error`, `usage_limit_reached`, `usage_limit_exceeded`)가 있으면 문구·길이에 의존하지 않고 먼저 판정한다. 코드가 없으면 실패 메시지, 해당 turn의 error/warning 항목, turn을 마친 마지막 assistant 메시지(Claude는 limit을 이 형태로 알린다) 중 800자 이하의 짧은 notice를 본다. 마지막 assistant 메시지는 같은 `messageId`의 조각만 합치며, 다른 ID의 앞 답변은 붙이지 않는다. ID가 없으면 마지막 항목만 검사한다. Context window 초과, billing/credit 부족, 일반 오류, 취소된 turn은 대상이 아니다.
-2. Reset 시각은 다음 순서로 정한다.
-   1. Notice에 적힌 시각: `resets 3pm (Asia/Seoul)`, `try again at 4:13 AM`, `try again in 2 hours`, `Resets in 6h53m44s`, `|<epoch>`, ISO 시각.
-   2. 해당 account의 Paseo usage window(`providers.listUsage()`): 소진된 window가 있으면 그 window, 없으면 5-hour/session window의 `resetsAt`을 쓴다. Paseo 0.11부터 이 목록은 source마다 로그인 account별 항목(`Claude (<email>)`, `Codex (<email>)`)을 돌려주고, 다른 agent가 쓰는 account(Claude Sub의 `CLAUDE_CONFIG_DIR`, OpenCode의 ChatGPT 로그인 등)도 섞인다. 그래서 agent가 실제로 쓰는 account의 email을 그 CLI의 home에서 읽어 같은 email의 항목만 사용한다. Claude provider는 `CLAUDE_CONFIG_DIR/.claude.json`의 `oauthAccount.emailAddress`, Codex는 `CODEX_HOME`(기본 `~/.codex`)`/auth.json` token의 email claim만 읽는다. Token 자체는 저장하거나 로그에 남기지 않는다. Email을 알 수 없거나 같은 email의 항목이 없으면 다음 단계로 넘어간다. Paseo에는 Antigravity usage 정보가 없으므로 Antigravity는 이 단계를 건너뛰고 Antigravity 파일도 읽지 않는다.
-   3. 알 수 없으면 15분 뒤 다시 확인한다. 이때 usage window가 확인되면 그 시각으로 다시 예약하고, 여전히 모르면 continue를 보낸다. 다시 limit에 걸리면 같은 절차를 반복하며, 연속 24회 실패하면 중단한다.
-3. Agent당 job은 하나이며 `(agentId, resetAt)` 기준으로 idempotent하다. 같은 failure가 반복 수신되어도 job은 하나만 남는다.
-4. 실행 시각에 agent를 다시 조회한다. 다음 중 하나라도 해당하면 보내지 않고 job을 취소한다.
-   - 예약 뒤 새 turn이 시작되었다.
-   - `lastUserMessageAt`이 달라졌다.
-   - agent가 running/closed 상태이거나 archive되었다.
-   - permission 또는 input을 기다리고 있다.
+1. `agent.turn_ended`의 오류 코드와 짧은 notice는 재개 **후보**로만 감지한다. 일반 구독 한도와 workspace/AI credit·spend cap을 구분하며, API billing·context 오류는 제외한다.
+2. `agent.session_open`에서 실행 경로와 인증 환경 변수의 존재 여부만 캡처한다. 실제 CLI 인증을 확인해 API·외부 과금 경로는 제외하고, 확인되지 않으면 대기한다. 저장된 OAuth 파일이나 이메일만으로 구독 인증을 확정하지 않는다.
+3. Codex는 login refresh 없이 계정·설정을 조회하고 해당 workspace의 사용량을 읽는다. Claude는 `auth status --json`과 OAuth profile을 대조한 뒤 구독 사용량을 읽는다. 예약은 계정/workspace·모델에 연결되며, 대상이 바뀌면 취소된다.
+4. 일반 구독 한도는 notice의 reset 또는 실제 소진된 해당 quota의 reset + 2분에 예약한다. 사용하지 않은 5시간 창을 fallback으로 쓰지 않는다. 여러 적용 가능한 창이 소진되면 마지막 reset을 기다린다.
+5. `Your workspace is out of credits…`는 별도 복구 대기로 관리한다. 일반 5시간 reset으로 복구를 추정하지 않는다. Codex의 정확한 모델에 `model_usage.available_at`이 있으면 확인 시각에 활용하되, 발송은 `available: true`와 spend control 해제가 확인돼야 한다.
+6. 발송 직전에 agent 상태와 사용 가능 상태를 다시 확인한다. 새 메시지, 실행 중/closed/archive 상태, permission 대기는 취소 사유다. 사용량 조회 실패·100%인 과거 창·불명확한 인증은 15분 뒤 읽기 전용 재확인으로 미루며 **continue를 보내지 않는다.**
+7. Agent당 예약 하나, crash 후 중복 전송 방지, provider별 스위치, 수동 시간 변경은 유지한다. 실제 자동 continue가 연속 24회 한도로 실패하면 중단한다. 상태 조회는 모델 재시도로 세지 않는다. 대기 행의 시각은 전송 시각이 아닌 다음 확인 시각으로 표시한다.
+8. 최근 12시간의 시작 scan으로 놓친 중단도 찾는다. 다만 캡처 hook 설치 전에 시작된 세션은 실제 per-agent 환경을 알 수 없어 인증 대기 상태로 둔다. 새 세션/interactive refresh로 캡처된 경로·boolean 플래그·계정/모델 hash는 job에 보존하므로 이후 plugin 재시작에도 사용할 수 있다. 토큰은 저장·로그에 남기지 않는다.
 
-   그다음 Claude/Codex는 발송 직전에 해당 account의 usage window를 다시 확인한다. Notice에 없던 주간 window처럼 아직 소진된 window가 있으면 보내지 않고 그 리셋 + 2분으로 미룬다. 미룬 것은 재시도 횟수에 세지 않는다. Usage를 확인할 수 없거나 Antigravity이면 그대로 보낸다.
-5. Plugin이 시작한 뒤 첫 hook에서 한 번 시작 scan을 실행한다. 설치 전이나 재시작 중에 limit으로 멈춰 `turn_ended`를 받지 못한 agent를 찾기 위해서다. 최근 12시간 안에 활동한 대상 agent만 본다. Codex는 `error` 상태의 `lastError`로, Claude provider는 `idle` 상태에서 timeline 마지막 20개 항목 중 turn을 끝낸 메시지로 판정한다. 이미 job이 있는 agent는 건드리지 않는다.
-6. 전송은 `agents.ref(id).send()`만 사용한다. 전송 전에 `sending`을 저장하므로 crash 뒤에도 continue가 두 번 가지 않는다. 재개 prompt는 부모 agent에게 대화·작업공간·subagent/task 상태를 확인하고, **usage limit으로 중지된 미완료 서브에이전트도 기존 ID/이름·기존 지시로 이어가도록** 요청한다. 이미 완료된 작업을 다시 하거나 실행 중인 서브에이전트를 중단하지 않고, 사용자의 취소·일시정지를 존중한다. 기존 서브에이전트를 재개할 수 없으면 blocker를 보고하도록 한다. Plugin이 Claude 내부 서브에이전트에 직접 메시지를 보내는 것은 아니며, 실제 재개는 부모 agent가 provider의 resume/messaging 도구로 수행한다.
+**현재 검증 범위:** 설치된 agy 1.3.6의 모델 호출 없는 `/usage` 응답에는 계정 identity가 없어 Antigravity 예약은 확인 대기한다. `/usage`·`/config` 조회는 1.1.15 이상과 zero-turn 응답을 확인한 경우에만 수행한다. Claude macOS Keychain, 다중 인자 custom launcher, 해석하지 못한 quota 형태도 대기한다. Claude credit/budget notice는 일반 사용률만으로 복구 판정하지 않는다.
+
+CLI status와 OAuth profile/usage 조회는 모델 turn을 만들지 않는다. 조회 인증에 필요한 access token은 해당 CLI 저장소에서 읽지만 refresh·재저장하지 않으며, 크레딧 구매나 overage 활성화도 하지 않는다. 계정 이메일은 설정 화면의 표시용이고 자동 재개 판단은 직접 조회한 계정/조직·모델 identity를 사용한다.
 
 ### Paseo 내장 API와 감지 범위
 
 Paseo 0.11.0의 [`agent.turn_ended`](https://paseo.sh/docs/plugins/reference)의 `outcome`은 `completed`·`failed`·`canceled`이며, `failed`만 optional `error.code`를 갖는다. 별도의 `usage_limited` 상태나 limit 전용 lifecycle event는 없다. 이번 Claude 기록처럼 한도 안내가 일반 `assistant_message`로 오고 turn이 completed로 끝날 수 있어, 코드 판정만으로는 충분하지 않다.
 
-[`providers.listUsage()`](https://paseo.sh/docs/sdk/reference)는 account의 subscription 사용률·리셋 시각을 제공한다. 이 plugin은 한도 중지가 확인된 뒤 reset 시각을 보완하는 데 이미 사용한다. Account 사용률이 100%라는 것만으로 모든 idle agent를 재개하면 완료된 작업까지 재개할 수 있으므로, 특정 agent가 한도로 중지됐다는 근거와 구분한다.
+Paseo의 `providers.listUsage()`는 표시용으로 정규화하면서 원래 차단 사유나 모델별 readiness를 생략할 수 있다. 자동 전송 판정에는 이 목록의 이메일 매칭 대신 실제 CLI 인증과 직접 읽은 계정·모델별 상태를 사용한다. 세부 근거는 [조사 기록](docs/research/usage-limit-classification.md)을 참고한다.
 
 Job은 `$PASEO_HOME/plugin-data/usage-auto-resume/jobs.json`(기본 `~/.paseo/...`)에 저장되어 daemon/plugin 재시작 후에도 유지된다.
 
@@ -60,7 +57,7 @@ Job은 `$PASEO_HOME/plugin-data/usage-auto-resume/jobs.json`(기본 `~/.paseo/..
 
 Paseo 0.11 plugin API(`PaseoApi`)에도 schedule/heartbeat API가 없다. Heartbeat는 CLI(`paseo heartbeat create`)로만 만들 수 있다. 또 heartbeat는 실행 시각에 prompt를 그대로 보내므로, 그 사이 수동 재개나 permission 대기를 확인할 수 없다. 그래서 [paseo-defer](https://github.com/tomgrin10/paseo-defer)의 persisted queue 방식을 public SDK 호출로 구현했다.
 
-**제약:** Plugin은 hook/RPC 안에서만 `paseo` API를 받는다. Daemon이나 plugin을 재시작한 직후에는 첫 lifecycle hook(어느 agent든 turn 시작/종료, 생성, 종료(close), permission 요청, archive) 또는 Auto Resume 화면의 RPC 요청이 들어올 때까지 예약 실행이 대기한다. 그 시점에 이미 지난 job은 바로 실행된다.
+**제약:** Plugin은 hook/RPC 안에서만 `paseo` API를 받는다. Daemon이나 plugin을 재시작한 직후에는 첫 lifecycle hook(어느 agent든 turn 시작/종료, 생성, 종료(close), permission 요청, archive) 또는 Auto Resume 화면의 RPC 요청이 들어올 때까지 예약 실행이 대기한다. 그 시점에 이미 지난 job은 인증·사용량을 재확인한 뒤 실행 여부를 결정한다.
 
 ## 설치
 

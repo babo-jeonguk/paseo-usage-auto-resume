@@ -17,6 +17,12 @@ const JobSchema = z.object({
   state: z.enum(["pending", "sending", "sent"]),
   /** Unchecked in the Auto Resume screen: the due time passes without a continue. */
   enabled: z.boolean().default(true),
+  reason: z.enum(["quota", "credits"]).optional(),
+  waiting: z.enum(["auth", "usage", "credits"]).optional(),
+  identity: z.string().optional(),
+  /** A provider reset notice or an observed exhausted applicable quota established the cause. */
+  renewable: z.boolean().optional(),
+  launch: z.object({ env: z.record(z.string(), z.string()), authEnv: z.record(z.string(), z.boolean()) }).optional(),
 });
 
 export type ResumeJob = z.infer<typeof JobSchema>;

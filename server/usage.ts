@@ -4,9 +4,6 @@ import { join } from "node:path";
 import type { PaseoApi } from "./paseo-types";
 import type { UsageSource } from "../shared/settings";
 
-type UsageApi = Pick<PaseoApi, "config" | "providers">;
-type UsageEntry = Awaited<ReturnType<PaseoApi["providers"]["listUsage"]>>["providers"][number];
-type UsageWindow = UsageEntry["windows"][number];
 export type DaemonConfig = Awaited<ReturnType<PaseoApi["config"]["get"]>>["config"];
 
 /** The usage source that reports an agent's subscription, and the account the agent signs in as. */
@@ -14,9 +11,6 @@ interface Account {
   sourceId: string;
   email: string | null;
 }
-
-const FIVE_HOUR_WINDOW = /five_hour|5h|5-hour|five hour|session|primary/i;
-const FIVE_HOURS_MS = 5 * 3_600_000;
 
 function providerEnv(config: DaemonConfig, provider: string): Record<string, unknown> {
   let env: Record<string, unknown> = {};
@@ -31,6 +25,21 @@ function providerEnv(config: DaemonConfig, provider: string): Record<string, unk
     id = entry?.extends;
   }
   return env;
+}
+
+/** Follow the same provider inheritance as the daemon; command is replaced, env is merged. */
+export function providerLaunch(config: DaemonConfig, provider: string): { env: Record<string, string>; command?: string[] } {
+  const env = Object.fromEntries(Object.entries(providerEnv(config, provider)).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  const visited = new Set<string>();
+  let id: string | undefined = provider;
+  while (id) {
+    if (visited.has(id)) throw new Error("Cyclic provider inheritance");
+    visited.add(id);
+    const entry = config.providers[id] as { extends?: string; command?: string[] } | undefined;
+    if (entry?.command) return { env, command: entry.command };
+    id = entry?.extends;
+  }
+  return { env };
 }
 
 function envValue(env: Record<string, unknown>, key: string): string | null {
@@ -100,95 +109,4 @@ export async function accountEmail(
   source: Exclude<UsageSource, "antigravity">,
 ): Promise<string | null> {
   return (await accountIn(config, provider, source)).email;
-}
-
-/**
- * Since Paseo 0.11 each usage source lists one entry per signed-in account, labeled
- * `<source> (<email>)`, including accounts other agents run under (Claude Sub's home, OpenCode's
- * ChatGPT login). Only the entry for the agent's own account describes its limit.
- */
-function entryForAccount(entries: readonly UsageEntry[], account: Account): UsageEntry | null {
-  if (!account.email) return null;
-  const suffix = ` (${account.email.toLowerCase()})`;
-  return (
-    entries.find(
-      (entry) => entry.providerId === account.sourceId && entry.displayName.toLowerCase().endsWith(suffix),
-    ) ?? null
-  );
-}
-
-function usedPercent(window: UsageWindow): number | null {
-  if (typeof window.usedPct === "number") return window.usedPct;
-  if (typeof window.remainingPct === "number") return 100 - window.remainingPct;
-  return null;
-}
-
-/** A window that is used up and renews after `now`. */
-export interface ExhaustedWindow {
-  id: string;
-  resetAt: Date;
-}
-
-function futureWindows(windows: readonly UsageWindow[], now: Date): Array<{ window: UsageWindow; resetAt: Date }> {
-  return windows
-    .map((window) => ({ window, resetAt: window.resetsAt ? new Date(window.resetsAt) : null }))
-    .filter((entry): entry is { window: UsageWindow; resetAt: Date } =>
-      entry.resetAt !== null && entry.resetAt.getTime() > now.getTime(),
-    );
-}
-
-/** The used-up window that renews last, since every one must renew before the agent can work again. */
-export function exhaustedWindow(windows: readonly UsageWindow[], now: Date): ExhaustedWindow | null {
-  let latest: ExhaustedWindow | null = null;
-  for (const entry of futureWindows(windows, now)) {
-    if ((usedPercent(entry.window) ?? 0) < 100) continue;
-    if (!latest || entry.resetAt.getTime() > latest.resetAt.getTime()) latest = { id: entry.window.id, resetAt: entry.resetAt };
-  }
-  return latest;
-}
-
-/** Picks the window holding the agent back: an exhausted one, else its 5-hour/session window. */
-export function resetFromWindows(windows: readonly UsageWindow[], now: Date): Date | null {
-  const exhausted = exhaustedWindow(windows, now);
-  if (exhausted) return exhausted.resetAt;
-  const session = futureWindows(windows, now).find(
-    (entry) =>
-      FIVE_HOUR_WINDOW.test(`${entry.window.id} ${entry.window.label}`) &&
-      entry.resetAt.getTime() - now.getTime() <= FIVE_HOURS_MS,
-  );
-  return session?.resetAt ?? null;
-}
-
-/** The usage windows of the account the agent runs under, or null when they cannot be known. */
-async function accountWindows(paseo: UsageApi, provider: string, source: UsageSource): Promise<UsageWindow[] | null> {
-  // Paseo 0.11 has no Antigravity usage source, so only the notice can state its reset.
-  if (source === "antigravity") return null;
-  try {
-    const account = await accountIn((await paseo.config.get()).config, provider, source);
-    if (!account?.email) return null;
-    const { providers } = await paseo.providers.listUsage();
-    const entry = entryForAccount(providers, account);
-    if (!entry || entry.status !== "available") return null;
-    return entry.windows;
-  } catch (error) {
-    console.error("[usage-auto-resume] could not read usage windows", String(error));
-    return null;
-  }
-}
-
-/** Reset instant from the account's Paseo usage windows, or null when it cannot be known. */
-export async function usageResetAt(paseo: UsageApi, provider: string, source: UsageSource, now: Date): Promise<Date | null> {
-  const windows = await accountWindows(paseo, provider, source);
-  return windows && resetFromWindows(windows, now);
-}
-
-/** The account's window that is still used up, or null when none is or usage cannot be known. */
-export async function usageExhausted(
-  paseo: UsageApi,
-  provider: string,
-  source: UsageSource,
-  now: Date,
-): Promise<ExhaustedWindow | null> {
-  const windows = await accountWindows(paseo, provider, source);
-  return windows && exhaustedWindow(windows, now);
 }

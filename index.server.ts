@@ -23,6 +23,7 @@ export default function contribute(server: PluginServerContext) {
 
   // Hooks return at once: detection reads the agent and usage, which must not hold up the daemon.
   const stops = [
+    server.before("agent.session_open", ({ request }) => resumer.rememberSession(request)),
     settings.subscribe(() => void resumer.reconcileProviders().catch(report)),
     server.on("agent.turn_started", (event, { paseo }) => {
       void resumer.attach(paseo);

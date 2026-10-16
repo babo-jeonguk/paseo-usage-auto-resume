@@ -13,6 +13,8 @@ export const ScheduledJobSchema = z.object({
   enabled: z.boolean(),
   /** The continue is being delivered right now. */
   sending: z.boolean(),
+  /** This row's time is a status check, not a promised continue. */
+  waiting: z.enum(["auth", "usage", "credits"]).optional(),
 });
 
 export type ScheduledJob = z.infer<typeof ScheduledJobSchema>;
