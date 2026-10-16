@@ -4,6 +4,7 @@ import { detectLimitStop } from "./limit";
 import type { RescheduleResult, ScheduledJob } from "../shared/rpc";
 import type { JobStore, ResumeJob } from "./store";
 import { usageExhausted, usageResetAt } from "./usage";
+import { GRACE_MS, MIN_DELAY_MS, rescheduleWindow } from "../shared/schedule";
 import { DEFAULT_PROVIDER_SETTINGS, sourceForProvider, type ProviderSettings, type UsageSource } from "../shared/settings";
 
 export const CONTINUE_PROMPT =
@@ -14,11 +15,7 @@ export const CONTINUE_PROMPT =
   "Do not duplicate completed work or interrupt running subagents, and honor any user cancellation or pause. " +
   "If an existing subagent cannot be resumed, report that blocker instead of silently abandoning its unfinished task.";
 
-const GRACE_MS = 2 * 60_000;
 const UNKNOWN_RECHECK_MS = 15 * 60_000;
-const MIN_DELAY_MS = 60_000;
-/** A week plus an hour reaches past a weekly reset; a user-chosen time beyond it is a typo. */
-const MAX_AHEAD_MS = 7 * 24 * 3_600_000 + 3_600_000;
 /** Stops a limit that never renews from being retried forever (6 hours of rechecks). */
 const MAX_ATTEMPTS = 24;
 /** Startup scan looks at agents active this recently; older stops are left to the user. */
@@ -363,15 +360,12 @@ export function createResumer(options: {
     await store.update(agentId, (current) => {
       if (current?.state === "sending" && current.dueAt === dueAt) result = { changed: false, reason: "sending" };
       if (current?.state !== "pending" || current.dueAt !== dueAt) return undefined;
-      // Sending before the reset would only hit the limit again.
-      const earliest = new Date(
-        Math.max(at.getTime() + MIN_DELAY_MS, current.resetAt ? Date.parse(current.resetAt) + GRACE_MS : 0),
-      );
-      if (target < earliest) {
-        result = { changed: false, reason: "too-early", earliest: earliest.toISOString() };
+      const { earliest, latest } = rescheduleWindow(current.resetAt, at.getTime());
+      if (target.getTime() < earliest) {
+        result = { changed: false, reason: "too-early", earliest: new Date(earliest).toISOString() };
         return undefined;
       }
-      if (target.getTime() > at.getTime() + MAX_AHEAD_MS) {
+      if (target.getTime() > latest) {
         result = { changed: false, reason: "too-late" };
         return undefined;
       }

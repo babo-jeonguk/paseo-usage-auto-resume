@@ -53,9 +53,7 @@ export function Toggle(props: {
   const offThumb = isDark(theme.colors.surface0) ? theme.colors.foreground : theme.colors.surface0;
   return (
     <Pressable
-      onPress={(event) => {
-        // The row behind the switch opens the agent; a toggle must not also navigate.
-        event.stopPropagation();
+      onPress={() => {
         if (!disabled) props.onValueChange(!value);
       }}
       disabled={disabled}
