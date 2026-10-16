@@ -79,7 +79,7 @@ npm run check
 paseo plugin install "$PWD"
 ```
 
-Paseo daemon과 app 모두 0.11.x여야 한다(`paseo-plugin.json`의 `>=0.11.0 <0.12.0`). `config.json`의 root `pluginsEnabled`가 켜져 있어야 한다. 소스를 바꾼 뒤에는 `paseo plugin reload usage-auto-resume`을 실행한다. 로그는 daemon log의 `[usage-auto-resume]` 줄에 남는다.
+Paseo daemon과 app 모두 0.11.0 이상이어야 한다(`paseo-plugin.json`의 `>=0.11.0`). `config.json`의 root `pluginsEnabled`가 켜져 있어야 한다. 소스를 바꾼 뒤에는 `paseo plugin reload usage-auto-resume`을 실행한다. 로그는 daemon log의 `[usage-auto-resume]` 줄에 남는다.
 
 ## 로드맵
 

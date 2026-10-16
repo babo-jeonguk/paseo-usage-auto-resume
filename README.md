@@ -14,7 +14,7 @@ The actual Paseo web interface, captured with sample reservations in an isolated
 
 ## Install
 
-Requires **Paseo daemon and app 0.11.x**, with plugins enabled in the daemon configuration.
+Requires **Paseo daemon and app 0.11.0 or later**, with plugins enabled in the daemon configuration.
 
 ```bash
 paseo plugin install github:babo-jeonguk/paseo-usage-auto-resume
@@ -71,7 +71,7 @@ The default home is `~/.paseo`. The plugin sends a fixed prompt to the existing 
 - A notice's stated reset takes priority over usage windows when scheduling. Just before sending, Claude and Codex jobs recheck usage and are postponed only while a window is still exhausted. Jobs whose usage cannot be read, and Antigravity jobs, are sent as scheduled.
 - After a daemon/plugin restart, jobs wait for a lifecycle hook or a request from the Auto Resume screen to supply the API. Due jobs then run subject to the agent checks.
 - The startup scan recovers missed limit stops only for agents active in the preceding 12 hours. Already persisted jobs can wait longer, including for a weekly reset.
-- Support is limited to providers that run Claude, Codex, or Antigravity, and to the Paseo version range above.
+- Support is limited to providers that run Claude, Codex, or Antigravity, on Paseo 0.11.0 or later.
 
 ## Roadmap
 

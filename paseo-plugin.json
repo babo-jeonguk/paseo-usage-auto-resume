@@ -3,7 +3,7 @@
   "name": "Usage Auto Resume",
   "description": "Continue Codex, Claude, and Antigravity agents automatically after their usage limit resets",
   "requirements": {
-    "paseo": ">=0.11.0 <0.12.0"
+    "paseo": ">=0.11.0"
   },
   "media": [
     "assets/auto-resume.png",
