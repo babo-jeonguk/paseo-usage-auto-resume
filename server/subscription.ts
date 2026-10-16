@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import type { PluginSessionOpenRequest } from "@getpaseo/plugin/server";
 import type { PaseoAgent, PaseoApi } from "./paseo-types";
@@ -86,14 +86,19 @@ export function createSubscriptionReader(deps: {
       for (const [key, present] of Object.entries(launch?.authEnv ?? {})) env[key] = present ? "<present>" : "";
       // Status probes must not claim a running runtime proxy or inherit a parent Claude session.
       for (const key of Object.keys(env)) if (key.startsWith("RUNTIME_PROXY_") || ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT", "CLAUDE_AGENT_SDK_VERSION"].includes(key)) delete env[key];
+      const apiCheck: SubscriptionCheck = { auth: "api", status: "unknown" };
+      // agy reports no account identity and Paseo has no Antigravity usage source, so its agents
+      // follow the notice's stated reset, as v1.2.0 did. Only API routes are excluded.
+      if (source === "antigravity") {
+        return env.GEMINI_API_KEY || env.AGY_ADC_AUTH || env.GOOGLE_GEMINI_BASE_URL ? apiCheck : { auth: "subscription", status: "ready" };
+      }
       const model = string(agent.runtimeInfo?.model) ?? string(agent.model);
       const options = { cwd: agent.cwd, env };
-      const command = runtime.command ?? [source === "antigravity" ? "agy" : source];
+      const command = runtime.command ?? [source];
       // A configured one-command launcher can answer the same native status protocol. Arbitrary
-      // command arguments are ambiguous; agy's print probes additionally require the native CLI.
-      if (command.length !== 1 || source === "antigravity" && basename(command[0]!).replace(/\.exe$/i, "") !== "agy") return unknownCheck();
+      // command arguments are ambiguous.
+      if (command.length !== 1) return unknownCheck();
       const binary = command[0]!;
-      const apiCheck: SubscriptionCheck = { auth: "api", status: "unknown" };
 
       if (source === "codex") {
         if (env.OPENAI_BASE_URL || env.CODEX_API_KEY || env.CODEX_ACCESS_TOKEN) return apiCheck;
@@ -122,43 +127,26 @@ export function createSubscriptionReader(deps: {
         return codexUsage(usage, verifiedIdentity, model);
       }
 
-      if (source === "claude") {
-        if (env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_BASE_URL || env.CLAUDE_CODE_OAUTH_TOKEN ||
-          [env.CLAUDE_CODE_USE_BEDROCK, env.CLAUDE_CODE_USE_VERTEX, env.CLAUDE_CODE_USE_FOUNDRY].some((v) => v && v !== "0" && v !== "false")) return apiCheck;
-        const status = record(JSON.parse(await run(binary, ["auth", "status", "--json"], options)));
-        if (status.authMethod !== "claude.ai" || status.apiProvider !== "firstParty") {
-          return status.loggedIn === true ? apiCheck : unknownCheck();
-        }
-        if (!status.subscriptionType || !status.orgId || !status.email || !model || process.platform === "darwin") return unknownCheck();
-        const home = env.CLAUDE_CONFIG_DIR || join(env.HOME || homedir(), ".claude");
-        const credentials = record(record(await readJson(join(home, ".credentials.json"))).claudeAiOauth);
-        const token = string(credentials.accessToken);
-        if (!token || (number(credentials.expiresAt) ?? 0) <= at.getTime()) return unknownCheck();
-        const headers = {
-          Authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20", Accept: "application/json",
-        };
-        const profile = await json("https://api.anthropic.com/api/oauth/profile", headers);
-        const account = record(profile.account), organization = record(profile.organization);
-        if (!account.uuid || account.email !== status.email || organization.uuid !== status.orgId) return unknownCheck();
-        verifiedIdentity = hash(source, account.uuid, organization.uuid, model);
-        const usage = await json("https://api.anthropic.com/api/oauth/usage", headers);
-        return claudeUsage(usage, verifiedIdentity, model);
+      if (env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_BASE_URL || env.CLAUDE_CODE_OAUTH_TOKEN ||
+        [env.CLAUDE_CODE_USE_BEDROCK, env.CLAUDE_CODE_USE_VERTEX, env.CLAUDE_CODE_USE_FOUNDRY].some((v) => v && v !== "0" && v !== "false")) return apiCheck;
+      const status = record(JSON.parse(await run(binary, ["auth", "status", "--json"], options)));
+      if (status.authMethod !== "claude.ai" || status.apiProvider !== "firstParty") {
+        return status.loggedIn === true ? apiCheck : unknownCheck();
       }
-
-      if (env.GEMINI_API_KEY || env.AGY_ADC_AUTH || env.GOOGLE_GEMINI_BASE_URL) return apiCheck;
-      if (!model) return unknownCheck();
-      const version = /^(\d+)\.(\d+)\.(\d+)/.exec((await run(binary, ["--version"], options)).trim());
-      if (!version || Number(version[1]) !== 1 || Number(version[2]) < 1 || (Number(version[2]) === 1 && Number(version[3]) < 15)) return unknownCheck();
-      const configResult = commandData(await run(binary, ["-p", "/config", "--output-format", "json"], options), "config");
-      const settings = record(configResult.config);
-      if (settings.modelProvider !== "antigravity" && settings.modelProvider !== "") return unknownCheck();
-      if (record(settings.userSettings).enableAdc || settings.enableAdc) return apiCheck;
-      const data = commandData(await run(binary, ["-p", "/usage", "--output-format", "json"], options), "usage");
-      // Quota groups are authoritative; never infer five hours from the countdown.
-      const accountId = string(data.account_id) ?? string(settings.account);
-      // Current agy versions may omit identity. A home directory is not an account identity.
-      if (!accountId) return unknownCheck();
-      return antigravityUsage(data, hash(source, accountId, model), model);
+      if (!status.subscriptionType || !status.orgId || !status.email || !model || process.platform === "darwin") return unknownCheck();
+      const home = env.CLAUDE_CONFIG_DIR || join(env.HOME || homedir(), ".claude");
+      const credentials = record(record(await readJson(join(home, ".credentials.json"))).claudeAiOauth);
+      const token = string(credentials.accessToken);
+      if (!token || (number(credentials.expiresAt) ?? 0) <= at.getTime()) return unknownCheck();
+      const headers = {
+        Authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20", Accept: "application/json",
+      };
+      const profile = await json("https://api.anthropic.com/api/oauth/profile", headers);
+      const account = record(profile.account), organization = record(profile.organization);
+      if (!account.uuid || account.email !== status.email || organization.uuid !== status.orgId) return unknownCheck();
+      verifiedIdentity = hash(source, account.uuid, organization.uuid, model);
+      const usage = await json("https://api.anthropic.com/api/oauth/usage", headers);
+      return claudeUsage(usage, verifiedIdentity, model);
     } catch {
       // stderr and API bodies can contain credentials. Log neither.
       return verifiedIdentity ? { auth: "subscription", status: "unknown", identity: verifiedIdentity } : unknownCheck();
@@ -171,12 +159,6 @@ function jwt(value: unknown): Record<string, unknown> {
   try { return record(JSON.parse(Buffer.from(String(value).split(".")[1]!, "base64url").toString("utf8"))); }
   catch { return {}; }
 }
-function commandData(output: string, name: string): Record<string, unknown> {
-  const frame = record(JSON.parse(output)), command = record(frame.command);
-  if (frame.status !== "SUCCESS" || frame.num_turns !== 0 || command.name !== name) throw new Error("Unsupported read-only response");
-  return record(command.data);
-}
-
 function rolling(windows: QuotaWindow[], identity: string): SubscriptionCheck {
   if (!windows.length) return { auth: "subscription", status: "unknown", identity };
   return { auth: "subscription", status: windows.some((w) => w.usedPct >= 100) ? "limited" : "ready", identity, windows };
@@ -227,20 +209,6 @@ export function claudeUsage(usage: Record<string, unknown>, identity: string, mo
     const window = { id, usedPct, resetAt: instant(limit.resets_at) ?? (index >= 0 ? windows[index]!.resetAt : null) };
     if (index >= 0) windows[index] = window; else windows.push(window);
   }
-  return rolling(windows, identity);
-}
-
-export function antigravityUsage(data: Record<string, unknown>, identity: string, model: string): SubscriptionCheck {
-  const groups = Array.isArray(data.groups) ? data.groups.map(record) : [];
-  const name = /argon/i.test(model) ? "Gemini 4 Argon" : /gemini/i.test(model) ? "Gemini Models" : /claude|gpt/i.test(model) ? "Claude and GPT models" : null;
-  const group = groups.find((g) => g.name === name);
-  if (!group) return { auth: "subscription", status: "unknown", identity };
-  const buckets = Array.isArray(group.buckets) ? group.buckets.map(record) : [];
-  const windows = buckets.flatMap((b): QuotaWindow[] => {
-    if (b.disabled === true) return [];
-    const remaining = number(b.remaining_fraction);
-    return remaining === undefined ? [] : [{ id: String(b.id), usedPct: 100 * (1 - remaining), resetAt: instant(b.reset_time) }];
-  });
   return rolling(windows, identity);
 }
 

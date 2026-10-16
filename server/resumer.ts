@@ -285,7 +285,7 @@ export function createResumer(options: {
     const held = check.auth !== "subscription" ? null
       : check.status === "limited" ? exhaustedReset(check, at)
       : job.resetAt && Date.parse(job.resetAt) > at.getTime() ? new Date(job.resetAt) : null;
-    const ready = check.auth === "subscription" && check.status === "ready" && !!check.identity && !held;
+    const ready = check.auth === "subscription" && check.status === "ready" && !held;
     if (!ready) {
       await store.update(job.agentId, (current) => current && isSameJob(current, job) && current.enabled ? {
         ...current, resetAt: held ? minuteIso(held) : current.resetAt, dueAt: dueFor(held, at),

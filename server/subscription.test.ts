@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { PaseoAgent, PaseoApi } from "./paseo-types";
-import { antigravityUsage, captureLaunch, claudeUsage, codexUsage, createSubscriptionReader } from "./subscription";
+import { captureLaunch, claudeUsage, codexUsage, createSubscriptionReader } from "./subscription";
 
 const at = new Date("2026-10-16T10:24:00Z");
 const until = "2026-10-16T14:14:22Z";
@@ -54,21 +54,6 @@ test("Claude applies the selected model's weekly quota, not another model's", ()
   assert.equal(claudeUsage(usage, "id", "claude-opus-4-6").status, "limited");
   assert.equal(claudeUsage({ five_hour: null, seven_day: null }, "id", "sonnet").status, "unknown");
   assert.equal(claudeUsage({ ...usage, limits: [{ kind: "unknown-new-budget" }] }, "id", "sonnet").status, "unknown");
-});
-
-test("Antigravity keeps model groups separate and excludes a disabled five-hour bucket", () => {
-  const usage = { groups: [
-    { name: "Gemini Models", buckets: [{ id: "gemini-weekly", remaining_fraction: 0.9, reset_time: until }] },
-    { name: "Claude and GPT models", buckets: [
-      { id: "3p-weekly", remaining_fraction: 0, reset_time: until },
-      { id: "3p-5h", remaining_fraction: 1, disabled: true },
-    ] },
-  ] };
-  assert.equal(antigravityUsage(usage, "id", "gemini-pro").status, "ready");
-  const blocked = antigravityUsage(usage, "id", "claude-opus");
-  assert.equal(blocked.status, "limited");
-  assert.equal(blocked.windows?.length, 1);
-  assert.equal(antigravityUsage(usage, "id", "future-model").status, "unknown");
 });
 
 test("the current Claude limits array preserves global and applicable model quotas", () => {
@@ -157,18 +142,8 @@ test("an uncaptured session is checked as the daemon and provider configuration 
   }
 });
 
-test("unsupported agy versions never execute slash probes", async () => {
-  const calls: string[][] = [];
-  const read = createSubscriptionReader({ run: async (_cmd, args) => { calls.push(args); return "1.1.10"; } });
-  assert.equal((await read(api(), agent("antigravity", "gemini-pro"), "antigravity", at, captureLaunch({ env: {} }))).auth, "unknown");
-  assert.deepEqual(calls, [["--version"]]);
-});
-
-test("agy missing account metadata stays unknown instead of treating a home path as identity", async () => {
-  const read = createSubscriptionReader({ run: async (_cmd, args) => {
-    if (args[0] === "--version") return "1.3.6";
-    const name = args[1]!.slice(1);
-    return JSON.stringify({ status: "SUCCESS", num_turns: 0, command: { name, data: name === "config" ? { config: { modelProvider: "" } } : { groups: [] } } });
-  } });
-  assert.equal((await read(api(), agent("antigravity", "gemini-pro"), "antigravity", at, captureLaunch({ env: {} }))).auth, "unknown");
+test("Antigravity follows the notice without probing agy, and its API routes stay excluded", async () => {
+  const read = createSubscriptionReader({ run: async () => { throw new Error("must not run agy"); } });
+  assert.deepEqual(await read(api(), agent("antigravity", "gemini-pro"), "antigravity", at, captureLaunch({ env: {} })), { auth: "subscription", status: "ready" });
+  assert.equal((await read(api(), agent("antigravity", "gemini-pro"), "antigravity", at, captureLaunch({ env: { GEMINI_API_KEY: "key" } }))).auth, "api");
 });
