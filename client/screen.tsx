@@ -1,21 +1,35 @@
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { useRpc } from "@getpaseo/plugin/client";
-import { Icon, ScrollView, useToast } from "@getpaseo/plugin/client/react-native";
+import { Icon, ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, RefreshControl, Text, View } from "react-native";
-import { listScheduledRpc, setEnabledRpc, type ScheduledJob } from "../shared/rpc";
 import {
+  listScheduledRpc,
+  rescheduleRpc,
+  setAllEnabledRpc,
+  setEnabledRpc,
+  type ScheduledJob,
+} from "../shared/rpc";
+import {
+  bulkAction,
   clockLabel,
+  dayChoices,
+  dayOffset,
   groupByDay,
   placeLabel,
   providerLabel,
+  refusalLabel,
   relativeLabel,
+  rescheduleProblem,
   summaryLabels,
+  timeOnDay,
 } from "./format";
 import { Toggle } from "./toggle";
 
 type Theme = PluginScreenProps["theme"];
+
+const BUMP_MS = 10 * 60_000;
 
 /** Re-renders on a cadence so countdowns stay current without refetching. */
 function useNow(intervalMs: number): number {
@@ -26,6 +40,8 @@ function useNow(intervalMs: number): number {
   }, [intervalMs]);
   return now;
 }
+
+const byDueAt = (jobs: ScheduledJob[]) => [...jobs].sort((left, right) => left.dueAt.localeCompare(right.dueAt));
 
 function createStyles(theme: Theme, compact: boolean) {
   const { colors } = theme;
@@ -38,7 +54,7 @@ function createStyles(theme: Theme, compact: boolean) {
       maxWidth: 600,
       alignSelf: "center" as const,
     },
-    header: { flexDirection: "row" as const, alignItems: "center" as const, marginBottom: 24 },
+    header: { flexDirection: "row" as const, alignItems: "center" as const, gap: 8, marginBottom: 24 },
     headerText: { flex: 1, gap: 4 },
     summary: { color: colors.foreground, fontSize: 18, fontWeight: "600" as const },
     summaryDetail: { color: colors.foregroundMuted, fontSize: 14, fontVariant: ["tabular-nums" as const] },
@@ -49,6 +65,8 @@ function createStyles(theme: Theme, compact: boolean) {
       alignItems: "center" as const,
       justifyContent: "center" as const,
     },
+    pressed: { backgroundColor: colors.surface2 },
+    disabled: { opacity: 0.4 },
     section: { marginBottom: 24 },
     sectionTitle: { color: colors.foregroundMuted, fontSize: 12, marginLeft: 4, marginBottom: 12 },
     card: {
@@ -58,15 +76,9 @@ function createStyles(theme: Theme, compact: boolean) {
       borderColor: colors.border,
       overflow: "hidden" as const,
     },
-    row: {
-      flexDirection: "row" as const,
-      alignItems: "center" as const,
-      gap: 12,
-      paddingVertical: 14,
-      paddingHorizontal: 16,
-    },
+    row: { paddingVertical: 14, paddingHorizontal: 16 },
+    rowLine: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
     rowDivider: { borderTopWidth: 1, borderTopColor: colors.border },
-    rowPressed: { backgroundColor: colors.surface2 },
     rowBody: { flex: 1, minWidth: 0 },
     timeLine: { flexDirection: "row" as const, alignItems: "baseline" as const, gap: 8 },
     time: {
@@ -74,6 +86,12 @@ function createStyles(theme: Theme, compact: boolean) {
       fontWeight: "600" as const,
       letterSpacing: -0.5,
       fontVariant: ["tabular-nums" as const],
+    },
+    // Dotted like an editable value; a solid underline would read as a link.
+    timeEditable: {
+      textDecorationLine: "underline" as const,
+      textDecorationStyle: "dotted" as const,
+      textDecorationColor: colors.foregroundMuted,
     },
     relative: { color: colors.foregroundMuted, fontSize: 12, fontVariant: ["tabular-nums" as const] },
     title: { fontSize: 14, marginTop: 2 },
@@ -92,6 +110,55 @@ function createStyles(theme: Theme, compact: boolean) {
     },
     chipText: { color: colors.foreground, fontSize: 12, fontWeight: "500" as const },
     metaText: { color: colors.foregroundMuted, fontSize: 12, flexShrink: 1 },
+    pill: {
+      height: 30,
+      paddingHorizontal: 10,
+      borderRadius: 15,
+      borderWidth: 1,
+      borderColor: colors.border,
+      alignItems: "center" as const,
+      justifyContent: "center" as const,
+    },
+    pillText: { color: colors.foreground, fontSize: 13, fontWeight: "500" as const, fontVariant: ["tabular-nums" as const] },
+    button: {
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      gap: 6,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 6,
+      paddingHorizontal: 12,
+      paddingVertical: 7,
+    },
+    buttonText: { color: colors.foreground, fontSize: 13, fontWeight: "500" as const },
+    edit: { gap: 8, marginBottom: 6 },
+    editLine: { flexDirection: "row" as const, alignItems: "center" as const, gap: compact ? 4 : 8 },
+    editInput: {
+      width: compact ? 74 : 92,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 6,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      color: colors.foreground,
+      fontSize: compact ? 19 : 22,
+      fontVariant: ["tabular-nums" as const],
+    },
+    segments: {
+      alignSelf: "flex-start" as const,
+      flexDirection: "row" as const,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 6,
+      overflow: "hidden" as const,
+    },
+    segment: { paddingHorizontal: compact ? 9 : 12, paddingVertical: 6 },
+    segmentActive: { backgroundColor: colors.surface2 },
+    segmentText: { color: colors.foregroundMuted, fontSize: 13, fontWeight: "500" as const },
+    segmentTextActive: { color: colors.foreground },
+    save: { backgroundColor: colors.accent },
+    editHint: { color: colors.foregroundMuted, fontSize: 12 },
+    editError: { color: colors.statusDanger, fontSize: 12 },
     centered: { alignItems: "center" as const, paddingVertical: 64, paddingHorizontal: 24, gap: 12 },
     emptyIcon: {
       width: 56,
@@ -120,67 +187,208 @@ function createStyles(theme: Theme, compact: boolean) {
 
 type Styles = ReturnType<typeof createStyles>;
 
+/** Replaces the time line while a time is typed; the server still has the final say. */
+function TimeEditor(props: {
+  job: ScheduledJob;
+  now: number;
+  compact: boolean;
+  theme: Theme;
+  styles: Styles;
+  onSave(dueAt: string): void;
+  onCancel(): void;
+}) {
+  const { job, now, styles, theme } = props;
+  const choices = dayChoices(job.dueAt, now);
+  const [text, setText] = useState(() => clockLabel(job.dueAt));
+  const [day, setDay] = useState(() => Math.max(0, dayOffset(job.dueAt, now)));
+  const dueAt = timeOnDay(text, day, now);
+  const problem = dueAt ? rescheduleProblem(job, dueAt, now) : "Enter a time like 07:30.";
+  const save = () => {
+    if (dueAt && !problem) props.onSave(dueAt);
+  };
+  // A third day (a weekly reset) does not fit beside the field and buttons on a phone.
+  const daysBelow = props.compact && choices.length > 2;
+
+  const days = (
+    <View style={styles.segments} accessibilityRole="radiogroup">
+      {choices.map((choice) => {
+        const active = choice.offset === day;
+        return (
+          <Pressable
+            key={choice.offset}
+            accessibilityRole="radio"
+            accessibilityState={{ checked: active }}
+            hitSlop={{ top: 6, bottom: 6 }}
+            onPress={() => setDay(choice.offset)}
+            style={[styles.segment, active ? styles.segmentActive : null]}
+          >
+            <Text style={[styles.segmentText, active ? styles.segmentTextActive : null]}>{choice.label}</Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+
+  return (
+    <View style={styles.edit}>
+      <View style={styles.editLine}>
+        <TextInput
+          value={text}
+          onChangeText={setText}
+          autoFocus
+          selectTextOnFocus
+          maxLength={5}
+          placeholder="HH:MM"
+          placeholderTextColor={theme.colors.foregroundMuted}
+          keyboardType="numbers-and-punctuation"
+          returnKeyType="done"
+          accessibilityLabel={`New time for ${job.title ?? "Untitled agent"}`}
+          onSubmitEditing={save}
+          onKeyPress={(event) => {
+            if (event.nativeEvent.key === "Escape") props.onCancel();
+          }}
+          style={styles.editInput}
+        />
+        {daysBelow ? null : days}
+        <View style={{ flex: 1 }} />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Cancel"
+          hitSlop={8}
+          onPress={props.onCancel}
+          style={({ pressed }) => [styles.iconButton, pressed ? styles.pressed : null]}
+        >
+          <Icon name="X" size={18} color={theme.colors.foregroundMuted} />
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Save time"
+          accessibilityState={{ disabled: !!problem }}
+          hitSlop={8}
+          disabled={!!problem}
+          onPress={save}
+          style={[styles.iconButton, styles.save, problem ? styles.disabled : null]}
+        >
+          <Icon name="Check" size={18} color={theme.colors.accentForeground} />
+        </Pressable>
+      </View>
+      {daysBelow ? days : null}
+      {problem ? (
+        <Text style={styles.editError} accessibilityLiveRegion="polite">
+          {problem}
+        </Text>
+      ) : (
+        <Text style={styles.editHint}>Continues {relativeLabel(dueAt!, now)}.</Text>
+      )}
+    </View>
+  );
+}
+
 function JobRow(props: {
   job: ScheduledJob;
   now: number;
   divided: boolean;
+  editing: boolean;
+  compact: boolean;
   theme: Theme;
   styles: Styles;
+  onEdit(editing: boolean): void;
+  onReschedule(job: ScheduledJob, dueAt: string): void;
   onToggle(job: ScheduledJob, enabled: boolean): void;
   onOpen?: (agentId: string) => void;
 }) {
-  const { job, now, styles, theme, onOpen } = props;
+  const { job, now, styles, theme, onOpen, editing } = props;
   const on = job.enabled;
+  const busy = job.sending;
   const tone = on ? theme.colors.foreground : theme.colors.foregroundMuted;
   const title = job.title ?? "Untitled agent";
   const place = placeLabel(job);
   const countdown = job.resetAt ? relativeLabel(job.dueAt, now) : `${relativeLabel(job.dueAt, now)} · reset unknown`;
-  const status = job.sending ? "Continuing…" : on ? countdown : "Skipped";
+  const status = busy ? "Continuing…" : on ? countdown : "Skipped";
   const resetSpoken = job.resetAt ? `limit resets at ${clockLabel(job.resetAt)}` : "reset time unknown, checks again";
 
-  const body = (
-    <>
-      <View style={styles.rowBody}>
-        <View style={styles.timeLine}>
-          <Text style={[styles.time, { color: tone }]}>{clockLabel(job.dueAt)}</Text>
-          <Text style={styles.relative}>{status}</Text>
-        </View>
-        <Text style={[styles.title, { color: tone }]} numberOfLines={1}>
-          {title}
-        </Text>
-        <View style={styles.meta}>
-          <View style={styles.chip}>
-            <Text style={styles.chipText}>{providerLabel(job.provider)}</Text>
-          </View>
-          {place ? (
-            <Text style={styles.metaText} numberOfLines={1}>
-              {place}
-            </Text>
-          ) : null}
-        </View>
-      </View>
-      <Toggle
-        value={on}
-        disabled={job.sending}
-        onValueChange={(value) => props.onToggle(job, value)}
-        theme={theme}
-        accessibilityLabel={`Continue ${title} automatically at ${clockLabel(job.dueAt)}, ${resetSpoken}`}
-      />
-    </>
-  );
-
-  const rowStyle = [styles.row, props.divided ? styles.rowDivider : null];
-  if (!onOpen) return <View style={rowStyle}>{body}</View>;
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`${title}, ${on ? `continues at ${clockLabel(job.dueAt)}` : "skipped"}`}
-      accessibilityHint="Opens the agent"
-      onPress={() => onOpen(job.agentId)}
-      style={({ pressed }) => [...rowStyle, pressed ? styles.rowPressed : null]}
-    >
-      {body}
-    </Pressable>
+    <View style={[styles.row, props.divided ? styles.rowDivider : null]}>
+      {editing ? (
+        <TimeEditor
+          job={job}
+          now={now}
+          compact={props.compact}
+          theme={theme}
+          styles={styles}
+          onSave={(dueAt) => props.onReschedule(job, dueAt)}
+          onCancel={() => props.onEdit(false)}
+        />
+      ) : null}
+      <View style={styles.rowLine}>
+        <View style={styles.rowBody}>
+          {editing ? null : (
+            <View style={styles.timeLine}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Change time for ${title}, now ${clockLabel(job.dueAt)}`}
+                accessibilityState={{ disabled: busy }}
+                disabled={busy}
+                hitSlop={8}
+                onPress={() => props.onEdit(true)}
+              >
+                <Text style={[styles.time, { color: tone }, busy ? null : styles.timeEditable]}>{clockLabel(job.dueAt)}</Text>
+              </Pressable>
+              <Text style={styles.relative}>{status}</Text>
+            </View>
+          )}
+          <Text style={[styles.title, { color: tone }]} numberOfLines={1}>
+            {title}
+          </Text>
+          <View style={styles.meta}>
+            <View style={styles.chip}>
+              <Text style={styles.chipText}>{providerLabel(job.provider)}</Text>
+            </View>
+            {place ? (
+              <Text style={styles.metaText} numberOfLines={1}>
+                {place}
+              </Text>
+            ) : null}
+          </View>
+        </View>
+        {/* The editor needs the row's width on compact layouts, so the row's own controls step aside. */}
+        {editing ? null : (
+          <>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Continue ${title} 10 minutes later`}
+              accessibilityState={{ disabled: busy }}
+              disabled={busy}
+              hitSlop={6}
+              onPress={() => props.onReschedule(job, new Date(Date.parse(job.dueAt) + BUMP_MS).toISOString())}
+              style={({ pressed }) => [styles.pill, busy ? styles.disabled : null, pressed ? styles.pressed : null]}
+            >
+              <Text style={styles.pillText}>+10m</Text>
+            </Pressable>
+            {onOpen ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Open ${title}`}
+                accessibilityState={{ disabled: busy }}
+                disabled={busy}
+                hitSlop={4}
+                onPress={() => onOpen(job.agentId)}
+                style={({ pressed }) => [styles.iconButton, busy ? styles.disabled : null, pressed ? styles.pressed : null]}
+              >
+                <Icon name="SquareArrowOutUpRight" size={18} color={theme.colors.foregroundMuted} />
+              </Pressable>
+            ) : null}
+            <Toggle
+              value={on}
+              disabled={busy}
+              onValueChange={(value) => props.onToggle(job, value)}
+              theme={theme}
+              accessibilityLabel={`Continue ${title} automatically at ${clockLabel(job.dueAt)}, ${resetSpoken}`}
+            />
+          </>
+        )}
+      </View>
+    </View>
   );
 }
 
@@ -188,9 +396,12 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
   const styles = useMemo(() => createStyles(theme, layout.compact), [theme, layout.compact]);
   const listScheduled = useRpc(listScheduledRpc);
   const setEnabled = useRpc(setEnabledRpc);
+  const setAllEnabled = useRpc(setAllEnabledRpc);
+  const reschedule = useRpc(rescheduleRpc);
   const queryClient = useQueryClient();
   const toast = useToast();
   const now = useNow(15_000);
+  const [editing, setEditing] = useState<string | null>(null);
   const queryKey = useMemo(() => ["usage-auto-resume", "jobs", host.id], [host.id]);
 
   const query = useQuery({
@@ -198,6 +409,19 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
     queryFn: async () => (await listScheduled({})).jobs,
     refetchInterval: 30_000,
   });
+
+  /** Applies a change to the cached list at once and returns what to roll back to. */
+  async function optimistic(change: (jobs: ScheduledJob[]) => ScheduledJob[]) {
+    await queryClient.cancelQueries({ queryKey });
+    const previous = queryClient.getQueryData<ScheduledJob[]>(queryKey);
+    queryClient.setQueryData<ScheduledJob[]>(queryKey, (jobs) => (jobs ? change(jobs) : jobs));
+    return { previous };
+  }
+
+  function rollback(error: unknown, context: { previous?: ScheduledJob[] } | undefined) {
+    if (context?.previous) queryClient.setQueryData(queryKey, context.previous);
+    toast.error(error instanceof Error ? error.message : "Could not update the schedule.");
+  }
 
   const toggle = useMutation({
     mutationFn: async (input: { job: ScheduledJob; enabled: boolean }) => {
@@ -208,24 +432,51 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
       });
       if (!changed) throw new Error("This schedule already ran or changed.");
     },
-    onMutate: async ({ job, enabled }) => {
-      await queryClient.cancelQueries({ queryKey });
-      const previous = queryClient.getQueryData<ScheduledJob[]>(queryKey);
-      queryClient.setQueryData<ScheduledJob[]>(queryKey, (jobs) =>
-        jobs?.map((entry) => (entry.agentId === job.agentId ? { ...entry, enabled } : entry)),
+    onMutate: ({ job, enabled }) =>
+      optimistic((jobs) => jobs.map((entry) => (entry.agentId === job.agentId ? { ...entry, enabled } : entry))),
+    onError: (error, _input, context) => rollback(error, context),
+    onSettled: () => queryClient.invalidateQueries({ queryKey }),
+  });
+
+  // Moving a job turns it on, like changing an alarm's time; it may also change its day group.
+  const move = useMutation({
+    mutationFn: async (input: { job: ScheduledJob; dueAt: string }) => {
+      const result = await reschedule({ agentId: input.job.agentId, dueAt: input.job.dueAt, newDueAt: input.dueAt });
+      if (!result.changed) throw new Error(refusalLabel(input.job, result));
+    },
+    onMutate: ({ job, dueAt }) => {
+      setEditing(null);
+      return optimistic((jobs) =>
+        byDueAt(jobs.map((entry) => (entry.agentId === job.agentId ? { ...entry, dueAt, enabled: true } : entry))),
       );
-      return { previous };
     },
-    onError: (error, _input, context) => {
-      if (context?.previous) queryClient.setQueryData(queryKey, context.previous);
-      toast.error(error instanceof Error ? error.message : "Could not update the schedule.");
+    onError: (error, _input, context) => rollback(error, context),
+    onSettled: () => queryClient.invalidateQueries({ queryKey }),
+  });
+
+  // Only the rows on screen change; one being sent cannot be turned off any more.
+  const toggleAll = useMutation({
+    mutationFn: async (input: { enabled: boolean; jobs: ScheduledJob[] }) =>
+      (
+        await setAllEnabled({
+          enabled: input.enabled,
+          jobs: input.jobs.map(({ agentId, dueAt }) => ({ agentId, dueAt })),
+        })
+      ).changed,
+    onMutate: ({ enabled, jobs: shown }) => {
+      const ids = new Set(shown.map((job) => job.agentId));
+      return optimistic((jobs) => jobs.map((entry) => (ids.has(entry.agentId) ? { ...entry, enabled } : entry)));
     },
+    onSuccess: (changed, { enabled }) =>
+      toast.show(`${changed} ${changed === 1 ? "schedule" : "schedules"} turned ${enabled ? "on" : "off"}`),
+    onError: (error, _input, context) => rollback(error, context),
     onSettled: () => queryClient.invalidateQueries({ queryKey }),
   });
 
   const openAgent = navigation ? (agentId: string) => navigation.openAgent({ agentId }) : undefined;
   const jobs = query.data ?? [];
   const summary = summaryLabels(jobs);
+  const bulk = bulkAction(jobs);
 
   let content;
   if (query.isPending) {
@@ -265,13 +516,23 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
             </Text>
             {summary.detail ? <Text style={styles.summaryDetail}>{summary.detail}</Text> : null}
           </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={bulk.label}
+            hitSlop={4}
+            onPress={() => toggleAll.mutate({ enabled: bulk.enabled, jobs: jobs.filter((job) => !job.sending) })}
+            style={({ pressed }) => [styles.button, pressed ? styles.pressed : null]}
+          >
+            <Icon name={bulk.enabled ? "Power" : "PowerOff"} size={14} color={theme.colors.foreground} />
+            <Text style={styles.buttonText}>{layout.compact ? bulk.shortLabel : bulk.label}</Text>
+          </Pressable>
           {layout.compact ? null : (
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Refresh"
               hitSlop={4}
               onPress={() => void query.refetch()}
-              style={({ pressed }) => [styles.iconButton, pressed ? styles.rowPressed : null]}
+              style={({ pressed }) => [styles.iconButton, pressed ? styles.pressed : null]}
             >
               <Icon name="RefreshCw" size={16} color={theme.colors.foregroundMuted} />
             </Pressable>
@@ -287,9 +548,13 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
                   job={job}
                   now={now}
                   divided={index > 0}
+                  editing={editing === job.agentId && !job.sending}
+                  compact={layout.compact}
                   theme={theme}
                   styles={styles}
+                  onEdit={(start) => setEditing(start ? job.agentId : null)}
                   onOpen={openAgent}
+                  onReschedule={(target, dueAt) => move.mutate({ job: target, dueAt })}
                   onToggle={(target, enabled) => toggle.mutate({ job: target, enabled })}
                 />
               ))}
@@ -304,6 +569,7 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
     <ScrollView
       style={styles.scroll}
       contentContainerStyle={styles.content}
+      keyboardShouldPersistTaps="handled"
       refreshControl={
         layout.compact ? (
           <RefreshControl

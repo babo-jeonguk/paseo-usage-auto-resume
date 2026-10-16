@@ -38,7 +38,9 @@ Open **Auto Resume** from the sidebar. Pending resumes are grouped by day and sh
 
 - New reservations start enabled. Switch one off to skip it; changes save immediately.
 - A disabled reservation stays visible until its scheduled time and can be enabled again before then.
-- Select a row to open the agent conversation.
+- **+10m** sends 10 minutes later. Select the time to type a new one and pick **Today**, **Tomorrow**, or (for a weekly reset) the reservation's own day. A time before the limit resets (plus two minutes) or more than a week away is explained instead of saved. Moving a reservation turns it on.
+- The header button turns every reservation off while any is on, and all back on otherwise. It changes only the rows on screen; one already being sent is left alone.
+- The open button on each row opens the agent conversation.
 - The list refreshes every 30 seconds. Desktop has a refresh button; mobile supports pull to refresh.
 
 ## How it works

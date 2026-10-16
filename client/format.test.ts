@@ -1,7 +1,20 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ScheduledJob } from "../shared/rpc";
-import { dayLabel, groupByDay, placeLabel, providerLabel, relativeLabel, summaryLabels } from "./format";
+import {
+  bulkAction,
+  dayChoices,
+  dayLabel,
+  dayOffset,
+  groupByDay,
+  placeLabel,
+  providerLabel,
+  refusalLabel,
+  relativeLabel,
+  rescheduleProblem,
+  summaryLabels,
+  timeOnDay,
+} from "./format";
 
 const job = (overrides: Partial<ScheduledJob>): ScheduledJob => ({
   agentId: "a",
@@ -55,4 +68,54 @@ test("labels for provider and place", () => {
   assert.equal(placeLabel(job({ projectName: "DoneFolio", workspaceName: "DoneFolio" })), "DoneFolio");
   assert.equal(placeLabel(job({ projectName: "DoneFolio", workspaceName: "issue-233" })), "DoneFolio · issue-233");
   assert.equal(placeLabel(job({})), null);
+});
+
+test("a typed time lands on the chosen day in local time", () => {
+  assert.equal(timeOnDay("07:30", 1, now), new Date(2026, 9, 7, 7, 30).toISOString());
+  assert.equal(timeOnDay("7:05", 0, now), new Date(2026, 9, 6, 7, 5).toISOString());
+  assert.equal(timeOnDay("2215", 0, now), new Date(2026, 9, 6, 22, 15).toISOString());
+  assert.equal(timeOnDay(" 23:59 ", 3, now), new Date(2026, 9, 9, 23, 59).toISOString());
+  for (const bad of ["", "24:00", "12:60", "noon", "1:2", "12:345"]) assert.equal(timeOnDay(bad, 0, now), null, bad);
+});
+
+test("day choices are today and tomorrow, plus the job's own day when it is later", () => {
+  assert.deepEqual(dayChoices(new Date(2026, 9, 6, 18, 53).toISOString(), now), [
+    { offset: 0, label: "Today" },
+    { offset: 1, label: "Tomorrow" },
+  ]);
+  assert.deepEqual(dayChoices(new Date(2026, 9, 9, 4, 13).toISOString(), now), [
+    { offset: 0, label: "Today" },
+    { offset: 1, label: "Tomorrow" },
+    { offset: 3, label: "Fri, Oct 9" },
+  ]);
+  assert.equal(dayOffset(new Date(2026, 9, 9, 4, 13).toISOString(), now), 3);
+});
+
+test("a new time before the reset or over a week out is explained before it is sent", () => {
+  const limited = job({ resetAt: new Date(2026, 9, 6, 18, 51).toISOString() });
+  assert.equal(
+    rescheduleProblem(limited, new Date(2026, 9, 6, 18, 0).toISOString(), now),
+    "Too early — the limit resets at 18:51. Earliest is 18:53.",
+  );
+  assert.equal(rescheduleProblem(limited, new Date(2026, 9, 6, 18, 53).toISOString(), now), null);
+  assert.equal(
+    rescheduleProblem(job({}), new Date(2026, 9, 6, 17, 1, 30).toISOString(), now),
+    "Too early — earliest is 17:02.",
+  );
+  assert.equal(rescheduleProblem(job({}), new Date(2026, 9, 13, 18, 2).toISOString(), now), "Pick a time within 7 days.");
+  assert.equal(rescheduleProblem(job({}), new Date(2026, 9, 13, 18, 1).toISOString(), now), null);
+});
+
+test("the server's refusals read the same way", () => {
+  const limited = job({ resetAt: new Date(2026, 9, 6, 18, 51).toISOString() });
+  const earliest = new Date(2026, 9, 6, 18, 53).toISOString();
+  assert.equal(refusalLabel(limited, { changed: false, reason: "too-early", earliest }), "Too early — the limit resets at 18:51. Earliest is 18:53.");
+  assert.equal(refusalLabel(limited, { changed: false, reason: "too-late" }), "Pick a time within 7 days.");
+  assert.equal(refusalLabel(limited, { changed: false, reason: "sending" }), "This agent is continuing now.");
+  assert.equal(refusalLabel(limited, { changed: false, reason: "changed" }), "This schedule already ran or changed.");
+});
+
+test("one bulk button turns everything off while anything is on", () => {
+  assert.deepEqual(bulkAction([job({}), job({ enabled: false })]), { enabled: false, label: "Turn all off", shortLabel: "All off" });
+  assert.deepEqual(bulkAction([job({ enabled: false }), job({ sending: true })]), { enabled: true, label: "Turn all on", shortLabel: "All on" });
 });

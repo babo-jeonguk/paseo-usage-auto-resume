@@ -1,7 +1,7 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { createResumer } from "./server/resumer";
 import { createJobStore } from "./server/store";
-import { listScheduledRpc, setEnabledRpc } from "./shared/rpc";
+import { listScheduledRpc, rescheduleRpc, setAllEnabledRpc, setEnabledRpc } from "./shared/rpc";
 import { providerSettings } from "./shared/settings";
 
 const TICK_MS = 30_000;
@@ -47,6 +47,14 @@ export default function contribute(server: PluginServerContext) {
   server.handle(setEnabledRpc, async ({ agentId, dueAt, enabled }, { paseo }) => {
     void resumer.attach(paseo);
     return { changed: await resumer.setEnabled(agentId, dueAt, enabled) };
+  });
+  server.handle(setAllEnabledRpc, async ({ enabled, jobs }, { paseo }) => {
+    void resumer.attach(paseo);
+    return { changed: await resumer.setAllEnabled(enabled, jobs) };
+  });
+  server.handle(rescheduleRpc, async ({ agentId, dueAt, newDueAt }, { paseo }) => {
+    void resumer.attach(paseo);
+    return resumer.reschedule(agentId, dueAt, newDueAt);
   });
   const timer = setInterval(() => void resumer.tick().catch(report), TICK_MS);
 
