@@ -20,24 +20,25 @@ const agent = (provider: string, selectedModel = model) => ({ id: "a", provider,
 const api = (providers: Record<string, unknown> = {}) => ({ config: { get: async () => ({ config: { providers } }) } }) as unknown as Pick<PaseoApi, "config">;
 const response = (data: unknown) => Promise.resolve(new Response(JSON.stringify(data), { status: 200 }));
 
-test("workspace credits cannot borrow the unrelated main five-hour reset", () => {
+test("a workspace out of credits waits for its used-up five-hour window, as the live Team response shows", () => {
   const check = codexUsage(baseUsage, "business-model", model);
-  assert.equal(check.status, "credits");
-  assert.equal(check.windows, undefined);
+  assert.equal(check.status, "limited");
+  assert.deepEqual(check.windows, [{ id: "primary_window", usedPct: 100, resetAt: "2026-10-16T14:14:22.000Z" }]);
+  const renewed = codexUsage({ ...baseUsage, rate_limit: { allowed: false, limit_reached: false, primary_window: { used_percent: 3, reset_at: 1792178062 } } }, "business-model", model);
+  assert.equal(renewed.status, "ready", "credits alone never hold a continue");
 });
 
-test("the observed exact model availability supplies its own reset and positive recovery", () => {
+test("the observed exact model availability supplies its own reset and recovery", () => {
   const blocked = codexUsage({ ...baseUsage, model_usage: { [model]: { available: false, available_at: until } } }, "business-model", model);
   assert.equal(blocked.status, "limited");
   assert.equal(blocked.windows?.[0]?.resetAt, "2026-10-16T14:14:22.000Z");
   const ready = codexUsage({ ...baseUsage, model_usage: { [model]: { available: true } } }, "business-model", model);
   assert.equal(ready.status, "ready");
-  assert.equal(ready.creditRecovery, true);
-  assert.equal(codexUsage({ ...baseUsage, model_usage: { "another-model": { available: true } } }, "business-model", model).status, "credits");
+  assert.equal(codexUsage({ ...baseUsage, model_usage: { "another-model": { available: true } } }, "business-model", model).status, "limited");
 });
 
-test("a spending cap wins over model availability and missing readiness never clears a block", () => {
-  assert.equal(codexUsage({ ...baseUsage, spend_control: { reached: true }, model_usage: { [model]: { available: true } } }, "id", model).status, "credits");
+test("a spending cap never decides readiness, and missing windows never read as ready", () => {
+  assert.equal(codexUsage({ ...baseUsage, spend_control: { reached: true }, model_usage: { [model]: { available: true } } }, "id", model).status, "ready");
   assert.equal(codexUsage({ rate_limit: { primary_window: null }, spend_control: null }, "id", model).status, "unknown");
   assert.equal(codexUsage({ rate_limit: { allowed: true, limit_reached: false } }, "id", model).status, "unknown");
 });
@@ -127,7 +128,7 @@ test("read-only Codex status and usage bind workspace/model identity without ref
     assert.equal(first.status, "limited");
     payload = { ...baseUsage, model_usage: { [model]: { available: true } } };
     const recovered = await read(api(), agent("codex"), "codex", at, launch);
-    assert.equal(recovered.creditRecovery, true);
+    assert.equal(recovered.status, "ready");
     assert.equal(first.identity, recovered.identity);
     assert.notEqual((await read(api(), agent("codex", "another-model"), "codex", at, launch)).identity, first.identity);
     payload = { ...payload, account_id: "different-workspace" };

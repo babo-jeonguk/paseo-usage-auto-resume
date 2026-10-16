@@ -136,12 +136,12 @@ test("a limit notice without a time is detected with an unknown reset", () => {
   assert.deepEqual(detectLimitStop(failed("Rate limit exceeded"), [prompt], observedAt), { resetAt: null });
 });
 
-test("workspace credit notices are observation candidates without a guessed reset", () => {
+test("workspace credit notices are limit stops without a guessed reset", () => {
   for (const message of [
     "Your workspace is out of credits. Ask your workspace owner to refill in order to continue.",
     "Your AI credits balance is too low to continue.",
     "You hit your spend cap set in your workspace. Increase your spend cap to continue.",
-  ]) assert.deepEqual(detectLimitStop(failed(message), [], observedAt), { resetAt: null, kind: "credits" });
+  ]) assert.deepEqual(detectLimitStop(failed(message), [], observedAt), { resetAt: null });
 });
 
 test("API billing codes and prepaid exhaustion win over generic quota patterns", () => {
