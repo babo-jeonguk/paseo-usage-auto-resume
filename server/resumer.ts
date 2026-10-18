@@ -210,10 +210,17 @@ export function createResumer(options: {
     const settings = await readSettings();
     if (!settings) return;
     const { config } = await api.config.get();
-    const { entries } = await api.agents.list({
-      filter: { statuses: ["idle", "error"] },
+    // Visibility does not opt an agent out of recovery. Older host SDKs ignore this field.
+    const filter = { statuses: ["idle", "error"] satisfies PaseoAgent["status"][], includeBackground: true };
+    const query: NonNullable<Parameters<ResumerApi["agents"]["list"]>[0]> = {
+      filter,
       sort: [{ key: "updated_at", direction: "desc" }],
       page: { limit: 200 },
+    };
+    const { entries } = await api.agents.list(query).catch((error: unknown) => {
+      // A newer SDK connected to an older daemon explicitly rejects inclusive discovery.
+      if (!(error instanceof Error) || error.message !== "Update the host to use background workspaces.") throw error;
+      return api.agents.list({ ...query, filter: { statuses: filter.statuses } });
     });
     const since = now().getTime() - SCAN_WINDOW_MS;
     for (const { agent } of entries) {

@@ -60,6 +60,10 @@ const advance = (ms: number) => {
 interface FakeOptions {
   readSubscription?: SubscriptionReader;
   timelines?: Record<string, AgentTimelineItem[]>;
+  backgroundAgents?: string[];
+  /** A newer SDK can reject inclusive discovery against an older host. */
+  backgroundUnsupported?: boolean;
+  listError?: Error;
   usage?: Array<{ providerId: string; displayName: string; status?: string; windows: Array<Record<string, unknown>> }>;
   /** Runs while usage is being read, as a concurrent change would. */
   duringListUsage?: () => Promise<void>;
@@ -71,6 +75,7 @@ interface FakeOptions {
 /** Daemon stand-in: agent snapshots by ID, recorded sends, and no way to create agents. */
 function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOptions = {}) {
   const sent: Array<{ agentId: string; text: string }> = [];
+  const listCalls: Array<{ filter?: { statuses?: string[]; includeBackground?: boolean } }> = [];
   let usageReads = 0;
   const snapshot = (agentId: string, agent: Partial<PaseoAgent>) =>
     ({
@@ -86,12 +91,20 @@ function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOption
     }) as PaseoAgent;
   const api = {
     agents: {
-      list: async (options: { filter?: { statuses?: string[] } }) => ({
-        entries: [...agents]
-          .map(([agentId, agent]) => ({ agent: snapshot(agentId, agent), project: null }))
-          .filter((entry) => options.filter?.statuses?.includes(entry.agent.status) ?? true),
-        pageInfo: { nextCursor: null, prevCursor: null, hasMore: false },
-      }),
+      list: async (query: { filter?: { statuses?: string[]; includeBackground?: boolean } }) => {
+        listCalls.push(query);
+        if (options.listError) throw options.listError;
+        if (query.filter?.includeBackground && options.backgroundUnsupported) {
+          throw new Error("Update the host to use background workspaces.");
+        }
+        return {
+          entries: [...agents]
+            .filter(([agentId]) => query.filter?.includeBackground || !options.backgroundAgents?.includes(agentId))
+            .map(([agentId, agent]) => ({ agent: snapshot(agentId, agent), project: null }))
+            .filter((entry) => query.filter?.statuses?.includes(entry.agent.status) ?? true),
+          pageInfo: { nextCursor: null, prevCursor: null, hasMore: false },
+        };
+      },
       ref: (agentId: string) => ({
         refresh: async () => {
           const agent = agents.get(agentId);
@@ -158,7 +171,7 @@ function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOption
     const windows = entry.windows.map((w) => ({ id: w.id, usedPct: w.usedPct ?? 100 - (w.remainingPct ?? 0), resetAt: w.resetsAt ?? null }));
     return { auth: "subscription", status: windows.some((w) => w.usedPct >= 100) ? "limited" : "ready", identity, windows };
   });
-  return { api, sent, readSubscription, usageReads: () => usageReads };
+  return { api, sent, listCalls, readSubscription, usageReads: () => usageReads };
 }
 
 function turnEnded(
@@ -489,6 +502,44 @@ test("startup scan finds a Claude closing notice and ignores everything else", a
   // s1's provider is turned off. o1 stopped 12h05m before the scan, i1 11h55m before: only the 12-hour window counts.
   assert.deepEqual(jobs.map((job) => job.agentId), ["m1", "i1"]);
   assert.equal(jobs[0]?.dueAt, "2026-10-06T06:02:00.000Z");
+});
+
+test("startup scan recovers unseen limit stops in background workspaces and sends to the existing agents", async () => {
+  clock = new Date("2026-10-06T03:10:00.000Z");
+  const updatedAt = "2026-10-06T03:05:00.000Z";
+  const { sent, resumer } = await setup({
+    c1: { provider: "codex", status: "error", lastError: CODEX_LIMIT, updatedAt },
+    m1: { provider: "claude", status: "idle", updatedAt },
+    off: { provider: "claude-sub", status: "error", lastError: CLAUDE_LIMIT, updatedAt },
+  }, {
+    backgroundAgents: ["c1", "m1", "off"],
+    timelines: { m1: claudeNotice(CLAUDE_LIMIT) },
+    readSettings: async () => ({ disabledProviders: ["claude-sub"] }),
+  });
+  assert.deepEqual((await store.list()).map((job) => job.agentId).sort(), ["c1", "m1"]);
+  clock = new Date("2026-10-06T06:02:00.000Z");
+  await resumer.tick();
+  await resumer.tick();
+  assert.deepEqual(sent.map((message) => message.agentId).sort(), ["c1", "m1"]);
+  assert.ok(sent.every((message) => message.text === CONTINUE_PROMPT));
+});
+
+test("startup scan falls back to normal discovery when an older host rejects background discovery", async () => {
+  const { listCalls } = await setup({
+    c1: { provider: "codex", status: "error", lastError: CODEX_LIMIT },
+  }, { backgroundUnsupported: true });
+  assert.equal(listCalls.length, 2);
+  assert.equal(listCalls[0]?.filter?.includeBackground, true);
+  assert.equal(listCalls[1]?.filter?.includeBackground, undefined);
+  assert.deepEqual((await store.list()).map((job) => job.agentId), ["c1"]);
+});
+
+test("startup scan does not hide unrelated discovery failures by retrying a narrower list", async () => {
+  const { listCalls } = await setup({
+    c1: { provider: "codex", status: "error", lastError: CODEX_LIMIT },
+  }, { listError: new Error("Connection lost") });
+  assert.equal(listCalls.length, 1);
+  assert.deepEqual(await store.list(), []);
 });
 
 test("startup scan keeps a job that already exists", async () => {
