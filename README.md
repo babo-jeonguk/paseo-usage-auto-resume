@@ -1,118 +1,68 @@
 # Usage Auto Resume
 
-A [Paseo](https://paseo.sh) plugin that continues the same Codex, Claude, or Antigravity agent after a provider usage limit resets. It supports session and weekly limits, persists scheduled resumes across restarts, and gives each pending resume an on/off switch.
+**Let Auto Resume handle the wait for usage limits to reset.**
 
-[한국어 안내](README.ko.md)
+A [Paseo](https://paseo.sh) plugin that automatically asks the same Codex, Claude, or Antigravity agent to continue unfinished work after a usage limit resets. Step away without coming back just to send “continue.”
 
-## Screenshots
+[한국어](README.ko.md)
 
-The actual Paseo web interface, captured with sample reservations in an isolated demo host.
+![Automatic resume reservations grouped by day, with times, switches and conversation links](assets/auto-resume.png)
 
-![Auto Resume reservations grouped by day, with enabled and skipped jobs](assets/auto-resume.png)
+Actual Paseo web interface with sample reservations. Each row shows what is scheduled to continue or waiting for verification.
 
-![Provider settings with a switch for each Claude, Codex and Antigravity provider](assets/provider-settings.png)
+- **Pick up in the same conversation.** Resumes are scheduled automatically when a supported agent stops at a usage limit.
+- **See what comes next.** Check upcoming resumes across providers and workspaces, including session and weekly resets. Reservations survive daemon and plugin restarts.
+- **Adjust when you need to.** Skip one resume, turn the displayed reservations off together, or move a resume to a later time.
 
-## Install
+## Install and start
 
-Requires **Paseo daemon and app 0.11.0 or later**, with plugins enabled in the daemon configuration.
+Requires **Paseo daemon and app 0.11.0 or later**, with plugins enabled, and the provider CLI already signed in on the daemon host. Enable plugins in **Settings → Plugins**, or set `pluginsEnabled` to `true` in the daemon configuration.
+
+| Provider | Current behavior |
+| --- | --- |
+| Codex | Verifies the ChatGPT account, model and subscription usage before sending. |
+| Claude | Verifies the claude.ai account, model and subscription usage. **On macOS, automatic resumes wait** because Keychain credentials are not supported. |
+| Antigravity | Uses the reset stated in the limit notice; account and usage verification are unavailable. |
+
+API-key and external billing routes are excluded.
 
 ```bash
 paseo plugin install github:babo-jeonguk/paseo-usage-auto-resume
 ```
 
-The plugin ID is `usage-auto-resume`. This repository can be installed directly from GitHub; a registry listing is separate.
+1. Open **Auto Resume** from the sidebar. An empty list is normal until an eligible limit stop is found.
+2. Continue using your agents as usual. When a supported agent hits its limit, a resume reservation or verification wait appears automatically.
+3. Keep the daemon host awake and running. A known reset is scheduled with a two-minute buffer; Codex and Claude also require fresh account and usage checks before sending.
 
-By default, the plugin considers agents of every provider that runs Claude, Codex, or Antigravity: the built-in `claude`, `codex`, and `antigravity`, and any provider that extends one of them, such as `claude-main` or `codex-sub`. The plugin uses the CLI accounts already signed in on the daemon host.
+A verification wait shows the **next check time**, not a promised resume. If you send another message or the agent is running, closed, archived or awaiting permission, the pending resume is canceled.
 
-## Turn providers on or off
+## Adjust a resume
 
-Open **Settings → Plugins → usage-auto-resume → Settings**. The screen lists every Claude, Codex, and Antigravity provider the daemon knows, grouped by CLI, with its ID, the account it signs in as, and its pending reservations. Each switch takes effect immediately. A provider is found by following its `extends` chain to a built-in provider, so `codex-reserve` extending `codex` is listed under Codex even when it shares the `codex` account.
+Each row shows the time, countdown or verification status, conversation title, provider and workspace.
 
-Every provider starts on, including one added to Paseo later. Turning a provider off means its agents are never scheduled, and its pending reservations are canceled, including ones turned off in the Auto Resume list. Turning it back on does not restore them. The next limit stop is scheduled as usual, and after a restart the startup scan may find a recent stop again. The switches are stored per daemon. Hosts upgrading from the earlier one-ID-per-CLI settings start with every provider on. If stored settings cannot be read, automatic resumes wait instead of falling back to the defaults.
+- **Switch:** off skips this resume. Turn it back on before its time to restore it.
+- **+10m / time:** delay by ten minutes or select the time to enter another one. The editor explains the allowed range. Changing the time turns the reservation on.
+- **Header switch:** turn the displayed reservations off or back on together. A resume already being sent is left alone.
+- **Open button:** go to the existing conversation.
 
-Provider settings use Paseo's native settings storage under `$PASEO_HOME/plugin-settings/usage-auto-resume/providers.json`. They are separate from the source code and resume-job file.
+For a verification wait, changing the time moves the next check.
 
-## Use
+## Choose providers
 
-Open **Auto Resume** from the sidebar. Pending resumes and verification waits are grouped by day and show their send or check time, countdown, agent title, provider and project/workspace.
+Open **Settings → Plugins → usage-auto-resume → Settings**. Built-in providers and profiles that extend them, such as `claude-main` or `codex-sub`, are listed with their account when available.
 
-- New reservations start enabled. Switch one off to skip it; changes save immediately.
-- A disabled reservation stays visible until its scheduled time and can be enabled again before then.
-- **+10m** sends 10 minutes later. Select the time to type a new one and pick **Today**, **Tomorrow**, or (for a weekly reset) the reservation's own day. A time before the limit resets (plus two minutes) or more than a week away is explained instead of saved. Moving a reservation turns it on.
-- The header button turns every reservation off while any is on, and all back on otherwise. It changes only the rows on screen; one already being sent is left alone.
-- The open button on each row opens the agent conversation.
-- The list refreshes every 30 seconds. Desktop has a refresh button; mobile supports pull to refresh.
+![Provider settings with account labels and individual switches](assets/provider-settings.png)
 
-## How it works
+All supported providers start on, including newly added ones. Turning a provider off cancels its pending reservations, including skipped ones. Turning it back on does not restore canceled reservations. Settings apply immediately and are stored per daemon.
 
-A turn-ending hook identifies short limit notices and explicit error codes. These are candidates, not authorization to retry. The plugin captures non-secret launch paths and credential-presence flags at session open, then checks actual CLI authentication. API-key and external billing routes are excluded; unknown authentication waits.
+## Data and operating limits
 
-For Codex it reads account/config status without refreshing the login, then queries the exact ChatGPT workspace's usage. For Claude it checks `auth status --json`, verifies the OAuth profile and reads subscription usage. Account/workspace and model scope are bound to the reservation. A change cancels the reservation. Stored OAuth alone never overrides an active API provider.
+The plugin reads agent state, recent limit notices, provider configuration and CLI credentials. Codex and Claude checks contact their providers' account/usage endpoints without model turns. Tokens are never saved in jobs or logged. Resume prompts go through Paseo to the existing agent and its provider; reservations are stored locally.
 
-Every limit stop, including workspace-credit and spending notices, is decided by the applicable 5-hour and weekly windows. Credits only say whether usage could run past a window. A used-up window schedules the continue at its reset; for Codex, the exact model's `model_usage.available_at` counts as that model's window. When no applicable window is used up, the plugin retries the continue after 15, 30 and 60 minutes, then gives up, unless the notice states a reset that is still ahead, which it waits for. A used-up window found later starts the retries over.
+After a restart, checks resume once a lifecycle event or opening Auto Resume supplies the Paseo API. Unreadable authentication or usage keeps Codex/Claude in verification wait. Subagent continuation depends on the parent agent's tools.
 
-Jobs wait two minutes past a known reset. Before sending, the plugin checks both the agent and fresh subscription state. Missing usage, stale 100% windows and unknown authentication postpone a read-only check by 15 minutes; they never authorize a continue. Multiple applicable exhausted windows wait for their latest known reset. New messages, active/closed/archived agents and pending permissions cancel a resume. Claiming before sending prevents duplicate delivery after a crash, though an interrupted send can therefore be lost.
-
-The screen labels account and usage verification waits separately. A waiting row's time is the next status check, not a promised continue. Read-only checks do not count as automatic model retries; actual continues remain bounded to 24 consecutive limit stops.
-
-The prompt asks the parent agent to review saved progress and resume unfinished work, including unfinished subagents that stopped at the usage limit. Actual subagent continuation depends on the parent's available provider tools; the plugin sends only to the parent.
-
-## Data access
-
-The daemon uses the provider's configured command/environment plus captured session overrides. CLI status probes and OAuth usage requests perform no model turns. Access tokens are read only to authenticate usage/profile requests; the plugin never refreshes or rewrites login stores, purchases credits or enables overages. Tokens are not saved in jobs, logged or sent in the continue prompt. Jobs retain hashed account/model identity, paths and boolean credential-presence flags.
-
-The plugin reads agent state, recent timeline notices, provider configuration and usage information through Paseo. Resume jobs are stored in:
-
-```text
-$PASEO_HOME/plugin-data/usage-auto-resume/jobs.json
-```
-
-The default home is `~/.paseo`. The plugin sends a fixed prompt to the existing agent through Paseo; it does not create a new agent or switch providers.
-
-## Limitations
-
-- A session opened before the plugin loaded has no captured launch context. Its reservation is checked with the daemon environment and the provider's configured environment, the way v1.2.0 found the account; values that other plugins add at session open are not seen. Reservations created with captured context keep it across plugin restarts.
-- agy (1.4.0) reports no account identity and Paseo has no Antigravity usage source, so Antigravity agents follow the notice's stated reset, as v1.2.0 did, without reading quota. A used-up weekly quota behind a 5-hour notice is not seen. Antigravity API routes (`GEMINI_API_KEY`, `AGY_ADC_AUTH`, `GOOGLE_GEMINI_BASE_URL`) remain excluded.
-- Claude on macOS waits because this implementation does not read Keychain credentials. Unrecognized quota shapes or multi-argument custom launchers also wait. Known one-command launchers use native account/status protocols.
-- A stop caused only by credits or a spending cap, with no used-up window, ends after the three retries; refilling credits does not restart it.
-
-- Without a known reset or affirmative readiness, the plugin checks again in 15 minutes and sends no continue.
-- A notice can supply a proposed reset, but every continue requires fresh verification. Passing the reset timestamp alone does not clear a stale exhausted window.
-- After a daemon/plugin restart, jobs wait for a lifecycle hook or a request from the Auto Resume screen to supply the API. Due jobs then run subject to the agent checks.
-- The startup scan recovers missed limit stops only for agents active in the preceding 12 hours. Already persisted jobs can wait longer, including for a weekly reset.
-- Support is limited to providers that run Claude, Codex, or Antigravity, on Paseo 0.11.0 or later.
-
-## Roadmap
-
-- Planned: support more providers, using Paseo usage information where it exists ([#3](https://github.com/babo-jeonguk/paseo-usage-auto-resume/issues/3))
-- Exploring: continue a limited task on another selected provider ([#4](https://github.com/babo-jeonguk/paseo-usage-auto-resume/issues/4))
-
-Feedback and contributions are welcome on the linked issues. Real limit notices from other providers are especially helpful.
-
-## Development
-
-```bash
-npm ci
-npm run check
-paseo plugin install "$PWD"
-```
-
-`npm run check` runs TypeScript checking and the Node test suite. After changing an installed directory plugin:
-
-```bash
-paseo plugin reload usage-auto-resume
-```
-
-Plugin logs use the `[usage-auto-resume]` prefix in the daemon log. Paseo compiles the TypeScript entry points; no separate application build is required. Runtime imports use Paseo's host-provided modules.
-
-## Registry submission
-
-The official [Paseo registry](https://github.com/getpaseo/plugins#submit-a-plugin) accepts a public GitHub source without an npm release. Submit this repository using the [submission form](https://github.com/getpaseo/plugins/issues/new?template=submit-plugin.yml). Review pins the artifact to an exact commit; acceptance is decided by the registry maintainers.
-
-`OVERVIEW.md` is included for the listing page. Screenshots of the actual interface are shipped in `assets/` and declared in the manifest's `media` field, as required by the registry's [review policy](https://github.com/getpaseo/plugins/blob/main/REVIEW.md#images-and-media). Publishing the repository does not itself approve a listing.
+See [behavior, data access and troubleshooting](docs/behavior.md) for retry rules, storage paths and other limits, or [development and registry submission](docs/development.md) to contribute. Provider expansion and handoff ideas are tracked in [#3](https://github.com/babo-jeonguk/paseo-usage-auto-resume/issues/3) and [#4](https://github.com/babo-jeonguk/paseo-usage-auto-resume/issues/4).
 
 ## Credits and license
 
-MIT. See [LICENSE](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md).
-
-Reset parsing draws on [panrafal's chat-resume](https://github.com/panrafal/paseo-plugins/tree/main/chat-resume) and [paseo-continuity](https://github.com/keefeere/paseo-continuity). Usage-window selection follows [paseo-limits](https://github.com/ortschun/paseo-limits); the persisted-queue approach was inspired by [paseo-defer](https://github.com/tomgrin10/paseo-defer). The screen follows Paseo settings and the alarm-list pattern in the iOS Clock app.
+[MIT](LICENSE). See [third-party notices](THIRD_PARTY_NOTICES.md). Inspired by [chat-resume](https://github.com/panrafal/paseo-plugins/tree/main/chat-resume), [paseo-continuity](https://github.com/keefeere/paseo-continuity), [paseo-limits](https://github.com/ortschun/paseo-limits) and [paseo-defer](https://github.com/tomgrin10/paseo-defer).

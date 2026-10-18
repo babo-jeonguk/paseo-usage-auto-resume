@@ -14,6 +14,7 @@
   },
   "files": [
     "paseo-plugin.json",
+    "README.ko.md",
     "OVERVIEW.md",
     "THIRD_PARTY_NOTICES.md",
     "index.client.tsx",
@@ -21,6 +22,8 @@
     "client/",
     "server/",
     "shared/",
+    "docs/behavior.md",
+    "docs/development.md",
     "assets/"
   ],
   "scripts": {
