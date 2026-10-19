@@ -6,13 +6,15 @@
 
 Usage Auto Resume detects short provider limit notices and explicit limit error codes at the end of a turn. Claude can finish a turn normally while leaving a limit notice, so detection also checks the closing assistant message. Context overflow, ordinary errors and API billing failures are excluded.
 
-The plugin keeps one resume reservation per agent. With Codex and Claude it checks actual CLI authentication and account usage before scheduling and again before sending. API-key and external billing routes are excluded; unknown authentication waits. A saved OAuth login alone does not override an active API route.
+The plugin keeps one resume reservation per agent. When a notice states a reset time, it schedules that time plus two minutes without querying usage. Codex and Claude authentication is checked separately to bind the account/model when available; a failed identity check does not replace the stated schedule with an earlier verification wait. API-key and external billing routes are excluded. A saved OAuth login alone does not override an active API route.
 
-- **Codex:** reads account/config status without refreshing the login, then queries the exact ChatGPT workspace's usage. Account/workspace and model scope are bound to the reservation.
-- **Claude:** checks `auth status --json`, verifies the OAuth profile, then reads subscription usage. Account/organization and model scope are bound to the reservation. macOS Keychain credentials are not supported, so Claude on macOS waits for verification.
+Without a reset time, Codex and Claude authentication and account/model usage are checked directly to choose the schedule, including for workspace credit notices. Failed authentication or usage checks create a verification wait. Every Codex/Claude delivery still requires fresh subscription authentication and available usage; a timestamp alone never authorizes a continue.
+
+- **Codex:** reads account/config status without refreshing the login. When usage is needed, it queries the exact ChatGPT workspace's usage. Account/workspace and model scope are bound to the reservation.
+- **Claude:** checks `auth status --json` and verifies the OAuth profile. When usage is needed, it reads subscription usage. Account/organization and model scope are bound to the reservation. On macOS it reads the selected profile's Keychain item, with a two-second timeout per lookup, then its same-profile `.credentials.json` fallback if the item is unavailable. `CLAUDE_CONFIG_DIR` selects separate stores; the CLI's `CLAUDE_SECURESTORAGE_CONFIG_DIR` override, including an empty value selecting the default store, is also honored. It never searches another profile to find a working token. Missing, unreadable or expired credentials wait for verification.
 - **Antigravity:** agy 1.4.0 reports no account identity, and Paseo has no Antigravity usage source. The plugin follows the notice's stated reset without reading quota. A weekly quota exhausted behind a five-hour notice is not seen. Known API routes (`GEMINI_API_KEY`, `AGY_ADC_AUTH`, `GOOGLE_GEMINI_BASE_URL`) are excluded.
 
-For Codex and Claude, the applicable five-hour and weekly usage windows determine the wait. Multiple exhausted windows wait for their latest known reset. Codex's exact-model `model_usage.available_at` can supply that model's reset. A known reset gets a two-minute buffer; a stale exhausted window still requires fresh confirmation of recovery after that timestamp passes.
+For Codex and Claude, the applicable five-hour and weekly usage windows determine the wait when the notice has no reset and during pre-send checks. Multiple exhausted windows wait for their latest known reset. Codex's exact-model `model_usage.available_at` can supply that model's reset. A known reset gets a two-minute buffer; a stale exhausted window still requires fresh confirmation of recovery after that timestamp passes.
 
 Credit and spending notices are also treated as limit stops. They do not themselves decide readiness: credits indicate whether usage can run past a window. When no applicable window is exhausted and usage is verified ready, the plugin retries the continue after 15, 30 and 60 minutes, then gives up if each hits another limit. A future reset in the notice is still honored. An exhausted window discovered later starts this retry sequence over. Refilling credits does not restart a finished sequence.
 
@@ -20,7 +22,7 @@ Unknown authentication, unavailable usage or a stale exhausted window schedules 
 
 ## Checks before sending
 
-The plugin cancels a reservation when a new turn starts or when its final agent check finds a newer user message, a running/closed/archived agent, pending permissions, or a provider change. Codex/Claude account or model identity changes also cancel the reservation. The provider switch and reservation switch are checked before sending.
+The plugin cancels a reservation when a new turn starts or when its final agent check finds a newer user message, a running/closed/archived agent, pending permissions, or a provider change. A known selected model is saved even when authentication is unavailable. A different model or a change from a previously verified Codex/Claude account identity cancels the reservation, including after a restart. If account identity could not initially be verified, it is bound on the first successful check. The provider switch and reservation switch are checked before sending.
 
 Sending is claimed in persistent storage first to prevent duplicate delivery after a crash. A send interrupted at that point may therefore be lost rather than retried. These checks do not provide an atomic guarantee against every concurrent change between checking and sending.
 
@@ -44,7 +46,7 @@ Reservations survive daemon and plugin restarts. Paseo supplies its plugin API i
 
 The startup scan searches up to 200 idle/error agents active in the preceding 12 hours for missed limit stops. Existing persisted reservations can wait longer, including for weekly resets. Codex and Antigravity recovery checks error notices; Claude also checks recent timeline notices.
 
-At session open, the plugin captures non-secret launch paths and credential-presence flags. These survive restarts with the reservation. For a session opened before the plugin loaded, account checks use the daemon environment plus provider configuration; environment values added by other plugins at session open are not available. Unrecognized quota shapes and custom launchers with multiple command arguments wait for verification. Known one-command launchers can use native account/status protocols.
+At session open, the plugin captures non-secret launch paths, credential-store selectors, the OS username used for Keychain lookup, and credential-presence flags. These survive restarts with the reservation. For a session opened before the plugin loaded, account checks use the daemon environment plus provider configuration; environment values added by other plugins at session open are not available. Unrecognized quota shapes and custom launchers with multiple command arguments wait for verification. Known one-command launchers can use native account/status protocols.
 
 ## Data access and storage
 
@@ -56,7 +58,7 @@ Continue prompts are sent through Paseo to the existing agent and its provider; 
 
 | Stored data | Location |
 | --- | --- |
-| Resume jobs, hashed account/model identity, sanitized launch paths and boolean credential-presence flags | `$PASEO_HOME/plugin-data/usage-auto-resume/jobs.json` |
+| Resume jobs, hashed account/model identity, sanitized launch/store selectors, Keychain lookup username and boolean credential-presence flags | `$PASEO_HOME/plugin-data/usage-auto-resume/jobs.json` |
 | Provider switches | `$PASEO_HOME/plugin-settings/usage-auto-resume/providers.json` |
 
 The default Paseo home is `~/.paseo`. Settings and jobs are separate from plugin source code.
@@ -66,7 +68,7 @@ The default Paseo home is `~/.paseo`. Settings and jobs are separate from plugin
 | What you see | Meaning and next step |
 | --- | --- |
 | Empty Auto Resume list | No eligible stop has been found. Use agents normally; only detected limit stops create reservations. Older stops can be outside the startup scan. |
-| Waiting for account verification | The CLI authentication could not be confirmed. Check the CLI login and configured launcher. Claude on macOS remains here because Keychain is unsupported. |
+| Waiting for account verification | The CLI authentication could not be confirmed. Check the CLI login and configured launcher. On macOS, check that the daemon's user can access the selected profile's Keychain item or its fallback file and that the login is unexpired. |
 | Waiting for usage verification | Usage is unreadable, unrecognized or still exhausted without a usable future reset. The displayed time is the next check; time passing alone does not authorize a continue. |
 | Reservation disappeared | It may have been sent, skipped, canceled by agent activity/settings, or reached its retry bound. Check the conversation and daemon log. |
 | Saved jobs are not checked after restart | Open Auto Resume or let a lifecycle event reconnect the Paseo API. |

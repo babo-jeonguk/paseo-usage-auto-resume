@@ -21,7 +21,7 @@ Requires **Paseo daemon and app 0.11.0 or later**, with plugins enabled, and the
 | Provider | Current behavior |
 | --- | --- |
 | Codex | Verifies the ChatGPT account, model and subscription usage before sending. |
-| Claude | Verifies the claude.ai account, model and subscription usage. **On macOS, automatic resumes wait** because Keychain credentials are not supported. |
+| Claude | Verifies the claude.ai account, model and subscription usage. On macOS, reads the selected profile's Keychain or fallback credential file. |
 | Antigravity | Uses the reset stated in the limit notice; account and usage verification are unavailable. |
 
 API-key and external billing routes are excluded.
@@ -32,7 +32,7 @@ paseo plugin install github:babo-jeonguk/paseo-usage-auto-resume
 
 1. Open **Auto Resume** from the sidebar. An empty list is normal until an eligible limit stop is found.
 2. Continue using your agents as usual. When a supported agent hits its limit, a resume reservation or verification wait appears automatically.
-3. Keep the daemon host awake and running. A known reset is scheduled with a two-minute buffer; Codex and Claude also require fresh account and usage checks before sending.
+3. Keep the daemon host awake and running. A reset time in the notice is scheduled with a two-minute buffer without an initial usage lookup. Without a stated time, Codex and Claude look up the account/model usage to choose the schedule. Both require fresh account and usage checks before sending.
 
 A verification wait shows the **next check time**, not a promised resume. If you send another message or the agent is running, closed, archived or awaiting permission, the pending resume is canceled.
 

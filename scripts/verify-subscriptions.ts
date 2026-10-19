@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { cliFor } from "../server/providers";
 import type { PaseoAgent, PaseoApi } from "../server/paseo-types";
 import { createSubscriptionReader } from "../server/subscription";
+import { createClaudeCredentialReader } from "../server/claude-credentials";
 import { providerLaunch } from "../server/usage";
 
 async function main() {
@@ -32,8 +33,7 @@ async function main() {
     if (source === "claude") {
       const env = { ...process.env, ...providerLaunch((await api.config.get()).config, provider).env };
       try {
-        const path = join(env.CLAUDE_CONFIG_DIR || join(env.HOME || homedir(), ".claude"), ".credentials.json");
-        const oauth = JSON.parse(await readFile(path, "utf8")).claudeAiOauth;
+        const oauth = await createClaudeCredentialReader()(env);
         credentialState = !oauth?.accessToken ? "missing-token" : typeof oauth.expiresAt !== "number" ? "missing-expiry"
           : oauth.expiresAt <= Date.now() ? "expired" : "unexpired";
       } catch { credentialState = "unreadable"; }

@@ -96,8 +96,9 @@ export function detectLimitStop(
   if (outcome.kind === "canceled") return null;
   if (outcome.kind === "failed" && /insufficient_quota|credit_balance_exhausted|billing_error|payment_required|context_length_exceeded/i.test(outcome.error.code ?? "")) return null;
   const texts = notices(outcome, timeline);
-  if (texts.some((text) => text.trim().length <= NOTICE_MAX_CHARS && CREDIT_NOTICE.test(text))) {
-    return { resetAt: null };
+  const creditNotices = texts.filter((text) => text.trim().length <= NOTICE_MAX_CHARS && CREDIT_NOTICE.test(text));
+  if (creditNotices.length) {
+    return { resetAt: creditNotices.map((text) => parseResetAt(text, observedAt)).find((resetAt) => resetAt !== null) ?? null };
   }
   if (outcome.kind === "failed" && LIMIT_CODES.has(outcome.error.code?.toLowerCase() ?? "")) {
     // Provider codes are more authoritative than wording or notice length. Billing and

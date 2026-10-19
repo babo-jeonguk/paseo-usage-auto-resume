@@ -159,11 +159,12 @@ function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOption
       },
     },
   } as unknown as ResumerApi;
-  const readSubscription: SubscriptionReader = options.readSubscription ?? (async (_api, agent, source) => {
+  const readSubscription: SubscriptionReader = options.readSubscription ?? (async (_api, agent, source, _at, _launch, mode) => {
     if (source === "antigravity") return { auth: "subscription", status: "ready", identity: "fake-agy-account-model" };
     const email = await accountEmail((await api.config.get()).config, agent.provider, source);
     if (!email) return unknownCheck();
     const identity = `${source}:${email}`;
+    if (mode === "identity") return { auth: "subscription", status: "unknown", identity };
     if (options.usage === undefined && !options.duringListUsage) return { auth: "subscription", status: "ready", identity };
     const result = await api.providers.listUsage();
     const entry = result.providers.find((e) => e.providerId === source && e.displayName.toLowerCase().endsWith(` (${email.toLowerCase()})`));
@@ -1145,11 +1146,12 @@ test("a used-up window after a retry waits for its reset and starts the retries 
   assert.equal(sent.length, 1);
 });
 
-test("unknown auth holds a notice with a reset instead of using its clock as authorization", async () => {
+test("a notice schedules its reset despite unknown auth, but cannot authorize delivery", async () => {
   const { api, resumer, sent } = await setup({ a1: { provider: "codex" } }, { readSubscription: async () => unknownCheck() });
   await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
   assert.equal((await store.list())[0]?.resetAt, "2026-10-06T05:00:00.000Z", "shown, not trusted");
-  assert.equal((await store.list())[0]?.waiting, "auth");
+  assert.equal((await store.list())[0]?.dueAt, "2026-10-06T05:02:00.000Z");
+  assert.equal((await store.list())[0]?.waiting, undefined);
   advance(4 * 60 * MINUTE);
   await resumer.tick();
   assert.deepEqual(sent, []);

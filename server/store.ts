@@ -22,6 +22,8 @@ const JobSchema = z.object({
   // Earlier versions waited for "credits" recovery; those jobs now wait on their usage windows.
   waiting: z.enum(["auth", "usage"]).optional().catch((context) => context.value === "credits" ? "usage" : undefined),
   identity: z.string().optional(),
+  /** Pin the selected model even when account verification is initially unavailable. */
+  model: z.string().optional(),
   launch: z.object({ env: z.record(z.string(), z.string()), authEnv: z.record(z.string(), z.boolean()) }).optional(),
 });
 

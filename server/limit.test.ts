@@ -144,6 +144,12 @@ test("workspace credit notices are limit stops without a guessed reset", () => {
   ]) assert.deepEqual(detectLimitStop(failed(message), [], observedAt), { resetAt: null });
 });
 
+test("a synthetic credit notice with an explicit reset preserves that time", () => {
+  assert.deepEqual(detectLimitStop(failed("Your workspace is out of credits. Try again in 2 hours."), [], observedAt), {
+    resetAt: new Date("2026-10-06T05:00:00.000Z"),
+  });
+});
+
 test("API billing codes and prepaid exhaustion win over generic quota patterns", () => {
   for (const message of ["RESOURCE_EXHAUSTED: prepaid credits depleted", "Quota exceeded. Check your plan and billing details."]) {
     assert.equal(detectLimitStop(failed(message), [], observedAt), null);

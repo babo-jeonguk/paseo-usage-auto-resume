@@ -99,17 +99,25 @@ test("read-only Codex status and usage bind workspace/model identity without ref
   const auth = JSON.stringify({ auth_mode: "chatgpt", tokens: { access_token: "test-token", account_id: "business-workspace" } });
   await writeFile(join(home, "auth.json"), auth);
   try {
+    let fetches = 0;
     let payload: Record<string, unknown> = { ...baseUsage, model_usage: { [model]: { available: false, available_at: until } } };
     const read = createSubscriptionReader({
       codex: async () => ({ account: { account: { type: "chatgpt" } }, config: { config: { model_provider: "openai" } } }),
       fetch: async (url, options) => {
+        fetches++;
         assert.equal(url, "https://chatgpt.com/backend-api/wham/usage");
         assert.equal(options?.redirect, "error");
         return response(payload);
       },
     });
     const launch = captureLaunch({ env: { CODEX_HOME: home } });
+    const bound = await read(api(), agent("codex"), "codex", at, launch, "identity");
+    assert.equal(bound.auth, "subscription");
+    assert.equal(bound.status, "unknown", "identity alone is not usage readiness");
+    assert.ok(bound.identity);
+    assert.equal(fetches, 0, "binding an account must not call the usage endpoint");
     const first = await read(api(), agent("codex"), "codex", at, launch);
+    assert.equal(first.identity, bound.identity);
     assert.equal(first.status, "limited");
     payload = { ...baseUsage, model_usage: { [model]: { available: true } } };
     const recovered = await read(api(), agent("codex"), "codex", at, launch);
