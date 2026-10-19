@@ -38,7 +38,7 @@ async function harness(t: TestContext, source: UsageSource, plan: string) {
     : { claudeAiOauth: { accessToken: token, expiresAt: Date.parse(WEEK) + 86_400_000 } });
   await writeFile(authPath, credentials);
   let clock = new Date(START);
-  const state = { ready: false, outage: false, changed: false, nativeOrgId: true, fetches: 0, accountType: "chatgpt" };
+  const state = { ready: false, outage: false, changed: false, nativeOrgId: true, fetches: 0, usageFetches: 0, accountType: "chatgpt" };
   const sent: Array<{ agentId: string; text: string }> = [];
   const agent = {
     id: "same-agent", provider, cwd: dir, model, status: "idle", updatedAt: START,
@@ -65,20 +65,22 @@ async function harness(t: TestContext, source: UsageSource, plan: string) {
     run: async (_command, args) => {
       assert.deepEqual(args, ["auth", "status", "--json"]);
       return JSON.stringify({ loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty",
-        subscriptionType: plan, email: "fixture@example.invalid", ...(state.nativeOrgId ? { orgId: "org-a" } : {}),
+        subscriptionType: plan, email: "fixture@example.invalid", ...(state.nativeOrgId ? { orgId: state.changed ? "org-b" : "org-a" } : {}),
       });
     },
     fetch: async (url, options) => {
       state.fetches++;
+      if (String(url).endsWith("/usage")) state.usageFetches++;
       assert.equal(options?.redirect, "error");
       assert.equal((options?.headers as Record<string, string>).Authorization, `Bearer ${token}`);
       if (state.outage) return new Response("unavailable", { status: 503 });
       const used = state.ready ? 0 : 100;
+      const sessionUsed = clock.getTime() >= Date.parse(SESSION) ? 0 : used;
       let payload: unknown;
       if (source === "codex") {
         payload = { account_id: state.changed ? "workspace-b" : "workspace-a", plan_type: plan,
           rate_limit: {
-            primary_window: { used_percent: used, reset_at: epoch(SESSION) },
+            primary_window: { used_percent: sessionUsed, reset_at: epoch(SESSION) },
             secondary_window: { used_percent: used, reset_at: epoch(WEEK) },
           },
         };
@@ -86,7 +88,7 @@ async function harness(t: TestContext, source: UsageSource, plan: string) {
         payload = { account: { uuid: "account-a", email: "fixture@example.invalid" },
           organization: { uuid: state.changed ? "org-b" : "org-a" } };
       } else {
-        payload = { five_hour: { utilization: used, resets_at: SESSION },
+        payload = { five_hour: { utilization: sessionUsed, resets_at: SESSION },
           seven_day: { utilization: used, resets_at: WEEK },
           seven_day_sonnet: { utilization: 100, resets_at: WEEK },
         };
@@ -107,6 +109,68 @@ async function harness(t: TestContext, source: UsageSource, plan: string) {
   return { state, agent, api, store, resumer, makeResumer, sent, event, authPath, credentials,
     setTime: (value: string) => { clock = new Date(value); },
   };
+}
+
+for (const source of ["codex", "claude"] as const) {
+  test(`${source}: a stated reset skips initial usage, then verifies weekly recovery before one continue`, async (t) => {
+    if (source === "claude" && process.platform === "darwin") return t.skip("Claude Keychain is intentionally unsupported");
+    const h = await harness(t, source, "stated-reset");
+    h.event.outcome = { kind: "failed", error: { message: source === "codex"
+      ? "Your workspace is out of credits. Try again in 5 hours."
+      : "Usage limit reached. Try again in 5 hours." } };
+    await h.resumer.attach(h.api);
+    await h.resumer.onTurnEnded(h.event, h.api);
+    const [job] = await h.store.list();
+    assert.equal(job?.dueAt, "2026-10-18T05:02:00.000Z", "the notice wins over an unread weekly window");
+    assert.equal(job?.waiting, undefined);
+    assert.ok(job?.identity, "account/model binding does not require a usage fetch");
+    assert.equal(h.state.usageFetches, 0);
+
+    h.setTime(job.dueAt);
+    await h.resumer.tick();
+    assert.equal(h.state.usageFetches, 1);
+    assert.deepEqual(h.sent, []);
+    assert.equal((await h.store.list())[0]?.dueAt, DUE, "pre-send usage discovers the exhausted weekly window");
+
+    const restarted = h.makeResumer();
+    h.state.outage = true;
+    h.setTime(DUE);
+    await restarted.attach(h.api);
+    assert.deepEqual(h.sent, [], "an unreadable account/usage never authorizes delivery");
+    assert.equal((await h.store.list())[0]?.dueAt, "2026-10-23T00:17:00.000Z");
+    h.state.outage = false;
+    h.state.ready = true;
+    h.setTime("2026-10-23T00:17:00.000Z");
+    await restarted.tick();
+    await restarted.tick();
+    assert.deepEqual(h.sent, [{ agentId: h.agent.id, text: CONTINUE_PROMPT }]);
+  });
+
+  for (const changed of ["model", "account"] as const) test(`${source}: a stated-reset reservation cancels a changed ${changed} after restart`, async (t) => {
+    if (source === "claude" && process.platform === "darwin") return t.skip("Claude Keychain is intentionally unsupported");
+    const h = await harness(t, source, "stated-account");
+    if (changed === "model") {
+      h.state.accountType = "";
+      h.state.nativeOrgId = false;
+    }
+    h.event.outcome = { kind: "failed", error: { message: "Usage limit reached. Try again in 5 hours." } };
+    await h.resumer.onTurnEnded(h.event, h.api);
+    assert.equal(h.state.usageFetches, 0);
+    if (changed === "model") {
+      assert.equal((await h.store.list())[0]?.identity, undefined, "model binding survives unavailable authentication");
+      h.agent.model = "different-model";
+    } else {
+      h.state.changed = true;
+      if (source === "codex") await writeFile(h.authPath, JSON.stringify({ auth_mode: "chatgpt", tokens: {
+        access_token: "fixture-only-access-token", account_id: "workspace-b",
+      } }));
+    }
+    h.setTime("2026-10-18T05:02:00.000Z");
+    await h.makeResumer().attach(h.api);
+    assert.deepEqual(h.sent, []);
+    assert.deepEqual(await h.store.list(), []);
+    if (changed === "model") assert.equal(h.state.usageFetches, 0, "a changed model is rejected before probing");
+  });
 }
 
 for (const [source, plans] of [

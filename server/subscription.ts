@@ -34,7 +34,11 @@ export interface SubscriptionCheck {
 }
 export type SubscriptionReader = (
   api: Pick<PaseoApi, "config">, agent: PaseoAgent, source: UsageSource, at: Date, launch?: LaunchContext,
+  mode?: "identity" | "usage",
 ) => Promise<SubscriptionCheck>;
+
+export const subscriptionModel = (agent: PaseoAgent): string | undefined =>
+  string(agent.runtimeInfo?.model) ?? string(agent.model);
 
 export const unknownCheck = (): SubscriptionCheck => ({ auth: "unknown", status: "unknown" });
 const record = (value: unknown): Record<string, unknown> =>
@@ -75,7 +79,7 @@ export function createSubscriptionReader(deps: {
     } finally { clearTimeout(timer); }
   };
 
-  return async (api, agent, source, at, launch) => {
+  return async (api, agent, source, at, launch, mode = "usage") => {
     let verifiedIdentity: string | undefined;
     try {
       const { config } = await api.config.get();
@@ -92,7 +96,7 @@ export function createSubscriptionReader(deps: {
       if (source === "antigravity") {
         return env.GEMINI_API_KEY || env.AGY_ADC_AUTH || env.GOOGLE_GEMINI_BASE_URL ? apiCheck : { auth: "subscription", status: "ready" };
       }
-      const model = string(agent.runtimeInfo?.model) ?? string(agent.model);
+      const model = subscriptionModel(agent);
       const options = { cwd: agent.cwd, env };
       const command = runtime.command ?? [source];
       // A configured one-command launcher can answer the same native status protocol. Arbitrary
@@ -120,6 +124,7 @@ export function createSubscriptionReader(deps: {
         const claims = jwt(record(tokens).id_token);
         if (string(claims.email) && string(account.email) && claims.email !== account.email) return unknownCheck();
         verifiedIdentity = hash(source, accountId, model);
+        if (mode === "identity") return { auth: "subscription", status: "unknown", identity: verifiedIdentity };
         const usage = await json("https://chatgpt.com/backend-api/wham/usage", {
           Authorization: `Bearer ${token}`, "ChatGPT-Account-Id": accountId, Accept: "application/json",
         });
@@ -145,6 +150,7 @@ export function createSubscriptionReader(deps: {
       const account = record(profile.account), organization = record(profile.organization);
       if (!account.uuid || account.email !== status.email || organization.uuid !== status.orgId) return unknownCheck();
       verifiedIdentity = hash(source, account.uuid, organization.uuid, model);
+      if (mode === "identity") return { auth: "subscription", status: "unknown", identity: verifiedIdentity };
       const usage = await json("https://api.anthropic.com/api/oauth/usage", headers);
       return claudeUsage(usage, verifiedIdentity, model);
     } catch {

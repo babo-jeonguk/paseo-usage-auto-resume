@@ -32,7 +32,7 @@ paseo plugin install github:babo-jeonguk/paseo-usage-auto-resume
 
 1. Open **Auto Resume** from the sidebar. An empty list is normal until an eligible limit stop is found.
 2. Continue using your agents as usual. When a supported agent hits its limit, a resume reservation or verification wait appears automatically.
-3. Keep the daemon host awake and running. A known reset is scheduled with a two-minute buffer; Codex and Claude also require fresh account and usage checks before sending.
+3. Keep the daemon host awake and running. A reset time in the notice is scheduled with a two-minute buffer without an initial usage lookup. Without a stated time, Codex and Claude look up the account/model usage to choose the schedule. Both require fresh account and usage checks before sending.
 
 A verification wait shows the **next check time**, not a promised resume. If you send another message or the agent is running, closed, archived or awaiting permission, the pending resume is canceled.
 

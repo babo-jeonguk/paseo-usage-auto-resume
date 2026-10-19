@@ -6,13 +6,15 @@
 
 Usage Auto Resume detects short provider limit notices and explicit limit error codes at the end of a turn. Claude can finish a turn normally while leaving a limit notice, so detection also checks the closing assistant message. Context overflow, ordinary errors and API billing failures are excluded.
 
-The plugin keeps one resume reservation per agent. With Codex and Claude it checks actual CLI authentication and account usage before scheduling and again before sending. API-key and external billing routes are excluded; unknown authentication waits. A saved OAuth login alone does not override an active API route.
+The plugin keeps one resume reservation per agent. When a notice states a reset time, it schedules that time plus two minutes without querying usage. Codex and Claude authentication is checked separately to bind the account/model when available; a failed identity check does not replace the stated schedule with an earlier verification wait. API-key and external billing routes are excluded. A saved OAuth login alone does not override an active API route.
 
-- **Codex:** reads account/config status without refreshing the login, then queries the exact ChatGPT workspace's usage. Account/workspace and model scope are bound to the reservation.
-- **Claude:** checks `auth status --json`, verifies the OAuth profile, then reads subscription usage. Account/organization and model scope are bound to the reservation. macOS Keychain credentials are not supported, so Claude on macOS waits for verification.
+Without a reset time, Codex and Claude authentication and account/model usage are checked directly to choose the schedule, including for workspace credit notices. Failed authentication or usage checks create a verification wait. Every Codex/Claude delivery still requires fresh subscription authentication and available usage; a timestamp alone never authorizes a continue.
+
+- **Codex:** reads account/config status without refreshing the login. When usage is needed, it queries the exact ChatGPT workspace's usage. Account/workspace and model scope are bound to the reservation.
+- **Claude:** checks `auth status --json` and verifies the OAuth profile. When usage is needed, it reads subscription usage. Account/organization and model scope are bound to the reservation. macOS Keychain credentials are not supported, so Claude on macOS waits for verification before delivery.
 - **Antigravity:** agy 1.4.0 reports no account identity, and Paseo has no Antigravity usage source. The plugin follows the notice's stated reset without reading quota. A weekly quota exhausted behind a five-hour notice is not seen. Known API routes (`GEMINI_API_KEY`, `AGY_ADC_AUTH`, `GOOGLE_GEMINI_BASE_URL`) are excluded.
 
-For Codex and Claude, the applicable five-hour and weekly usage windows determine the wait. Multiple exhausted windows wait for their latest known reset. Codex's exact-model `model_usage.available_at` can supply that model's reset. A known reset gets a two-minute buffer; a stale exhausted window still requires fresh confirmation of recovery after that timestamp passes.
+For Codex and Claude, the applicable five-hour and weekly usage windows determine the wait when the notice has no reset and during pre-send checks. Multiple exhausted windows wait for their latest known reset. Codex's exact-model `model_usage.available_at` can supply that model's reset. A known reset gets a two-minute buffer; a stale exhausted window still requires fresh confirmation of recovery after that timestamp passes.
 
 Credit and spending notices are also treated as limit stops. They do not themselves decide readiness: credits indicate whether usage can run past a window. When no applicable window is exhausted and usage is verified ready, the plugin retries the continue after 15, 30 and 60 minutes, then gives up if each hits another limit. A future reset in the notice is still honored. An exhausted window discovered later starts this retry sequence over. Refilling credits does not restart a finished sequence.
 
@@ -20,7 +22,7 @@ Unknown authentication, unavailable usage or a stale exhausted window schedules 
 
 ## Checks before sending
 
-The plugin cancels a reservation when a new turn starts or when its final agent check finds a newer user message, a running/closed/archived agent, pending permissions, or a provider change. Codex/Claude account or model identity changes also cancel the reservation. The provider switch and reservation switch are checked before sending.
+The plugin cancels a reservation when a new turn starts or when its final agent check finds a newer user message, a running/closed/archived agent, pending permissions, or a provider change. A known selected model is saved even when authentication is unavailable. A different model or a change from a previously verified Codex/Claude account identity cancels the reservation, including after a restart. If account identity could not initially be verified, it is bound on the first successful check. The provider switch and reservation switch are checked before sending.
 
 Sending is claimed in persistent storage first to prevent duplicate delivery after a crash. A send interrupted at that point may therefore be lost rather than retried. These checks do not provide an atomic guarantee against every concurrent change between checking and sending.
 

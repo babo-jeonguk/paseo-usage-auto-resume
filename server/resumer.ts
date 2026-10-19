@@ -3,7 +3,7 @@ import type { PluginLifecycleEvents, PluginSessionOpenRequest } from "@getpaseo/
 import { detectLimitStop } from "./limit";
 import type { RescheduleResult, ScheduledJob } from "../shared/rpc";
 import type { JobStore, ResumeJob } from "./store";
-import { captureLaunch, createSubscriptionReader, unknownCheck, type LaunchContext, type SubscriptionCheck, type SubscriptionReader } from "./subscription";
+import { captureLaunch, createSubscriptionReader, subscriptionModel, unknownCheck, type LaunchContext, type SubscriptionCheck, type SubscriptionReader } from "./subscription";
 import { GRACE_MS, MIN_DELAY_MS, rescheduleWindow } from "../shared/schedule";
 import { DEFAULT_PROVIDER_SETTINGS, isProviderOn, type ProviderSettings, type UsageSource } from "../shared/settings";
 import { cliFor } from "./providers";
@@ -46,23 +46,22 @@ function exhaustedReset(check: SubscriptionCheck, at: Date): Date | null {
 }
 
 /**
- * What a limit stop waits for. Only the 5-hour and weekly windows decide; credits and spending
- * notices are limit stops like any other. A stated reset still ahead is kept when the windows
- * do not show it, since a filtered or lagging window must not cut the wait short.
+ * Without a reset in the notice, the applicable usage windows decide when to continue.
+ * Credits and spending notices are limit stops like any other.
  */
 type Plan =
   | { kind: "reset"; resetAt: Date }
   | { kind: "retry" }
   | { kind: "check"; waiting: "auth" | "usage" };
 
-function planFor(check: SubscriptionCheck, stated: Date | null, at: Date): Plan {
+function planFor(check: SubscriptionCheck, at: Date): Plan {
   if (check.auth !== "subscription") return { kind: "check", waiting: "auth" };
   if (check.status === "limited") {
     const resetAt = exhaustedReset(check, at);
     return resetAt ? { kind: "reset", resetAt } : { kind: "check", waiting: "usage" };
   }
   if (check.status !== "ready") return { kind: "check", waiting: "usage" };
-  return stated && stated.getTime() > at.getTime() ? { kind: "reset", resetAt: stated } : { kind: "retry" };
+  return { kind: "retry" };
 }
 
 function dueFor(resetAt: Date | null, now: Date): string {
@@ -75,6 +74,7 @@ function skipReason(job: ResumeJob, agent: PaseoAgent | null): string | null {
   if (!agent) return "agent no longer exists";
   if (agent.archivedAt) return "agent is archived";
   if (agent.provider !== job.provider) return `provider changed to ${agent.provider}`;
+  if (job.model !== undefined && subscriptionModel(agent) !== job.model) return "model changed";
   if ((agent.lastUserMessageAt ?? null) !== job.baseline) return "a newer message reached the agent";
   if (agent.activeTurn || (agent.status !== "idle" && agent.status !== "error")) {
     return `agent is ${agent.status}`;
@@ -104,8 +104,8 @@ export function createResumer(options: {
   let ticking = false;
   const launches = new Map<string, LaunchContext>();
   const readSubscription = options.readSubscription ?? createSubscriptionReader();
-  const inspect = async (api: ResumerApi, agent: PaseoAgent, source: UsageSource, at: Date, launch?: LaunchContext) => {
-    try { return await readSubscription(api, agent, source, at, launch); }
+  const inspect = async (api: ResumerApi, agent: PaseoAgent, source: UsageSource, at: Date, launch?: LaunchContext, mode?: "identity" | "usage") => {
+    try { return await readSubscription(api, agent, source, at, launch, mode); }
     catch { return unknownCheck(); }
   };
 
@@ -153,13 +153,13 @@ export function createResumer(options: {
     if (options.onlyIfNone && previous) return;
     const launch = launches.get(agent.id) ?? previous?.launch;
     const at = now();
-    const check = await inspect(api, agent, source, at, launch);
+    // A notice supplies the schedule; only bind identity here, leaving usage until delivery.
+    const check = await inspect(api, agent, source, at, launch, stated ? "identity" : "usage");
     if (check.auth === "api") { await forget(agent.id); return; }
-    const plan = planFor(check, stated, at);
+    const plan: Plan = stated ? { kind: "reset", resetAt: stated } : planFor(check, at);
     const settings = await readSettings();
     if (!settings || !isProviderOn(agent.provider, settings)) return;
-    // A waiting check keeps the stated reset to show and to hold the continue until then.
-    const resetAt = plan.kind === "reset" ? plan.resetAt : plan.kind === "check" ? stated : null;
+    const resetAt = plan.kind === "reset" ? plan.resetAt : null;
     const key = resetAt ? minuteIso(resetAt) : null;
     const waiting = plan.kind === "check" ? plan.waiting : undefined;
     await store.update(agent.id, (current) => {
@@ -188,6 +188,7 @@ export function createResumer(options: {
         enabled: true,
         waiting,
         identity: check.identity,
+        model: subscriptionModel(agent),
         launch,
       };
       log(`scheduled ${agent.id} (${agent.provider}) for ${job.dueAt}; ${plan.kind === "retry" ? `retry ${job.retries} of ${RETRY_DELAYS_MS.length}` : `reset ${key ?? "unknown"}`}`);
@@ -255,7 +256,7 @@ export function createResumer(options: {
 
   const isSameJob = (left: ResumeJob | null, right: ResumeJob) =>
     left !== null && left.state === right.state && left.dueAt === right.dueAt && left.resetAt === right.resetAt &&
-    left.identity === right.identity && left.retries === right.retries && left.waiting === right.waiting && left.baseline === right.baseline;
+    left.identity === right.identity && left.model === right.model && left.retries === right.retries && left.waiting === right.waiting && left.baseline === right.baseline;
 
   async function fire(job: ResumeJob, api: ResumerApi, at: Date): Promise<void> {
     const settings = await readSettings();
