@@ -37,4 +37,6 @@ Feedback and contributions are welcome on these issues. Real provider limit noti
 
 Reset parsing draws on [panrafal's chat-resume](https://github.com/panrafal/paseo-plugins/tree/main/chat-resume) and [paseo-continuity](https://github.com/keefeere/paseo-continuity). Usage-window selection follows [paseo-limits](https://github.com/ortschun/paseo-limits); the persistent queue was inspired by [paseo-defer](https://github.com/tomgrin10/paseo-defer). The interface follows Paseo settings and the alarm-list pattern in the iOS Clock app.
 
+Claude credential-store selection follows the [official authentication guide](https://code.claude.com/docs/en/authentication#credential-management). The macOS account-specific and legacy Keychain lookup behavior references [Paseo v0.12.0's usage source](https://github.com/getpaseo/paseo/blob/v0.12.0/plugins/claude-usage-source/server/usage.ts#L298). Store override precedence was also checked against Claude Code 2.1.303's native selector. Credential tests inject the OS boundary; the Claude limit scenarios exercise the macOS reader with fixture Keychain records even on Linux. Actual macOS permission dialogs and locked-Keychain behavior still require a Mac host to validate.
+
 See [third-party notices](../THIRD_PARTY_NOTICES.md) for attribution and license details.

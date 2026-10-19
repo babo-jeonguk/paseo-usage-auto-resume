@@ -8,6 +8,7 @@ import type { PluginSessionOpenRequest } from "@getpaseo/plugin/server";
 import type { PaseoAgent, PaseoApi } from "./paseo-types";
 import type { UsageSource } from "../shared/settings";
 import { providerLaunch } from "./usage";
+import { createClaudeCredentialReader, type ClaudeCredentialReader } from "./claude-credentials";
 
 const exec = promisify(execFile);
 const TIMEOUT = 15_000;
@@ -17,9 +18,9 @@ const AUTH_ENV = [
   "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
   "GEMINI_API_KEY", "AGY_ADC_AUTH", "GOOGLE_GEMINI_BASE_URL",
 ] as const;
-const SAFE_ENV = ["HOME", "USERPROFILE", "PATH", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME"];
+const SAFE_ENV = ["HOME", "USERPROFILE", "USER", "PATH", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME"];
 
-/** Only paths and credential-presence flags survive a restart; never a credential value. */
+/** Non-secret store selectors and credential-presence flags survive a restart; never a credential value. */
 export interface LaunchContext {
   env: Record<string, string>;
   authEnv: Record<string, boolean>;
@@ -63,11 +64,13 @@ export function createSubscriptionReader(deps: {
   run?: (command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }) => Promise<string>;
   codex?: (command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }) => Promise<{ account: unknown; config: unknown }>;
   fetch?: typeof fetch;
+  readClaudeCredentials?: ClaudeCredentialReader;
 } = {}): SubscriptionReader {
   const run = deps.run ?? (async (command, args, options) =>
     (await exec(command, args, { ...options, timeout: TIMEOUT, maxBuffer: 2_000_000 })).stdout);
   const fetchApi = deps.fetch ?? fetch;
   const codex = deps.codex ?? codexSnapshot;
+  const readClaudeCredentials = deps.readClaudeCredentials ?? createClaudeCredentialReader();
 
   const json = async (url: string, headers: Record<string, string>) => {
     const controller = new AbortController();
@@ -138,11 +141,10 @@ export function createSubscriptionReader(deps: {
       if (status.authMethod !== "claude.ai" || status.apiProvider !== "firstParty") {
         return status.loggedIn === true ? apiCheck : unknownCheck();
       }
-      if (!status.subscriptionType || !status.orgId || !status.email || !model || process.platform === "darwin") return unknownCheck();
-      const home = env.CLAUDE_CONFIG_DIR || join(env.HOME || homedir(), ".claude");
-      const credentials = record(record(await readJson(join(home, ".credentials.json"))).claudeAiOauth);
-      const token = string(credentials.accessToken);
-      if (!token || (number(credentials.expiresAt) ?? 0) <= at.getTime()) return unknownCheck();
+      if (!status.subscriptionType || !status.orgId || !status.email || !model) return unknownCheck();
+      const credentials = await readClaudeCredentials(env);
+      if (!credentials?.accessToken || (credentials.expiresAt ?? 0) <= at.getTime()) return unknownCheck();
+      const token = credentials.accessToken;
       const headers = {
         Authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20", Accept: "application/json",
       };

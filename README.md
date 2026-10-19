@@ -21,7 +21,7 @@ Requires **Paseo daemon and app 0.11.0 or later**, with plugins enabled, and the
 | Provider | Current behavior |
 | --- | --- |
 | Codex | Verifies the ChatGPT account, model and subscription usage before sending. |
-| Claude | Verifies the claude.ai account, model and subscription usage. **On macOS, automatic resumes wait** because Keychain credentials are not supported. |
+| Claude | Verifies the claude.ai account, model and subscription usage. On macOS, reads the selected profile's Keychain or fallback credential file. |
 | Antigravity | Uses the reset stated in the limit notice; account and usage verification are unavailable. |
 
 API-key and external billing routes are excluded.

@@ -7,6 +7,8 @@ import type { PluginLifecycleEvents } from "@getpaseo/plugin/server";
 import type { PaseoAgent } from "./paseo-types";
 import { CONTINUE_PROMPT, createResumer, type ResumerApi } from "./resumer";
 import { createSubscriptionReader } from "./subscription";
+import { createClaudeCredentialReader } from "./claude-credentials";
+import { createHash } from "node:crypto";
 import { createJobStore } from "./store";
 import type { ProviderSettings, UsageSource } from "../shared/settings";
 import { summaryLabels, waitingLabel } from "../client/format";
@@ -29,8 +31,7 @@ const profiles = [
 ] as const;
 type Profile = { source: UsageSource; plan: string; model: string };
 const platformOptions = (profile: Profile) => ({
-  skip: profile.source === "claude" && process.platform === "darwin" ? "Claude Keychain is intentionally unsupported"
-    : profile.source !== "antigravity" && process.platform === "win32" ? "The native CLI fixture uses a POSIX executable script" : false,
+  skip: profile.source !== "antigravity" && process.platform === "win32" ? "The native CLI fixture uses a POSIX executable script" : false,
 });
 
 const nativeCli = String.raw`
@@ -74,8 +75,13 @@ async function scenario(t: TestContext, profile: Profile, limit: "five" | "week"
   const credentials = () => JSON.stringify(source === "codex"
     ? { auth_mode: "chatgpt", tokens: { access_token: "fixture-token", account_id: state.accountId } }
     : { claudeAiOauth: { accessToken: "fixture-token", expiresAt: WEEK + 86_400_000 } });
-  const originalCredentials = credentials();
+  const keychainRecord = credentials();
+  const originalCredentials = source === "claude"
+    ? JSON.stringify({ claudeAiOauth: { accessToken: "stale-fallback-token", expiresAt: 1 } }) : keychainRecord;
   await writeFile(credentialFile, originalCredentials);
+  const keychainFile = join(dir, "keychain.json");
+  await writeFile(keychainFile, keychainRecord);
+  let keychainReads = 0;
   await saveNative();
   let clock = START;
   const reset = limit === "five" ? FIVE : WEEK;
@@ -100,8 +106,8 @@ async function scenario(t: TestContext, profile: Profile, limit: "five" | "week"
   const api = {
     config: { get: async () => ({ config: { providers: {
       [provider]: { extends: `${source}-base` },
-      [`${source}-base`]: { extends: source, command: [cli], env: { ...env, CODEX_HOME: home, CLAUDE_CONFIG_DIR: home,
-        RESUME_SIM_STATE: stateFile, RESUME_SIM_CALLS: callsFile } },
+      [`${source}-base`]: { extends: source, command: [cli], env: { ...env, CODEX_HOME: home, CLAUDE_CONFIG_DIR: home, CLAUDE_SECURESTORAGE_CONFIG_DIR: home,
+        USER: "fixture-user", RESUME_SIM_STATE: stateFile, RESUME_SIM_CALLS: callsFile } },
     } } }) },
     agents: {
       list: async (query: { filter?: { includeBackground?: boolean } }) => ({ entries:
@@ -114,7 +120,14 @@ async function scenario(t: TestContext, profile: Profile, limit: "five" | "week"
       create: () => { throw new Error("must never create a replacement agent"); },
     },
   } as unknown as ResumerApi;
-  const readSubscription = createSubscriptionReader({ fetch: async (url, options) => {
+  const readSubscription = createSubscriptionReader({
+    readClaudeCredentials: createClaudeCredentialReader({ platform: "darwin", runSecurity: async (args) => {
+      keychainReads++;
+      const suffix = createHash("sha256").update(home.normalize("NFC")).digest("hex").slice(0, 8);
+      assert.deepEqual(args, ["find-generic-password", "-a", "fixture-user", "-w", "-s", `Claude Code-credentials-${suffix}`]);
+      return readFile(keychainFile, "utf8");
+    } }),
+    fetch: async (url, options) => {
     const address = String(url);
     assert.ok(["https://chatgpt.com/backend-api/wham/usage", "https://api.anthropic.com/api/oauth/profile",
       "https://api.anthropic.com/api/oauth/usage"].includes(address), "no unexpected network request");
@@ -156,7 +169,7 @@ async function scenario(t: TestContext, profile: Profile, limit: "five" | "week"
   };
   return { api, agent, state, settings, requests, sent, store, resumer, make, reset, notice, stop, saveNative,
     credentials, credentialFile, originalCredentials, callsFile, setTime: (value: number) => { clock = value; },
-    usageReads: () => requests.filter(address => address.endsWith("/usage")).length,
+    usageReads: () => requests.filter(address => address.endsWith("/usage")).length, keychainReads: () => keychainReads,
     markStopped: () => { stopped = true; agent.status = source === "claude" ? "idle" : "error"; agent.lastError = source === "claude" ? undefined : notice; },
   };
 }
@@ -263,6 +276,7 @@ for (const profile of profiles) for (const limit of ["five", "week"] as const) {
     const [job] = await h.store.list();
     assert.equal(job?.dueAt, iso(h.reset + 2 * MINUTE));
     assert.equal(h.usageReads(), 0, "no initial quota lookup when notice supplies time");
+    if (profile.source === "claude") assert.ok(h.keychainReads() > 0, "Claude scenarios exercise the macOS credential reader");
     const rows = await h.resumer.listScheduled(h.api);
     assert.equal(rows[0]?.title, "Simulation");
     assert.equal(rows[0]?.waiting, undefined);

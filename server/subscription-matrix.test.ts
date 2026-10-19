@@ -8,6 +8,7 @@ import type { PaseoAgent } from "./paseo-types";
 import { CONTINUE_PROMPT, createResumer, type ResumerApi } from "./resumer";
 import { createJobStore } from "./store";
 import { captureLaunch, createSubscriptionReader } from "./subscription";
+import { createClaudeCredentialReader } from "./claude-credentials";
 import type { UsageSource } from "../shared/settings";
 
 const START = "2026-10-18T00:00:00.000Z";
@@ -47,7 +48,7 @@ async function harness(t: TestContext, source: UsageSource, plan: string) {
   const api = {
     config: { get: async () => ({ config: { providers: {
       [provider]: { extends: `${source}-base` },
-      [`${source}-base`]: { extends: source, env: { ...cleanAuthEnv, CODEX_HOME: home, CLAUDE_CONFIG_DIR: home } },
+      [`${source}-base`]: { extends: source, env: { ...cleanAuthEnv, CODEX_HOME: home, CLAUDE_CONFIG_DIR: home, CLAUDE_SECURESTORAGE_CONFIG_DIR: home } },
     } } }) },
     agents: {
       list: async () => ({ entries: [], pageInfo: { hasMore: false } }),
@@ -58,6 +59,7 @@ async function harness(t: TestContext, source: UsageSource, plan: string) {
     },
   } as unknown as ResumerApi;
   const read = createSubscriptionReader({
+    readClaudeCredentials: createClaudeCredentialReader({ platform: "linux" }),
     codex: async () => ({
       account: { account: { type: state.accountType, planType: plan } },
       config: { config: { model_provider: "openai" } },
@@ -113,7 +115,6 @@ async function harness(t: TestContext, source: UsageSource, plan: string) {
 
 for (const source of ["codex", "claude"] as const) {
   test(`${source}: a stated reset skips initial usage, then verifies weekly recovery before one continue`, async (t) => {
-    if (source === "claude" && process.platform === "darwin") return t.skip("Claude Keychain is intentionally unsupported");
     const h = await harness(t, source, "stated-reset");
     h.event.outcome = { kind: "failed", error: { message: source === "codex"
       ? "Your workspace is out of credits. Try again in 5 hours."
@@ -147,7 +148,6 @@ for (const source of ["codex", "claude"] as const) {
   });
 
   for (const changed of ["model", "account"] as const) test(`${source}: a stated-reset reservation cancels a changed ${changed} after restart`, async (t) => {
-    if (source === "claude" && process.platform === "darwin") return t.skip("Claude Keychain is intentionally unsupported");
     const h = await harness(t, source, "stated-account");
     if (changed === "model") {
       h.state.accountType = "";
@@ -178,7 +178,6 @@ for (const [source, plans] of [
   ["claude", ["pro", "max", "team", "enterprise"]],
 ] as const) for (const plan of plans) {
   test(`${source}/${plan} synthetic: auth → weekly reset → durable restart → fresh recovery → one continue`, async (t) => {
-    if (source === "claude" && process.platform === "darwin") return t.skip("Claude Keychain is intentionally unsupported");
     const h = await harness(t, source, plan);
     await h.resumer.attach(h.api);
     await h.resumer.onTurnEnded(h.event, h.api);
@@ -215,7 +214,6 @@ for (const [source, plans] of [
 for (const source of ["codex", "claude", "antigravity"] as const) {
   for (const guard of ["new-message", "permission", "running", "archive", "provider-change", "switch-off", "delay"] as const) {
     test(`${source} synthetic: ${guard} prevents delivery at the original due time`, async (t) => {
-      if (source === "claude" && process.platform === "darwin") return t.skip("Claude Keychain is intentionally unsupported");
       const h = await harness(t, source, "guard");
       await h.resumer.attach(h.api);
       await h.resumer.onTurnEnded(h.event, h.api);
