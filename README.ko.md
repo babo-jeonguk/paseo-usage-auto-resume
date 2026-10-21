@@ -47,6 +47,8 @@ paseo plugin install github:babo-jeonguk/paseo-usage-auto-resume
 
 확인 대기 항목의 시각을 바꾸면 다음 확인 시각이 바뀝니다.
 
+예약된 대화에는 시각이나 상태를 표시하는 **Auto Resume composer pill**도 나타납니다. pill을 누르면 대화를 떠나지 않고 해당 예약을 끄거나 다시 켜고, 10분 미루거나 시각을 변경할 수 있습니다. 끈 예약은 예정 시각까지 pill이 유지되며, 실행되거나 취소된 예약의 pill은 사라집니다. 사이드바와 대화 안의 컨트롤은 같은 예약을 관리합니다.
+
 ## 대상 provider 선택하기
 
 **Settings → Plugins → usage-auto-resume → Settings**를 여세요. 내장 provider와 이를 확장한 `claude-main`, `codex-sub` 같은 프로필이 표시되며, 확인 가능한 경우 로그인 계정도 보여줍니다.
@@ -59,7 +61,7 @@ paseo plugin install github:babo-jeonguk/paseo-usage-auto-resume
 
 에이전트 상태, 최근 한도 안내, provider 설정과 CLI 인증 정보를 읽습니다. Codex·Claude 확인은 모델을 실행하지 않고 provider의 계정·사용량 주소로 요청을 보냅니다. 토큰은 예약 파일이나 로그에 남기지 않습니다. 재개 프롬프트는 Paseo를 통해 기존 에이전트와 해당 provider로 전달하며, 예약은 로컬에 저장합니다.
 
-재시작 뒤에는 lifecycle 이벤트가 발생하거나 Auto Resume를 열어 Paseo API가 연결된 후 확인을 재개합니다. Codex·Claude의 인증이나 사용량을 읽지 못하면 확인 대기로 남습니다. 하위 에이전트의 재개는 부모 에이전트가 가진 도구에 달려 있습니다.
+재시작 뒤에는 lifecycle 이벤트나 앱 요청으로 Paseo API가 연결된 후 확인을 재개합니다. 연결된 앱은 composer pill 조회를 통해 API를 전달합니다. Codex·Claude의 인증이나 사용량을 읽지 못하면 확인 대기로 남습니다. 하위 에이전트의 재개는 부모 에이전트가 가진 도구에 달려 있습니다.
 
 재시도 규칙, 저장 경로와 문제 해결은 [동작·데이터 접근 안내](docs/behavior.md)에, 기여 방법은 [개발·레지스트리 제출 안내](docs/development.md)에 정리했습니다. 상세 안내는 영어로 제공합니다. Provider 확대와 다른 provider로의 인계 아이디어는 [#3](https://github.com/babo-jeonguk/paseo-usage-auto-resume/issues/3), [#4](https://github.com/babo-jeonguk/paseo-usage-auto-resume/issues/4)에서 논의합니다.
 

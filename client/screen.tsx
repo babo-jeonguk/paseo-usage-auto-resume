@@ -1,6 +1,6 @@
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { useRpc } from "@getpaseo/plugin/client";
-import { Icon, ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
+import { Icon, ScrollView, useToast } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, RefreshControl, Text, View } from "react-native";
@@ -14,19 +14,17 @@ import {
 import {
   bulkAction,
   clockLabel,
-  dayChoices,
-  dayOffset,
   groupByDay,
   placeLabel,
   providerLabel,
   refusalLabel,
   relativeLabel,
-  rescheduleProblem,
   summaryLabels,
-  timeOnDay,
   waitingLabel,
 } from "./format";
 import { Toggle } from "./toggle";
+import { TimeEditor } from "./time-editor";
+import { notifyScheduleChanged } from "./schedule-changes";
 
 type Theme = PluginScreenProps["theme"];
 
@@ -132,34 +130,6 @@ function createStyles(theme: Theme, compact: boolean) {
       paddingVertical: 7,
     },
     buttonText: { color: colors.foreground, fontSize: 13, fontWeight: "500" as const },
-    edit: { gap: 8, marginBottom: 6 },
-    editLine: { flexDirection: "row" as const, alignItems: "center" as const, gap: compact ? 4 : 8 },
-    editInput: {
-      width: compact ? 74 : 92,
-      borderWidth: 1,
-      borderColor: colors.border,
-      borderRadius: 6,
-      paddingHorizontal: 8,
-      paddingVertical: 4,
-      color: colors.foreground,
-      fontSize: compact ? 19 : 22,
-      fontVariant: ["tabular-nums" as const],
-    },
-    segments: {
-      alignSelf: "flex-start" as const,
-      flexDirection: "row" as const,
-      borderWidth: 1,
-      borderColor: colors.border,
-      borderRadius: 6,
-      overflow: "hidden" as const,
-    },
-    segment: { paddingHorizontal: compact ? 9 : 12, paddingVertical: 6 },
-    segmentActive: { backgroundColor: colors.surface2 },
-    segmentText: { color: colors.foregroundMuted, fontSize: 13, fontWeight: "500" as const },
-    segmentTextActive: { color: colors.foreground },
-    save: { backgroundColor: colors.accent },
-    editHint: { color: colors.foregroundMuted, fontSize: 12 },
-    editError: { color: colors.statusDanger, fontSize: 12 },
     centered: { alignItems: "center" as const, paddingVertical: 64, paddingHorizontal: 24, gap: 12 },
     emptyIcon: {
       width: 56,
@@ -187,103 +157,6 @@ function createStyles(theme: Theme, compact: boolean) {
 }
 
 type Styles = ReturnType<typeof createStyles>;
-
-/** Replaces the time line while a time is typed; the server still has the final say. */
-function TimeEditor(props: {
-  job: ScheduledJob;
-  now: number;
-  compact: boolean;
-  theme: Theme;
-  styles: Styles;
-  onSave(dueAt: string): void;
-  onCancel(): void;
-}) {
-  const { job, now, styles, theme } = props;
-  const choices = dayChoices(job.dueAt, now);
-  const [text, setText] = useState(() => clockLabel(job.dueAt));
-  const [day, setDay] = useState(() => Math.max(0, dayOffset(job.dueAt, now)));
-  const dueAt = timeOnDay(text, day, now);
-  const problem = dueAt ? rescheduleProblem(job, dueAt, now) : "Enter a time like 07:30.";
-  const save = () => {
-    if (dueAt && !problem) props.onSave(dueAt);
-  };
-  // A third day (a weekly reset) does not fit beside the field and buttons on a phone.
-  const daysBelow = props.compact && choices.length > 2;
-
-  const days = (
-    <View style={styles.segments} accessibilityRole="radiogroup">
-      {choices.map((choice) => {
-        const active = choice.offset === day;
-        return (
-          <Pressable
-            key={choice.offset}
-            accessibilityRole="radio"
-            accessibilityState={{ checked: active }}
-            hitSlop={{ top: 6, bottom: 6 }}
-            onPress={() => setDay(choice.offset)}
-            style={[styles.segment, active ? styles.segmentActive : null]}
-          >
-            <Text style={[styles.segmentText, active ? styles.segmentTextActive : null]}>{choice.label}</Text>
-          </Pressable>
-        );
-      })}
-    </View>
-  );
-
-  return (
-    <View style={styles.edit}>
-      <View style={styles.editLine}>
-        <TextInput
-          value={text}
-          onChangeText={setText}
-          autoFocus
-          selectTextOnFocus
-          maxLength={5}
-          placeholder="HH:MM"
-          placeholderTextColor={theme.colors.foregroundMuted}
-          keyboardType="numbers-and-punctuation"
-          returnKeyType="done"
-          accessibilityLabel={`New time for ${job.title ?? "Untitled agent"}`}
-          onSubmitEditing={save}
-          onKeyPress={(event) => {
-            if (event.nativeEvent.key === "Escape") props.onCancel();
-          }}
-          style={styles.editInput}
-        />
-        {daysBelow ? null : days}
-        <View style={{ flex: 1 }} />
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Cancel"
-          hitSlop={8}
-          onPress={props.onCancel}
-          style={({ pressed }) => [styles.iconButton, pressed ? styles.pressed : null]}
-        >
-          <Icon name="X" size={18} color={theme.colors.foregroundMuted} />
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Save time"
-          accessibilityState={{ disabled: !!problem }}
-          hitSlop={8}
-          disabled={!!problem}
-          onPress={save}
-          style={[styles.iconButton, styles.save, problem ? styles.disabled : null]}
-        >
-          <Icon name="Check" size={18} color={theme.colors.accentForeground} />
-        </Pressable>
-      </View>
-      {daysBelow ? days : null}
-      {problem ? (
-        <Text style={styles.editError} accessibilityLiveRegion="polite">
-          {problem}
-        </Text>
-      ) : (
-        <Text style={styles.editHint}>{job.waiting ? "Checks again" : "Continues"} {relativeLabel(dueAt!, now)}.</Text>
-      )}
-    </View>
-  );
-}
 
 function JobRow(props: {
   job: ScheduledJob;
@@ -316,7 +189,6 @@ function JobRow(props: {
           now={now}
           compact={props.compact}
           theme={theme}
-          styles={styles}
           onSave={(dueAt) => props.onReschedule(job, dueAt)}
           onCancel={() => props.onEdit(false)}
         />
@@ -436,7 +308,10 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
     onMutate: ({ job, enabled }) =>
       optimistic((jobs) => jobs.map((entry) => (entry.agentId === job.agentId ? { ...entry, enabled } : entry))),
     onError: (error, _input, context) => rollback(error, context),
-    onSettled: () => queryClient.invalidateQueries({ queryKey }),
+    onSettled: () => {
+      notifyScheduleChanged();
+      return queryClient.invalidateQueries({ queryKey });
+    },
   });
 
   // Moving a job turns it on, like changing an alarm's time; it may also change its day group.
@@ -452,7 +327,10 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
       );
     },
     onError: (error, _input, context) => rollback(error, context),
-    onSettled: () => queryClient.invalidateQueries({ queryKey }),
+    onSettled: () => {
+      notifyScheduleChanged();
+      return queryClient.invalidateQueries({ queryKey });
+    },
   });
 
   // Only the rows on screen change; one being sent cannot be turned off any more.
@@ -471,7 +349,10 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
     onSuccess: (changed, { enabled }) =>
       toast.show(`${changed} ${changed === 1 ? "schedule" : "schedules"} turned ${enabled ? "on" : "off"}`),
     onError: (error, _input, context) => rollback(error, context),
-    onSettled: () => queryClient.invalidateQueries({ queryKey }),
+    onSettled: () => {
+      notifyScheduleChanged();
+      return queryClient.invalidateQueries({ queryKey });
+    },
   });
 
   const openAgent = navigation ? (agentId: string) => navigation.openAgent({ agentId }) : undefined;

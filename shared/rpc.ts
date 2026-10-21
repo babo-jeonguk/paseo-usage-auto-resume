@@ -4,6 +4,8 @@ import { z } from "zod";
 export const ScheduledJobSchema = z.object({
   agentId: z.string(),
   provider: z.string(),
+  /** Composer placement; optional for older server responses, null when unavailable. */
+  workspaceId: z.string().nullable().optional(),
   title: z.string().nullable(),
   projectName: z.string().nullable(),
   workspaceName: z.string().nullable(),

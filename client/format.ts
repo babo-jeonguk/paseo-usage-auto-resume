@@ -105,6 +105,18 @@ export function waitingLabel(job: ScheduledJob): string | null {
   }
 }
 
+/** Fits Paseo's narrow pill; the popover shows the full day and time. */
+export function composerLabel(job: ScheduledJob, now: number): string {
+  if (job.sending) return "Resuming…";
+  if (!job.enabled) return "Resume off";
+  const time = clockLabel(job.dueAt);
+  if (job.waiting) return `Check ${time}`;
+  const offset = dayOffset(job.dueAt, now);
+  const day = offset === 1 ? "Tmr" : offset > 1
+    ? new Date(job.dueAt).toLocaleDateString("en-US", { weekday: "short" }) : "Resume";
+  return `${day} ${time}`;
+}
+
 /** Where the agent lives: "Project · workspace", without repeating a name. */
 export function placeLabel(job: ScheduledJob): string | null {
   const parts = [job.projectName, job.workspaceName].filter((part): part is string => !!part);
