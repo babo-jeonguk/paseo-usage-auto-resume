@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type { DiscoveredProvider, ScheduledJob } from "../shared/rpc";
 import {
   bulkAction,
+  composerLabel,
   dayChoices,
   dayLabel,
   dayOffset,
@@ -31,6 +32,16 @@ const job = (overrides: Partial<ScheduledJob>): ScheduledJob => ({
   ...overrides,
 });
 const now = new Date(2026, 9, 6, 17, 1).getTime();
+
+test("composer labels distinguish off, sending, verification and later calendar days", () => {
+  assert.equal(composerLabel(job({}), now), "Resume 18:53");
+  assert.equal(composerLabel(job({ enabled: false }), now), "Resume off");
+  assert.equal(composerLabel(job({ sending: true, enabled: false }), now), "Resuming…");
+  const tomorrow = new Date(2026, 9, 7, 8, 30).toISOString();
+  assert.equal(composerLabel(job({ dueAt: tomorrow, waiting: "auth" }), now), "Check 08:30");
+  const weekly = new Date(2026, 9, 11, 8, 30).toISOString();
+  assert.equal(composerLabel(job({ dueAt: weekly }), now), "Sun 08:30");
+});
 
 test("countdowns round up to the minute", () => {
   assert.equal(relativeLabel(new Date(2026, 9, 6, 18, 53).toISOString(), now), "in 1h 52m");

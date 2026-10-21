@@ -563,10 +563,11 @@ test("startup scan keeps a job that already exists", async () => {
 });
 
 test("a job turned off is skipped at its time and leaves the list", async () => {
-  const { api, sent, resumer } = await setup({ a1: { provider: "codex", title: "Fix login" } });
+  const { api, sent, resumer } = await setup({ a1: { provider: "codex", title: "Fix login", workspaceId: "background-workspace" } });
   await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
   const [shown] = await resumer.listScheduled(api);
   assert.equal(shown?.title, "Fix login");
+  assert.equal(shown?.workspaceId, "background-workspace", "composer placement follows the agent's workspace");
   assert.equal(shown?.enabled, true, "scheduled jobs start turned on");
 
   assert.equal(await resumer.setEnabled("a1", shown!.dueAt, false), true);

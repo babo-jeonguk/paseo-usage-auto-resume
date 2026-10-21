@@ -36,13 +36,17 @@ A new reservation starts enabled. Turning it off leaves it visible until its due
 
 The header switch changes only the pending reservations shown on screen. New reservations and ones already being sent are left alone. The list refreshes every 30 seconds, with a refresh button on desktop and pull to refresh on mobile. Times use the viewing device's time zone.
 
+Conversations with a reservation have an **Auto Resume** composer pill. It shows the reservation time, **Resume off**, **Resuming…**, or a **Check** time for verification waits. Selecting it opens a popover on desktop or a sheet on mobile with the same per-reservation switch, **+10m**, and time editor. Off keeps the pill available for re-enabling before the due time; it does not disable future reservations. Changing the time turns the reservation on. Sending jobs cannot be edited. Executed, skipped-at-due-time and canceled reservations lose their pill.
+
+The composer directory refreshes every ten seconds while the client is active and immediately after local schedule actions. Open conversation controls share the sidebar's schedule cache and refresh every ten seconds. Other clients see changes on their next refresh. A failed directory read replaces the displayed time with **Unavailable**; failed reads in the controls disable changes and offer a retry. Placement uses the reservation's agent workspace, including background workspaces, without listing unrelated conversations.
+
 Provider discovery follows each provider's `extends` chain to built-in Claude, Codex or Antigravity. Profiles sharing an account still have separate switches. All supported providers, including newly discovered ones, start on. Turning one off cancels all of its pending reservations, including individually disabled ones. Turning it back on does not restore them; subsequent limit stops can create new reservations. A startup scan can also find a recent stop again.
 
 Settings are per daemon. Hosts upgrading from the earlier one-ID-per-CLI settings start with every provider on. If settings cannot be read, automatic resumes wait rather than falling back to defaults.
 
 ## Restarts and missed stops
 
-Reservations survive daemon and plugin restarts. Paseo supplies its plugin API inside lifecycle hooks and screen requests, so due-job checks wait until one of these connects it after startup. Opening **Auto Resume** supplies that API. A connected daemon continues checking without keeping the app open; the daemon host must stay running and awake.
+Reservations survive daemon and plugin restarts. Paseo supplies its plugin API inside lifecycle hooks and RPC requests, so due-job checks wait until one of these connects it after startup. A connected app supplies the API through composer directory polling, as does opening **Auto Resume**. A connected daemon continues checking without keeping the app open; the daemon host must stay running and awake.
 
 The startup scan searches up to 200 idle/error agents active in the preceding 12 hours for missed limit stops. Existing persisted reservations can wait longer, including for weekly resets. Codex and Antigravity recovery checks error notices; Claude also checks recent timeline notices.
 

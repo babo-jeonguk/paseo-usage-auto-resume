@@ -47,6 +47,8 @@ Each row shows the time, countdown or verification status, conversation title, p
 
 For a verification wait, changing the time moves the next check.
 
+Scheduled conversations also show an **Auto Resume** composer pill with their time or status. Select it to turn that reservation off or back on, delay it by ten minutes, or change its time without leaving the conversation. Off reservations keep their pill until their due time; reservations that run or are canceled lose it. The sidebar and conversation controls manage the same reservation.
+
 ## Choose providers
 
 Open **Settings → Plugins → usage-auto-resume → Settings**. Built-in providers and profiles that extend them, such as `claude-main` or `codex-sub`, are listed with their account when available.
@@ -59,7 +61,7 @@ All supported providers start on, including newly added ones. Turning a provider
 
 The plugin reads agent state, recent limit notices, provider configuration and CLI credentials. Codex and Claude checks contact their providers' account/usage endpoints without model turns. Tokens are never saved in jobs or logged. Resume prompts go through Paseo to the existing agent and its provider; reservations are stored locally.
 
-After a restart, checks resume once a lifecycle event or opening Auto Resume supplies the Paseo API. Unreadable authentication or usage keeps Codex/Claude in verification wait. Subagent continuation depends on the parent agent's tools.
+After a restart, checks resume once a lifecycle event or an app request supplies the Paseo API. A connected app does this through composer polling. Unreadable authentication or usage keeps Codex/Claude in verification wait. Subagent continuation depends on the parent agent's tools.
 
 See [behavior, data access and troubleshooting](docs/behavior.md) for retry rules, storage paths and other limits, or [development and registry submission](docs/development.md) to contribute. Provider expansion and handoff ideas are tracked in [#3](https://github.com/babo-jeonguk/paseo-usage-auto-resume/issues/3) and [#4](https://github.com/babo-jeonguk/paseo-usage-auto-resume/issues/4).
 

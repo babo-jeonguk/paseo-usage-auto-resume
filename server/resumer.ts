@@ -387,6 +387,7 @@ export function createResumer(options: {
         return {
           agentId: job.agentId,
           provider: job.provider,
+          workspaceId: loaded?.agent.workspaceId ?? null,
           title: loaded?.agent.title?.trim() || null,
           projectName: loaded?.project?.projectName ?? null,
           workspaceName: loaded?.project?.workspaceName ?? null,

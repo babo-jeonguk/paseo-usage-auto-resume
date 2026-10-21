@@ -2,6 +2,8 @@ Usage Auto Resume schedules a continue prompt for the same Codex, Claude, or Ant
 
 The Auto Resume sidebar screen groups reservations by day, showing time, status, conversation, provider and workspace. Switch a reservation off, delay it by ten minutes, enter another time, or turn the displayed reservations off together. Verification waits show the next check time.
 
+Scheduled conversations also have an Auto Resume composer pill for managing that same reservation in place. Turn it off or back on before its due time, delay it by ten minutes, or edit its time from a desktop popover or mobile sheet.
+
 ## Setup
 
 Requires Paseo daemon and app 0.11.0 or later, plugins enabled, existing CLI logins and a running daemon host. Built-in and derived providers start on; per-provider switches apply immediately. Turning a provider off cancels its pending reservations. Turning it back on does not restore them.
