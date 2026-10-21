@@ -89,15 +89,12 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
         <View style={{ gap: 4 }}>
           <Text style={muted}>{dayLabel(job.dueAt, now)}</Text>
           <Text style={{ ...text, fontSize: 28, fontWeight: "600", fontVariant: ["tabular-nums"] }}>{clockLabel(job.dueAt)}</Text>
-          <Text style={muted}>{job.sending ? "Continuing…" : !job.enabled ? "Off — this reservation will be skipped."
+          <Text style={muted}>{job.sending ? "Continuing…" : !job.enabled ? "Off"
             : waitingLabel(job) ?? `Continues ${relativeLabel(job.dueAt, now)}`}</Text>
-          {job.waiting ? <Text style={muted}>Next check {relativeLabel(job.dueAt, now)}. This time does not guarantee a continue.</Text> : null}
+          {job.waiting ? <Text style={muted}>Next check {relativeLabel(job.dueAt, now)}</Text> : null}
         </View>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-          <View style={{ flex: 1, gap: 4 }}>
-            <Text style={text}>Resume this reservation</Text>
-            <Text style={muted}>{job.enabled ? "Applies to this reservation." : "Turn it back on before its scheduled time."}</Text>
-          </View>
+          <Text style={{ ...text, flex: 1 }}>Resume this reservation</Text>
           <Toggle theme={theme} value={job.enabled} disabled={disabled}
             accessibilityLabel="Resume this reservation"
             onValueChange={(enabled) => action.mutate({ kind: "toggle", job, enabled })} />
@@ -107,7 +104,6 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
           {button("Change time", () => setEditing(true), "Clock")}
           {button("+10m", () => action.mutate({ kind: "move", job, dueAt: new Date(Date.parse(job.dueAt) + 600_000).toISOString() }), "Plus")}
         </>}
-        {!job.enabled ? <Text style={muted}>Changing the time turns this reservation on.</Text> : null}
         {action.isPending ? <ActivityIndicator size="small" color={colors.foregroundMuted} /> : null}
       </>}
     </View>

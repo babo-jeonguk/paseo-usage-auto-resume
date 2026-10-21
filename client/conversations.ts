@@ -6,10 +6,17 @@ import { onScheduleChanged } from "./schedule-changes";
 
 /** One directory poll per installation, including reservations in background workspaces. */
 export function installConversationControls(client: PluginClientContext, Content: ComponentType<PluginButtonContentProps>) {
-  const registrations = new Map<string, { workspaceId: string; button: PluginButtonRegistration }>();
+  type Registration = { workspaceId: string; label: string; button: PluginButtonRegistration };
+  const registrations = new Map<string, Registration>();
   let stopped = false;
   let loading = false;
   let requested = false;
+
+  function updateLabel(entry: Registration, label: string) {
+    if (entry.label === label) return;
+    entry.button.update({ label });
+    entry.label = label;
+  }
 
   async function refresh(invalidate = false) {
     if (stopped) return;
@@ -30,9 +37,10 @@ export function installConversationControls(client: PluginClientContext, Content
           current = undefined;
         }
         const label = composerLabel(job, Date.now());
-        if (current) current.button.update({ label });
+        if (current) updateLabel(current, label);
         else registrations.set(job.agentId, {
           workspaceId: job.workspaceId,
+          label,
           button: client.addComposerPill({
             id: `resume-${job.agentId}`,
             agentId: job.agentId,
@@ -48,7 +56,7 @@ export function installConversationControls(client: PluginClientContext, Content
       }
     } catch {
       // Keep controls reachable for retry, but never present a stale time as current.
-      if (!stopped) for (const entry of registrations.values()) entry.button.update({ label: "Unavailable" });
+      if (!stopped) for (const entry of registrations.values()) updateLabel(entry, "Unavailable");
     } finally {
       loading = false;
       if (requested && !stopped) { requested = false; void refresh(); }
