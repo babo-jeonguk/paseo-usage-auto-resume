@@ -174,7 +174,8 @@ export function rescheduleProblem(job: ScheduledJob, dueAt: string, now: number)
 }
 
 const SENDING = "This agent is continuing now.";
-const CHANGED = "This schedule already ran or changed.";
+/** A guarded change found the reservation already ran, was canceled, or moved since it was shown. */
+export const SCHEDULE_CHANGED = "This schedule already ran or changed.";
 
 export function refusalLabel(job: ScheduledJob, result: Extract<RescheduleResult, { changed: false }>): string {
   switch (result.reason) {
@@ -185,12 +186,12 @@ export function refusalLabel(job: ScheduledJob, result: Extract<RescheduleResult
     case "sending":
       return SENDING;
     case "changed":
-      return CHANGED;
+      return SCHEDULE_CHANGED;
   }
 }
 
 /** Delays from the reservation's own time, not from now; the sidebar row offers only the first. */
-export const DELAY_PRESETS = [
+const DELAY_PRESETS = [
   { label: "+10m", spoken: "Delay 10 minutes", ms: 10 * 60_000 },
   { label: "+30m", spoken: "Delay 30 minutes", ms: 30 * 60_000 },
   { label: "+1h", spoken: "Delay 1 hour", ms: 60 * 60_000 },
@@ -276,11 +277,12 @@ export function resumeNowToast(result: ResumeNowResult, now: number): ResumeNowT
   switch (result.result) {
     case "sent":
       return { tone: "success", message: "Continue sent" };
-    case "held": {
-      if (result.waiting) return { tone: "warning", message: UNVERIFIED[result.waiting] };
+    case "used_up": {
       const until = result.until && [shortDay(result.until, now), clockLabel(result.until)].filter(Boolean).join(" ");
       return { tone: "warning", message: until ? `Usage is still used up until ${until}` : "Usage is still used up" };
     }
+    case "unverified":
+      return { tone: "warning", message: UNVERIFIED[result.waiting] };
     case "canceled":
       return { tone: "warning", message: outcomeLabel({ outcome: "canceled", reason: result.reason }) };
     case "send_failed":
@@ -288,7 +290,7 @@ export function resumeNowToast(result: ResumeNowResult, now: number): ResumeNowT
     case "sending":
       return { tone: "info", message: SENDING };
     case "changed":
-      return { tone: "info", message: CHANGED };
+      return { tone: "info", message: SCHEDULE_CHANGED };
     case "unavailable":
       return { tone: "error", message: "Auto Resume settings couldn’t be read." };
   }

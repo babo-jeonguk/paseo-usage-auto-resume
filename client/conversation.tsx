@@ -4,22 +4,20 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { listScheduledRpc, rescheduleRpc, resumeNowRpc, setEnabledRpc, type ScheduledJob } from "../shared/rpc";
-import { clockLabel, dayLabel, delayChoices, RESUME_NOW_UNFINISHED, refusalLabel, relativeLabel, resumeNowToast, waitingLabel } from "./format";
+import { clockLabel, dayLabel, delayChoices, RESUME_NOW_UNFINISHED, refusalLabel, relativeLabel, resumeNowToast, SCHEDULE_CHANGED, waitingLabel } from "./format";
 import { historyQueryKey, jobsQueryKey } from "./query-keys";
-import { bodyText, headingText, mutedText } from "./text-styles";
+import { accentText, bodyText, chipText, clockText, headingText, mutedText, type Colors } from "./text-styles";
 import { notifyScheduleChanged } from "./schedule-changes";
 import { TimeEditor } from "./time-editor";
 import { Toggle } from "./toggle";
 
-type Colors = PluginButtonContentProps["theme"]["colors"];
-
 const shape = { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 9, paddingHorizontal: 12, borderRadius: 6 } as const;
 /** Dims when unavailable and darkens while pressed, with or without a border around it. */
-const pressable = (colors: Colors, pressed: boolean, unavailable = false) => ({
+const pressFeedback = (colors: Colors, pressed: boolean, unavailable = false) => ({
   opacity: unavailable ? 0.4 : 1, backgroundColor: pressed ? colors.surface2 : "transparent",
 });
 const outlined = (colors: Colors, pressed: boolean, unavailable = false) => ({
-  ...shape, borderWidth: 1, borderColor: colors.border, ...pressable(colors, pressed, unavailable),
+  ...shape, borderWidth: 1, borderColor: colors.border, ...pressFeedback(colors, pressed, unavailable),
 });
 
 export function ConversationControls(props: PluginButtonContentProps) {
@@ -51,7 +49,7 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
       const pin = { agentId, dueAt: input.job.dueAt };
       if (input.kind === "toggle") {
         const result = await setEnabled({ ...pin, enabled: input.enabled });
-        if (!result.changed) throw new Error("This schedule already ran or changed.");
+        if (!result.changed) throw new Error(SCHEDULE_CHANGED);
       } else {
         const result = await reschedule({ ...pin, newDueAt: input.dueAt });
         if (!result.changed) throw new Error(refusalLabel(input.job, result));
@@ -122,11 +120,11 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
           <View style={{ gap: 4 }}>
             <Text style={muted}>{dayLabel(job.dueAt, now)}</Text>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-              <Text style={{ ...text, fontSize: 28, fontWeight: "600", fontVariant: ["tabular-nums"] }}>{clockLabel(job.dueAt)}</Text>
+              <Text style={clockText(colors)}>{clockLabel(job.dueAt)}</Text>
               <Pressable
                 accessibilityRole="button" accessibilityLabel="Change time" accessibilityState={{ disabled }}
                 disabled={disabled} hitSlop={6} onPress={() => setEditing(true)}
-                style={({ pressed }) => ({ ...pressable(colors, pressed, disabled), width: 32, height: 32, borderRadius: 6, alignItems: "center", justifyContent: "center" })}
+                style={({ pressed }) => ({ ...pressFeedback(colors, pressed, disabled), width: 32, height: 32, borderRadius: 6, alignItems: "center", justifyContent: "center" })}
               >
                 <Icon name="Pencil" size={16} color={colors.foregroundMuted} />
               </Pressable>
@@ -145,7 +143,7 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
                     onPress={() => action.mutate({ kind: "move", job, dueAt: choice.dueAt })}
                     style={({ pressed }) => ({ ...outlined(colors, pressed, unavailable), paddingVertical: 4, paddingHorizontal: 10, borderRadius: 999 })}
                   >
-                    <Text style={{ ...text, fontSize: 13, fontVariant: ["tabular-nums"] }}>{choice.label}</Text>
+                    <Text style={chipText(colors)}>{choice.label}</Text>
                   </Pressable>
                 );
               })}
@@ -182,7 +180,7 @@ function ResumeNow({ theme, disabled, pending, onSend }: {
       style={({ pressed }) => ({ ...shape, flex: confirming ? 1 : undefined, backgroundColor: colors.accent, opacity: disabled ? 0.4 : pressed ? 0.85 : 1 })}
     >
       {icon ? <Icon name={icon} size={16} color={colors.accentForeground} /> : null}
-      <Text style={{ color: colors.accentForeground, fontSize: 14, fontWeight: "600" }}>{label}</Text>
+      <Text style={accentText(colors)}>{label}</Text>
     </Pressable>
   );
   if (pending) return <View style={outlined(colors, false)}><ActivityIndicator size="small" color={colors.foregroundMuted} /></View>;

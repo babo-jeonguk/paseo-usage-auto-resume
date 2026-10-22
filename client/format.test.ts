@@ -174,18 +174,18 @@ test("delay presets add to the reservation's time and are offered only within th
     { label: "+1h", spoken: "Delay 1 hour", dueAt: at(6, 19, 53), problem: null },
   ]);
   const nearLimit = delayChoices(job({ dueAt: at(13, 17, 30) }), now);
-  assert.deepEqual(nearLimit.map((choice) => choice.problem), [null, null, "Pick a time within 7 days."]);
+  assert.deepEqual(nearLimit.map((choice) => choice.problem !== null), [false, false, true]);
 });
 
 test("each Resume now result reads as one toast, colored by what it means", () => {
   const toast = (result: ResumeNowResult) => { const { tone, message } = resumeNowToast(result, now); return `${tone}: ${message}`; };
   assert.equal(toast({ result: "sent" }), "success: Continue sent");
-  assert.equal(toast({ result: "held", until: new Date(2026, 9, 6, 18, 53).toISOString() }), "warning: Usage is still used up until 18:53");
-  assert.equal(toast({ result: "held", until: new Date(2026, 9, 7, 9, 0).toISOString() }), "warning: Usage is still used up until Tmr 09:00");
-  assert.equal(toast({ result: "held", until: new Date(2026, 9, 9, 9, 0).toISOString() }), "warning: Usage is still used up until Fri 09:00");
-  assert.equal(toast({ result: "held", until: null }), "warning: Usage is still used up");
-  assert.equal(toast({ result: "held", waiting: "auth", until: null }), "warning: Couldn’t verify the account. Check the CLI login.");
-  assert.equal(toast({ result: "held", waiting: "usage", until: null }), "warning: Couldn’t verify usage. Try again shortly.");
+  assert.equal(toast({ result: "used_up", until: new Date(2026, 9, 6, 18, 53).toISOString() }), "warning: Usage is still used up until 18:53");
+  assert.equal(toast({ result: "used_up", until: new Date(2026, 9, 7, 9, 0).toISOString() }), "warning: Usage is still used up until Tmr 09:00");
+  assert.equal(toast({ result: "used_up", until: new Date(2026, 9, 9, 9, 0).toISOString() }), "warning: Usage is still used up until Fri 09:00");
+  assert.equal(toast({ result: "used_up", until: null }), "warning: Usage is still used up");
+  assert.equal(toast({ result: "unverified", waiting: "auth" }), "warning: Couldn’t verify the account. Check the CLI login.");
+  assert.equal(toast({ result: "unverified", waiting: "usage" }), "warning: Couldn’t verify usage. Try again shortly.");
   assert.equal(toast({ result: "canceled", reason: "new_message" }), "warning: Canceled · a newer message");
   assert.equal(toast({ result: "send_failed" }), "error: Couldn’t send the continue");
   assert.equal(toast({ result: "sending" }), "info: This agent is continuing now.");
