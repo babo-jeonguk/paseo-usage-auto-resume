@@ -32,7 +32,7 @@ The fixed continue prompt asks the parent agent to review the latest conversatio
 
 A new reservation starts enabled. Turning it off leaves it visible until its due time; it can be re-enabled before then. At its due time, a disabled reservation is skipped and removed. Sending another message also cancels it.
 
-**+10m** delays a reservation by ten minutes; it is turned off when that would pass the latest allowed time below. Selecting its time opens an editor with **Today**, **Tomorrow**, and the reservation's own day when a weekly reset is further away. The earliest allowed time is the later of reset + two minutes and one minute from now; without a known reset it is one minute from now. The latest is seven days and one hour from now. Changing the time turns the reservation on. Editing a verification wait changes its next check time; it does not authorize a continue.
+**+10m** delays a reservation by ten minutes; it is turned off when the new time would fall outside the range below. Selecting its time opens an editor with **Today**, **Tomorrow**, and the reservation's own day when a weekly reset is further away. The earliest allowed time is the later of reset + two minutes and one minute from now; without a known reset it is one minute from now. The latest is seven days and one hour from now. Changing the time turns the reservation on. Editing a verification wait changes its next check time; it does not authorize a continue.
 
 The header switch changes only the pending reservations shown on screen. New reservations and ones already being sent are left alone. The list refreshes every 30 seconds, with a refresh button on desktop and pull to refresh on mobile. Times use the viewing device's time zone.
 
