@@ -94,6 +94,28 @@ export const HistoryReasonSchema = z.enum([
 
 export type HistoryReason = z.infer<typeof HistoryReasonSchema>;
 
+export const ResumeNowResultSchema = z.discriminatedUnion("result", [
+  /** The continue was sent. */
+  z.object({ result: z.literal("sent") }),
+  /**
+   * Not sent; the reservation is unchanged. `waiting` names the check that could not be verified;
+   * without it the usage is used up, and `until` is when the used-up window renews, when known.
+   */
+  z.object({ result: z.literal("held"), waiting: z.enum(["auth", "usage"]).optional(), until: z.string().nullable() }),
+  /** A safety check, setting or account change removed the reservation, as an automatic continue would. */
+  z.object({ result: z.literal("canceled"), reason: HistoryReasonSchema }),
+  /** Sending threw; the reservation was removed. */
+  z.object({ result: z.literal("send_failed") }),
+  /** Already being sent. */
+  z.object({ result: z.literal("sending") }),
+  /** Already ran, was canceled, or moved since it was shown. */
+  z.object({ result: z.literal("changed") }),
+  /** Settings could not be read, so nothing was checked or sent. */
+  z.object({ result: z.literal("unavailable") }),
+]);
+
+export type ResumeNowResult = z.infer<typeof ResumeNowResultSchema>;
+
 export const HistoryEntrySchema = z.object({
   id: z.string(),
   /** When the result was recorded. */

@@ -1,7 +1,7 @@
 import type { AgentTimelineItem, PaseoAgent, PaseoApi } from "./paseo-types";
 import type { PluginLifecycleEvents, PluginSessionOpenRequest } from "@getpaseo/plugin/server";
 import { detectLimitStop } from "./limit";
-import type { HistoryOutcome, HistoryReason, HistoryRow, RescheduleResult, ScheduledJob } from "../shared/rpc";
+import type { HistoryOutcome, HistoryReason, HistoryRow, RescheduleResult, ResumeNowResult, ScheduledJob } from "../shared/rpc";
 import type { HistoryStore } from "./history";
 import type { JobStore, ResumeJob } from "./store";
 import { captureLaunch, createSubscriptionReader, subscriptionModel, unknownCheck, type LaunchContext, type SubscriptionCheck, type SubscriptionReader } from "./subscription";
@@ -74,10 +74,19 @@ interface Outcome {
   title?: string | null;
 }
 
-const canceled = (reason: HistoryReason, detail: string): Outcome => ({ outcome: "canceled", reason, detail });
+type Cancellation = Outcome & { outcome: "canceled"; reason: HistoryReason };
+
+const canceled = (reason: HistoryReason, detail: string): Cancellation => ({ outcome: "canceled", reason, detail });
+const providerOff = (provider: string) => canceled("provider_off", `automatic resume is turned off for ${provider}`);
+
+/**
+ * What one delivery attempt did. `skipped` (turned off at its time) and `postponed` (moved to
+ * when its usage renews or can be checked again) belong to the tick alone.
+ */
+type Delivery = ResumeNowResult | { result: "skipped" | "postponed" };
 
 /** Why a due job must not continue the agent, or null when it is safe to send. */
-function skipReason(job: ResumeJob, agent: PaseoAgent | null): Outcome | null {
+function skipReason(job: ResumeJob, agent: PaseoAgent | null): Cancellation | null {
   if (!agent) return canceled("agent_missing", "agent no longer exists");
   if (agent.archivedAt) return canceled("archived", "agent is archived");
   if (agent.provider !== job.provider) return canceled("provider_changed", `provider changed to ${agent.provider}`);
@@ -305,39 +314,34 @@ export function createResumer(options: {
     left !== null && left.state === right.state && left.dueAt === right.dueAt && left.resetAt === right.resetAt &&
     left.identity === right.identity && left.model === right.model && left.retries === right.retries && left.waiting === right.waiting && left.baseline === right.baseline;
 
+  /** The tick's attempt; the result only matters to someone waiting on it. */
   async function fire(job: ResumeJob, api: ResumerApi, at: Date): Promise<void> {
-    const settings = await readSettings();
-    if (!settings) return;
-    if (!isProviderOn(job.provider, settings)) {
-      await forgetTurnedOff(job);
-      return;
-    }
-    const source = cliFor((await api.config.get()).config, job.provider);
+    await deliver(job, api, at);
+  }
+
+  /** One delivery attempt: every safety and usage check, then the claim and the send. */
+  async function deliver(job: ResumeJob, api: ResumerApi, at: Date): Promise<Delivery> {
     const same = (current: ResumeJob) => isSameJob(current, job);
-    if (!source) {
-      await retire(job.agentId, same, canceled("unsupported_cli", `${job.provider} no longer runs Claude, Codex, or Antigravity`));
-      return;
-    }
+    const cancel = async (outcome: Cancellation): Promise<Delivery> =>
+      await retire(job.agentId, same, outcome) ? { result: "canceled", reason: outcome.reason } : { result: "changed" };
+    const settings = await readSettings();
+    if (!settings) return { result: "unavailable" };
+    if (!isProviderOn(job.provider, settings)) return cancel(providerOff(job.provider));
+    const source = cliFor((await api.config.get()).config, job.provider);
+    if (!source) return cancel(canceled("unsupported_cli", `${job.provider} no longer runs Claude, Codex, or Antigravity`));
     if (!job.enabled) {
       // Switching it back on just now keeps it; the next tick sends it.
-      await retire(job.agentId, (current) => same(current) && !current.enabled, { outcome: "skipped", detail: "turned off in Auto Resume" });
-      return;
+      const removed = await retire(job.agentId, (current) => same(current) && !current.enabled, { outcome: "skipped", detail: "turned off in Auto Resume" });
+      return removed ? { result: "skipped" } : { result: "changed" };
     }
     const agent = await loadAgent(api, job.agentId);
     const title = agent && titleOf(agent);
     const skip = skipReason(job, agent);
-    if (skip) {
-      await retire(job.agentId, same, { ...skip, title });
-      return;
-    }
+    if (skip) return cancel({ ...skip, title });
     const check = await inspect(api, agent!, source, at, launches.get(job.agentId) ?? job.launch);
-    if (check.auth === "api") {
-      await retire(job.agentId, same, { ...canceled("api_route", "authentication uses API billing"), title });
-      return;
-    }
+    if (check.auth === "api") return cancel({ ...canceled("api_route", "authentication uses API billing"), title });
     if (job.identity && check.identity && job.identity !== check.identity) {
-      await retire(job.agentId, same, { ...canceled("account_changed", "account or model changed"), title });
-      return;
+      return cancel({ ...canceled("account_changed", "account or model changed"), title });
     }
     // A used-up window, or a stated reset still ahead, holds the continue until it renews.
     const held = check.auth !== "subscription" ? null
@@ -351,36 +355,39 @@ export function createResumer(options: {
         identity: current.identity ?? check.identity,
         retries: held ? 0 : current.retries,
       } : undefined);
-      return;
+      return { result: "postponed" };
     }
     // Claim before sending so a crash mid-send never delivers a second continue. The current
     // row decides: the job may have been turned off while the agent was being checked.
     const currentSettings = await readSettings();
-    if (!currentSettings) return;
-    if (!isProviderOn(job.provider, currentSettings)) {
-      await forgetTurnedOff(job, title);
-      return;
-    }
-    const claimed = await store.update(job.agentId, (current) =>
-      current && isSameJob(current, job) && current.enabled ? { ...current, identity: check.identity, waiting: undefined, state: "sending" } : undefined,
-    );
-    if (claimed?.state !== "sending") return;
+    if (!currentSettings) return { result: "unavailable" };
+    if (!isProviderOn(job.provider, currentSettings)) return cancel({ ...providerOff(job.provider), title });
+    // Assigned inside the callback, which TypeScript does not follow. The returned row cannot
+    // tell: one another attempt already claimed comes back unchanged, also as `sending`.
+    let claimed = false as boolean;
+    const latest = await store.update(job.agentId, (current) => {
+      if (!current || !isSameJob(current, job) || !current.enabled) return undefined;
+      claimed = true;
+      return { ...current, identity: check.identity, waiting: undefined, state: "sending" };
+    });
+    if (!claimed) return latest?.state === "sending" ? { result: "sending" } : { result: "changed" };
     try {
       await api.agents.ref(job.agentId).send(CONTINUE_PROMPT);
     } catch (error) {
       await store.update(job.agentId, (current) => (current?.state === "sending" ? null : undefined));
       console.error(`[usage-auto-resume] could not continue ${job.agentId}`, String(error));
       await record(job.agentId, job.provider, { outcome: "send_failed", title });
-      return;
+      return { result: "send_failed" };
     }
     // The sent row stays until the agent's next turn ends, which clears it without a report.
     await store.update(job.agentId, (current) => (current?.state === "sending" ? { ...current, state: "sent" } : undefined));
     log(`continued ${job.agentId}`);
     await record(job.agentId, job.provider, { outcome: "continued", title });
+    return { result: "sent" };
   }
 
-  async function forgetTurnedOff(job: ResumeJob, title?: string | null): Promise<void> {
-    await retire(job.agentId, (current) => isSameJob(current, job), { ...canceled("provider_off", `automatic resume is turned off for ${job.provider}`), title });
+  async function forgetTurnedOff(job: ResumeJob): Promise<void> {
+    await retire(job.agentId, (current) => isSameJob(current, job), providerOff(job.provider));
   }
 
   /** Turning a provider off also retires the reservations it already has. */
