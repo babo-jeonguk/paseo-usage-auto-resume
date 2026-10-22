@@ -66,18 +66,28 @@ export function cliLaunch(
   };
 }
 
+const exited = (child: ChildProcess) => child.exitCode !== null || child.signalCode !== null;
+
 /**
- * Ends a started CLI. On Windows a shim run through cmd.exe starts node and the CLI beneath it,
- * and killing cmd.exe alone leaves them running, so the whole tree is ended and awaited.
+ * Ends a started CLI, first waiting up to `graceMs` for it to exit on its own. On Windows a shim
+ * run through cmd.exe starts node and the CLI beneath it, and killing cmd.exe alone leaves them
+ * running, so a CLI still running after the grace period is ended with its whole tree.
  */
-export function stopProcessTree(child: ChildProcess, platform: NodeJS.Platform = process.platform): Promise<void> {
+export async function stopProcessTree(child: ChildProcess, platform: NodeJS.Platform = process.platform, graceMs = 0): Promise<void> {
+  // cmd.exe exits only after the shim and the CLI it waits on have exited.
+  if (graceMs > 0 && !exited(child)) {
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, graceMs);
+      child.once("exit", () => { clearTimeout(timer); resolve(); });
+    });
+  }
   // An exited process's ID may already belong to something else.
-  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  if (exited(child)) return;
   if (platform !== "win32" || child.pid === undefined) {
     child.kill();
-    return Promise.resolve();
+    return;
   }
-  return new Promise((resolve) => {
+  await new Promise<void>((resolve) => {
     const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
     killer.on("error", () => { child.kill(); resolve(); });
     killer.on("exit", () => resolve());

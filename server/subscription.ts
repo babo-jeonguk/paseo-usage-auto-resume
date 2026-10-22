@@ -10,6 +10,8 @@ import { createClaudeCredentialReader, type ClaudeCredentialReader } from "./cla
 import { cliHome, cliLaunch, stopProcessTree } from "./cli-launch";
 
 const TIMEOUT = 15_000;
+/** A status server exits once its input closes; it is ended by force only after this. */
+const STOP_GRACE_MS = 2_000;
 const AUTH_ENV = [
   "OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN", "OPENAI_BASE_URL",
   "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN",
@@ -248,7 +250,7 @@ async function codexSnapshot(command: string, args: string[], options: { cwd: st
       settled = true;
       clearTimeout(timer); child.stdin.end();
       const snapshot = { account: responses.get(2), config: responses.get(3), home: record(responses.get(1)).codexHome };
-      void stopProcessTree(child).then(() => { if (error) reject(error); else resolve(snapshot); });
+      void stopProcessTree(child, process.platform, STOP_GRACE_MS).then(() => { if (error) reject(error); else resolve(snapshot); });
     };
     const timer = setTimeout(() => finish(new Error("Status timeout")), TIMEOUT);
     const send = (value: unknown) => child.stdin.write(JSON.stringify(value) + "\n");

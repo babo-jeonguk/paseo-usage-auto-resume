@@ -82,9 +82,23 @@ function installed(): string {
   return path;
 }
 
+/** Running codex.exe processes with their parent and command line, for a leftover's diagnosis. */
+function codexProcessList(): string[] {
+  if (!windows) return [];
+  const out = execFileSync("powershell.exe", ["-NoProfile", "-Command",
+    "Get-CimInstance Win32_Process -Filter \"Name='codex.exe'\" | ForEach-Object { \"$($_.ProcessId) parent=$($_.ParentProcessId) $($_.CommandLine)\" }"], { encoding: "utf8" });
+  return out.split(/\r?\n/).filter(Boolean);
+}
+
 function codexProcesses(): number {
-  if (!windows) return 0;
-  return execFileSync("tasklist.exe", ["/FI", "IMAGENAME eq codex.exe", "/NH"], { encoding: "utf8" }).split(/\r?\n/).filter((line) => /codex\.exe/i.test(line)).length;
+  return codexProcessList().length;
+}
+
+/** Waits briefly for the count to settle, since a terminated process can linger in the list. */
+async function assertNoNewCodex(before: number): Promise<void> {
+  for (let tries = 0; tries < 10 && codexProcesses() > before; tries++) await new Promise((resolve) => setTimeout(resolve, 500));
+  const left = codexProcessList();
+  assert.equal(left.length, before, `no Codex server is left running:\n${left.join("\n")}`);
 }
 
 test("the plugin starts the installed CLI the way it is installed", { skip }, async () => {
@@ -119,9 +133,9 @@ test("Codex starts its app server through the launcher, reports its home and exi
     assert.equal(realpathSync.native(String(reported)), realpathSync.native(join(home, ".codex")));
   } finally {
     child.stdin.end();
-    await stopProcessTree(child);
+    await stopProcessTree(child, process.platform, 2_000);
   }
-  assert.equal(codexProcesses(), before, "no Codex server is left running");
+  await assertNoNewCodex(before);
 });
 
 test("a fixture login reaches a verified, ready subscription", { skip: skip || (handshakeOnly ? "this Codex does not answer a fixture login" : false) }, async () => {
@@ -129,7 +143,7 @@ test("a fixture login reaches a verified, ready subscription", { skip: skip || (
   const provider = tool === "codex" ? { env: { CODEX_HOME: join(home, ".codex") } } : {};
   const before = codexProcesses();
   const result = await check({ HOME: home, USERPROFILE: home }, provider);
-  assert.equal(codexProcesses(), before, "no Codex server is left running");
+  await assertNoNewCodex(before);
   assert.equal(result.auth, "subscription");
   assert.equal(result.status, "ready");
   assert.deepEqual(requests.map((request) => request.path), tool === "claude" ? ["/api/oauth/profile", "/api/oauth/usage"] : ["/backend-api/wham/usage"]);
@@ -142,7 +156,7 @@ test("a Codex that never answers is given up on in time, leaving nothing running
   const result = await check({ HOME: home, USERPROFILE: home }, { env: { CODEX_HOME: join(home, ".codex") } });
   assert.equal(result.auth, "unknown");
   assert.ok(Date.now() - started < 30_000, "the status timeout applies");
-  assert.equal(codexProcesses(), before, "no Codex server is left running");
+  await assertNoNewCodex(before);
 });
 
 test("Windows: the login is found when HOME is not the user profile", { skip: tool === "claude" && windows ? false : "Claude on Windows only" }, async () => {
