@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { execFile, spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { PluginSessionOpenRequest } from "@getpaseo/plugin/server";
@@ -7,11 +6,9 @@ import type { PaseoAgent, PaseoApi } from "./paseo-types";
 import type { UsageSource } from "../shared/settings";
 import { providerLaunch } from "./usage";
 import { createClaudeCredentialReader, type ClaudeCredentialReader } from "./claude-credentials";
-import { cliHome, cliLaunch, stopProcessTree } from "./cli-launch";
+import { CLI_STOP_GRACE_MS, cliHome, runCli, spawnCli, stopProcessTree } from "./cli-launch";
 
 const TIMEOUT = 15_000;
-/** A status server exits once its input closes; it is ended by force only after this. */
-const STOP_GRACE_MS = 2_000;
 const AUTH_ENV = [
   "OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN", "OPENAI_BASE_URL",
   "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN",
@@ -66,16 +63,7 @@ export function createSubscriptionReader(deps: {
   fetch?: typeof fetch;
   readClaudeCredentials?: ClaudeCredentialReader;
 } = {}): SubscriptionReader {
-  const run = deps.run ?? ((command, args, options) => new Promise<string>((resolve, reject) => {
-    const launch = cliLaunch(command, args, options.env);
-    const child = execFile(launch.file, launch.args, {
-      ...options, windowsVerbatimArguments: launch.windowsVerbatimArguments, maxBuffer: 2_000_000,
-    }, (error, stdout) => {
-      clearTimeout(timer);
-      if (error) reject(error); else resolve(stdout);
-    });
-    const timer = setTimeout(() => void stopProcessTree(child), TIMEOUT);
-  }));
+  const run = deps.run ?? ((command, args, options) => runCli(command, args, { ...options, timeoutMs: TIMEOUT, maxBytes: 2_000_000 }));
   const fetchApi = deps.fetch ?? fetch;
   const codex = deps.codex ?? codexSnapshot;
   const readClaudeCredentials = deps.readClaudeCredentials ?? createClaudeCredentialReader();
@@ -238,10 +226,7 @@ interface CodexSnapshot {
 
 /** Read configuration and account without creating a thread or refreshing the login. */
 async function codexSnapshot(command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }) {
-  const launch = cliLaunch(command, [...args, "app-server", "--stdio"], options.env);
-  const child = spawn(launch.file, launch.args, {
-    ...options, windowsVerbatimArguments: launch.windowsVerbatimArguments, stdio: ["pipe", "pipe", "ignore"],
-  });
+  const child = spawnCli(command, [...args, "app-server", "--stdio"], options);
   return await new Promise<CodexSnapshot>((resolve, reject) => {
     let buffer = "", bytes = 0, settled = false;
     const responses = new Map<number, unknown>();
@@ -250,7 +235,7 @@ async function codexSnapshot(command: string, args: string[], options: { cwd: st
       settled = true;
       clearTimeout(timer); child.stdin.end();
       const snapshot = { account: responses.get(2), config: responses.get(3), home: record(responses.get(1)).codexHome };
-      void stopProcessTree(child, process.platform, STOP_GRACE_MS).then(() => { if (error) reject(error); else resolve(snapshot); });
+      void stopProcessTree(child, { graceMs: CLI_STOP_GRACE_MS }).then(() => { if (error) reject(error); else resolve(snapshot); });
     };
     const timer = setTimeout(() => finish(new Error("Status timeout")), TIMEOUT);
     const send = (value: unknown) => child.stdin.write(JSON.stringify(value) + "\n");

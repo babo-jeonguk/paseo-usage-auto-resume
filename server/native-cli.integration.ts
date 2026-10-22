@@ -3,21 +3,22 @@
 // releases that do not answer a fixture login. Logins are fixtures in a temporary home and HTTP
 // is answered in-process, so no credential is used or sent.
 import assert from "node:assert/strict";
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { PaseoAgent } from "./paseo-types";
-import { cliLaunch, stopProcessTree } from "./cli-launch";
+import { CLI_STOP_GRACE_MS, cliLaunch, runCli, spawnCli, stopProcessTree } from "./cli-launch";
 import { createSubscriptionReader } from "./subscription";
 
 const tool = process.env.NATIVE_CLI as "claude" | "codex" | undefined;
 const handshakeOnly = !!process.env.NATIVE_CLI_HANDSHAKE_ONLY;
-const windows = process.platform === "win32";
+const onWindows = process.platform === "win32";
 const skip = tool ? false : "set NATIVE_CLI to claude or codex";
-const FAR = 4_102_444_800;
+/** Token expiry far beyond any test run: 2100-01-01, in seconds. */
+const FAR_FUTURE_SECONDS = 4_102_444_800;
 
 // Only the fixture homes below may decide which login the CLI and the plugin see.
 for (const key of Object.keys(process.env)) {
@@ -35,14 +36,14 @@ async function signedIn(name: string): Promise<string> {
   if (tool === "claude") {
     await mkdir(join(home, ".claude"), { recursive: true });
     await writeFile(join(home, ".claude", ".credentials.json"), JSON.stringify({ claudeAiOauth: {
-      accessToken: `token-${name}`, refreshToken: "fixture-refresh", expiresAt: FAR * 1000, scopes: ["user:inference", "user:profile"], subscriptionType: "max" } }));
+      accessToken: `token-${name}`, refreshToken: "fixture-refresh", expiresAt: FAR_FUTURE_SECONDS * 1000, scopes: ["user:inference", "user:profile"], subscriptionType: "max" } }));
     await writeFile(join(home, ".claude.json"), JSON.stringify({ oauthAccount: {
       accountUuid: "account-a", emailAddress: "fixture@example.invalid", organizationUuid: "org-a", organizationRole: "admin", organizationName: "Fixture" } }));
   } else {
     await mkdir(join(home, ".codex"), { recursive: true });
     const auth = { "https://api.openai.com/auth": { chatgpt_account_id: "acct-a", chatgpt_plan_type: "plus" } };
     await writeFile(join(home, ".codex", "auth.json"), JSON.stringify({ auth_mode: "chatgpt", OPENAI_API_KEY: null, last_refresh: new Date().toISOString(),
-      tokens: { id_token: jwt({ email: "fixture@example.invalid", exp: FAR, ...auth }), access_token: jwt({ exp: FAR, ...auth }), refresh_token: "fixture-refresh", account_id: "acct-a" } }));
+      tokens: { id_token: jwt({ email: "fixture@example.invalid", exp: FAR_FUTURE_SECONDS, ...auth }), access_token: jwt({ exp: FAR_FUTURE_SECONDS, ...auth }), refresh_token: "fixture-refresh", account_id: "acct-a" } }));
   }
   return home;
 }
@@ -76,45 +77,39 @@ async function check(homes: { HOME: string; USERPROFILE: string }, provider: Rec
 
 /** The installed file that `where`/`which` finds first, skipping the extensionless npm script on Windows. */
 function installed(): string {
-  const found = execFileSync(windows ? "where.exe" : "which", [tool!], { encoding: "utf8" }).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  const path = windows ? found.find((entry) => /\.(exe|cmd)$/i.test(entry)) : found[0];
+  const found = execFileSync(onWindows ? "where.exe" : "which", [tool!], { encoding: "utf8" }).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const path = onWindows ? found.find((entry) => /\.(exe|cmd)$/i.test(entry)) : found[0];
   assert.ok(path, `no installed ${tool}`);
   return path;
 }
 
 /** Running codex.exe processes with their parent and command line, for a leftover's diagnosis. */
 function codexProcessList(): string[] {
-  if (!windows) return [];
+  if (!onWindows) return [];
   const out = execFileSync("powershell.exe", ["-NoProfile", "-Command",
     "Get-CimInstance Win32_Process -Filter \"Name='codex.exe'\" | ForEach-Object { \"$($_.ProcessId) parent=$($_.ParentProcessId) $($_.CommandLine)\" }"], { encoding: "utf8" });
   return out.split(/\r?\n/).filter(Boolean);
 }
 
-function codexProcesses(): number {
-  return codexProcessList().length;
-}
-
 /** Waits briefly for the count to settle, since a terminated process can linger in the list. */
 async function assertNoNewCodex(before: number): Promise<void> {
-  for (let tries = 0; tries < 10 && codexProcesses() > before; tries++) await new Promise((resolve) => setTimeout(resolve, 500));
+  for (let tries = 0; tries < 10 && codexProcessList().length > before; tries++) await new Promise((resolve) => setTimeout(resolve, 500));
   const left = codexProcessList();
   assert.equal(left.length, before, `no Codex server is left running:\n${left.join("\n")}`);
 }
 
 test("the plugin starts the installed CLI the way it is installed", { skip }, async () => {
-  const launch = cliLaunch(tool!, ["--version"], process.env);
-  const run = spawnSync(launch.file, launch.args, { encoding: "utf8", windowsVerbatimArguments: launch.windowsVerbatimArguments, timeout: 60_000 });
-  assert.equal(run.error, undefined);
-  assert.match(run.stdout, tool === "claude" ? /Claude Code/ : /codex/i);
-  if (windows && /\.cmd$/i.test(installed())) assert.equal(launch.windowsVerbatimArguments, true, "an npm shim goes through cmd.exe");
+  const options = { cwd: root, env: process.env };
+  const version = await runCli(tool!, ["--version"], { ...options, timeoutMs: 60_000, maxBytes: 100_000 });
+  assert.match(version, tool === "claude" ? /Claude Code/ : /codex/i);
+  if (onWindows && /\.cmd$/i.test(installed())) assert.equal(cliLaunch(tool!, ["--version"], options).windowsVerbatimArguments, true, "an npm shim goes through cmd.exe");
 });
 
 test("Codex starts its app server through the launcher, reports its home and exits with its input", { skip: tool === "codex" ? false : "Codex only" }, async () => {
   const home = await signedIn("codex-handshake");
-  const before = codexProcesses();
+  const before = codexProcessList().length;
   const env = { ...process.env, CODEX_HOME: join(home, ".codex") };
-  const launch = cliLaunch("codex", ["app-server", "--stdio"], env);
-  const child = spawn(launch.file, launch.args, { env, cwd: root, windowsVerbatimArguments: launch.windowsVerbatimArguments, stdio: ["pipe", "pipe", "ignore"] });
+  const child = spawnCli("codex", ["app-server", "--stdio"], { env, cwd: root });
   try {
     const reported = await new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("no initialize response")), 30_000);
@@ -133,7 +128,7 @@ test("Codex starts its app server through the launcher, reports its home and exi
     assert.equal(realpathSync.native(String(reported)), realpathSync.native(join(home, ".codex")));
   } finally {
     child.stdin.end();
-    await stopProcessTree(child, process.platform, 2_000);
+    await stopProcessTree(child, { graceMs: CLI_STOP_GRACE_MS });
   }
   await assertNoNewCodex(before);
 });
@@ -141,7 +136,7 @@ test("Codex starts its app server through the launcher, reports its home and exi
 test("a fixture login reaches a verified, ready subscription", { skip: skip || (handshakeOnly ? "this Codex does not answer a fixture login" : false) }, async () => {
   const home = await signedIn("signed-in");
   const provider = tool === "codex" ? { env: { CODEX_HOME: join(home, ".codex") } } : {};
-  const before = codexProcesses();
+  const before = codexProcessList().length;
   const result = await check({ HOME: home, USERPROFILE: home }, provider);
   await assertNoNewCodex(before);
   assert.equal(result.auth, "subscription");
@@ -151,7 +146,7 @@ test("a fixture login reaches a verified, ready subscription", { skip: skip || (
 
 test("a Codex that never answers is given up on in time, leaving nothing running", { skip: tool === "codex" && handshakeOnly ? false : "unanswered Codex only" }, async () => {
   const home = await signedIn("unanswered");
-  const before = codexProcesses();
+  const before = codexProcessList().length;
   const started = Date.now();
   const result = await check({ HOME: home, USERPROFILE: home }, { env: { CODEX_HOME: join(home, ".codex") } });
   assert.equal(result.auth, "unknown");
@@ -159,7 +154,7 @@ test("a Codex that never answers is given up on in time, leaving nothing running
   await assertNoNewCodex(before);
 });
 
-test("Windows: the login is found when HOME is not the user profile", { skip: tool === "claude" && windows ? false : "Claude on Windows only" }, async () => {
+test("Windows: the login is found when HOME is not the user profile", { skip: tool === "claude" && onWindows ? false : "Claude on Windows only" }, async () => {
   const profile = await signedIn("profile");
   const elsewhere = await signedIn("elsewhere");
   const result = await check({ HOME: elsewhere, USERPROFILE: profile });
@@ -167,7 +162,7 @@ test("Windows: the login is found when HOME is not the user profile", { skip: to
   assert.ok(requests.every((request) => request.token === "Bearer token-profile"), "the CLI's own login is used");
 });
 
-test("Windows: a configured shim path with spaces, parentheses and an ampersand still runs", { skip: tool === "claude" && windows ? false : "Claude on Windows only" }, async () => {
+test("Windows: a configured shim path with spaces, parentheses and an ampersand still runs", { skip: tool === "claude" && onWindows ? false : "Claude on Windows only" }, async () => {
   const home = await signedIn("spaced");
   const directory = join(root, "Program Files (x86) & tools");
   await mkdir(directory, { recursive: true });
