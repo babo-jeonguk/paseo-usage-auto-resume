@@ -72,7 +72,7 @@ The default Paseo home is `~/.paseo`. Settings and jobs are separate from plugin
 | What you see | Meaning and next step |
 | --- | --- |
 | Empty Auto Resume list | No eligible stop has been found. Use agents normally; only detected limit stops create reservations. Older stops can be outside the startup scan. |
-| Waiting for account verification | The CLI authentication could not be confirmed. Check the CLI login and configured launcher. On macOS, check that the daemon's user can access the selected profile's Keychain item or its fallback file and that the login is unexpired. |
+| Waiting for account verification | The CLI authentication could not be confirmed. Check the CLI login and configured launcher. On Windows, the plugin starts npm-installed `.cmd` launchers through `cmd.exe` and reads the login from the user profile, as the CLIs do. On macOS, check that the daemon's user can access the selected profile's Keychain item or its fallback file and that the login is unexpired. |
 | Waiting for usage verification | Usage is unreadable, unrecognized or still exhausted without a usable future reset. The displayed time is the next check; time passing alone does not authorize a continue. |
 | Reservation disappeared | It may have been sent, skipped, canceled by agent activity/settings, or reached its retry bound. Check the conversation and daemon log. |
 | Saved jobs are not checked after restart | Open Auto Resume or let a lifecycle event reconnect the Paseo API. |
