@@ -1,3 +1,4 @@
+import { spawn, type ChildProcess } from "node:child_process";
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { win32 } from "node:path";
@@ -63,6 +64,24 @@ export function cliLaunch(
     args: ["/d", "/s", "/c", `""${resolved}" ${args.join(" ")}"`],
     windowsVerbatimArguments: true,
   };
+}
+
+/**
+ * Ends a started CLI. On Windows a shim run through cmd.exe starts node and the CLI beneath it,
+ * and killing cmd.exe alone leaves them running, so the whole tree is ended and awaited.
+ */
+export function stopProcessTree(child: ChildProcess, platform: NodeJS.Platform = process.platform): Promise<void> {
+  // An exited process's ID may already belong to something else.
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  if (platform !== "win32" || child.pid === undefined) {
+    child.kill();
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+    killer.on("error", () => { child.kill(); resolve(); });
+    killer.on("exit", () => resolve());
+  });
 }
 
 /** The home a CLI uses when nothing overrides it: the user profile on Windows, HOME elsewhere. */

@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { PaseoAgent } from "./paseo-types";
-import { cliLaunch } from "./cli-launch";
+import { cliLaunch, stopProcessTree } from "./cli-launch";
 import { createSubscriptionReader } from "./subscription";
 
 const tool = process.env.NATIVE_CLI as "claude" | "codex" | undefined;
@@ -114,18 +114,30 @@ test("Codex starts its app server through the launcher, reports its home and exi
     child.stdin.write(JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "usage_auto_resume_status", version: "1.0" } } }) + "\n");
   });
   assert.equal(String(reported).toLowerCase(), join(home, ".codex").toLowerCase());
-  child.stdin.end(); child.kill();
-  await new Promise((resolve) => setTimeout(resolve, 3_000));
+  child.stdin.end();
+  await stopProcessTree(child);
   assert.equal(codexProcesses(), before, "no Codex server is left running");
 });
 
 test("a fixture login reaches a verified, ready subscription", { skip: skip || (handshakeOnly ? "this Codex does not answer a fixture login" : false) }, async () => {
   const home = await signedIn("signed-in");
   const provider = tool === "codex" ? { env: { CODEX_HOME: join(home, ".codex") } } : {};
+  const before = codexProcesses();
   const result = await check({ HOME: home, USERPROFILE: home }, provider);
+  assert.equal(codexProcesses(), before, "no Codex server is left running");
   assert.equal(result.auth, "subscription");
   assert.equal(result.status, "ready");
   assert.deepEqual(requests.map((request) => request.path), tool === "claude" ? ["/api/oauth/profile", "/api/oauth/usage"] : ["/backend-api/wham/usage"]);
+});
+
+test("a Codex that never answers is given up on in time, leaving nothing running", { skip: tool === "codex" && handshakeOnly ? false : "unanswered Codex only" }, async () => {
+  const home = await signedIn("unanswered");
+  const before = codexProcesses();
+  const started = Date.now();
+  const result = await check({ HOME: home, USERPROFILE: home }, { env: { CODEX_HOME: join(home, ".codex") } });
+  assert.equal(result.auth, "unknown");
+  assert.ok(Date.now() - started < 30_000, "the status timeout applies");
+  assert.equal(codexProcesses(), before, "no Codex server is left running");
 });
 
 test("Windows: the login is found when HOME is not the user profile", { skip: tool === "claude" && windows ? false : "Claude on Windows only" }, async () => {
