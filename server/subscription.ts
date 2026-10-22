@@ -2,15 +2,13 @@ import { createHash } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import type { PluginSessionOpenRequest } from "@getpaseo/plugin/server";
 import type { PaseoAgent, PaseoApi } from "./paseo-types";
 import type { UsageSource } from "../shared/settings";
 import { providerLaunch } from "./usage";
 import { createClaudeCredentialReader, type ClaudeCredentialReader } from "./claude-credentials";
-import { cliHome, cliLaunch } from "./cli-launch";
+import { cliHome, cliLaunch, stopProcessTree } from "./cli-launch";
 
-const exec = promisify(execFile);
 const TIMEOUT = 15_000;
 const AUTH_ENV = [
   "OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN", "OPENAI_BASE_URL",
@@ -66,12 +64,16 @@ export function createSubscriptionReader(deps: {
   fetch?: typeof fetch;
   readClaudeCredentials?: ClaudeCredentialReader;
 } = {}): SubscriptionReader {
-  const run = deps.run ?? (async (command, args, options) => {
+  const run = deps.run ?? ((command, args, options) => new Promise<string>((resolve, reject) => {
     const launch = cliLaunch(command, args, options.env);
-    return (await exec(launch.file, launch.args, {
-      ...options, windowsVerbatimArguments: launch.windowsVerbatimArguments, timeout: TIMEOUT, maxBuffer: 2_000_000,
-    })).stdout;
-  });
+    const child = execFile(launch.file, launch.args, {
+      ...options, windowsVerbatimArguments: launch.windowsVerbatimArguments, maxBuffer: 2_000_000,
+    }, (error, stdout) => {
+      clearTimeout(timer);
+      if (error) reject(error); else resolve(stdout);
+    });
+    const timer = setTimeout(() => void stopProcessTree(child), TIMEOUT);
+  }));
   const fetchApi = deps.fetch ?? fetch;
   const codex = deps.codex ?? codexSnapshot;
   const readClaudeCredentials = deps.readClaudeCredentials ?? createClaudeCredentialReader();
@@ -244,9 +246,9 @@ async function codexSnapshot(command: string, args: string[], options: { cwd: st
     const finish = (error?: Error) => {
       if (settled) return;
       settled = true;
-      // Closing input ends the server itself; killing cmd.exe alone would leave a shim's children.
-      clearTimeout(timer); child.stdin.end(); child.kill();
-      if (error) reject(error); else resolve({ account: responses.get(2), config: responses.get(3), home: record(responses.get(1)).codexHome });
+      clearTimeout(timer); child.stdin.end();
+      const snapshot = { account: responses.get(2), config: responses.get(3), home: record(responses.get(1)).codexHome };
+      void stopProcessTree(child).then(() => { if (error) reject(error); else resolve(snapshot); });
     };
     const timer = setTimeout(() => finish(new Error("Status timeout")), TIMEOUT);
     const send = (value: unknown) => child.stdin.write(JSON.stringify(value) + "\n");
