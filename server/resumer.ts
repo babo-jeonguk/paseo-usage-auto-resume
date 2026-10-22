@@ -1,7 +1,7 @@
 import type { AgentTimelineItem, PaseoAgent, PaseoApi } from "./paseo-types";
 import type { PluginLifecycleEvents, PluginSessionOpenRequest } from "@getpaseo/plugin/server";
 import { detectLimitStop } from "./limit";
-import type { RescheduleResult, ScheduledJob } from "../shared/rpc";
+import type { HistoryOutcome, HistoryReason, RescheduleResult, ScheduledJob } from "../shared/rpc";
 import type { JobStore, ResumeJob } from "./store";
 import { captureLaunch, createSubscriptionReader, subscriptionModel, unknownCheck, type LaunchContext, type SubscriptionCheck, type SubscriptionReader } from "./subscription";
 import { GRACE_MS, MIN_DELAY_MS, rescheduleWindow } from "../shared/schedule";
@@ -69,18 +69,27 @@ function dueFor(resetAt: Date | null, now: Date): string {
   return new Date(Math.max(resetAt.getTime() + GRACE_MS, now.getTime() + MIN_DELAY_MS)).toISOString();
 }
 
+/** Why a reservation ended; `detail` is the log's wording. */
+interface Outcome {
+  outcome: HistoryOutcome;
+  reason?: HistoryReason;
+  detail?: string;
+}
+
+const canceled = (reason: HistoryReason, detail: string): Outcome => ({ outcome: "canceled", reason, detail });
+
 /** Why a due job must not continue the agent, or null when it is safe to send. */
-function skipReason(job: ResumeJob, agent: PaseoAgent | null): string | null {
-  if (!agent) return "agent no longer exists";
-  if (agent.archivedAt) return "agent is archived";
-  if (agent.provider !== job.provider) return `provider changed to ${agent.provider}`;
-  if (job.model !== undefined && subscriptionModel(agent) !== job.model) return "model changed";
-  if ((agent.lastUserMessageAt ?? null) !== job.baseline) return "a newer message reached the agent";
+function skipReason(job: ResumeJob, agent: PaseoAgent | null): Outcome | null {
+  if (!agent) return canceled("agent_missing", "agent no longer exists");
+  if (agent.archivedAt) return canceled("archived", "agent is archived");
+  if (agent.provider !== job.provider) return canceled("provider_changed", `provider changed to ${agent.provider}`);
+  if (job.model !== undefined && subscriptionModel(agent) !== job.model) return canceled("model_changed", "model changed");
+  if ((agent.lastUserMessageAt ?? null) !== job.baseline) return canceled("new_message", "a newer message reached the agent");
   if (agent.activeTurn || (agent.status !== "idle" && agent.status !== "error")) {
-    return `agent is ${agent.status}`;
+    return canceled("agent_busy", `agent is ${agent.status}`);
   }
   if (agent.pendingPermissions.length > 0 || agent.attentionReason === "permission") {
-    return "agent is waiting for permission or input";
+    return canceled("permission", "agent is waiting for permission or input");
   }
   return null;
 }
@@ -133,6 +142,8 @@ export function createResumer(options: {
     const stop = detectLimitStop(event.outcome, event.timeline, observedAt);
     if (!stop) {
       // The agent finished a turn on its own terms; nothing is waiting and retries start over.
+      // A continue already sent is cleared without a second report.
+      await retire(agent.id, (current) => current.state === "pending", canceled("turn_finished", "a turn finished before the scheduled continue"));
       await store.update(agent.id, () => null);
       return;
     }
@@ -155,7 +166,11 @@ export function createResumer(options: {
     const at = now();
     // A notice supplies the schedule; only bind identity here, leaving usage until delivery.
     const check = await inspect(api, agent, source, at, launch, stated ? "identity" : "usage");
-    if (check.auth === "api") { await forget(agent.id); return; }
+    if (check.auth === "api") {
+      launches.delete(agent.id);
+      await retire(agent.id, () => true, canceled("api_route", "authentication uses API billing"));
+      return;
+    }
     const plan: Plan = stated ? { kind: "reset", resetAt: stated } : planFor(check, at);
     const settings = await readSettings();
     if (!settings || !isProviderOn(agent.provider, settings)) return;
@@ -240,17 +255,31 @@ export function createResumer(options: {
     }
   }
 
-  /** A turn that starts while a job is pending was not started by this plugin. */
-  async function onTurnStarted(agentId: string): Promise<void> {
-    await store.update(agentId, (job) => {
-      if (job?.state !== "pending") return undefined;
-      log(`canceled ${agentId}: a turn started before the scheduled continue`);
+  /**
+   * Removes the agent's job when `matches` accepts the current row and logs why. Returns whether
+   * this call removed it; a job that changed meanwhile is left alone and nothing is reported.
+   */
+  async function retire(agentId: string, matches: (current: ResumeJob) => boolean, outcome: Outcome): Promise<boolean> {
+    let removed = false;
+    await store.update(agentId, (current) => {
+      if (!current || !matches(current)) return undefined;
+      removed = true;
       return null;
     });
+    if (!removed) return false;
+    log(outcome.outcome === "interrupted" ? `dropped interrupted continue for ${agentId}` : `${outcome.outcome} ${agentId}: ${outcome.detail}`);
+    return true;
   }
 
+  /** A turn that starts while a job is pending was not started by this plugin. */
+  async function onTurnStarted(agentId: string): Promise<void> {
+    await retire(agentId, (job) => job.state === "pending", canceled("turn_started", "a turn started before the scheduled continue"));
+  }
+
+  /** An archived agent's reservation goes with it; a continue already sent is cleared quietly. */
   async function forget(agentId: string): Promise<void> {
     launches.delete(agentId);
+    await retire(agentId, (job) => job.state === "pending", canceled("archived", "agent was archived"));
     await store.update(agentId, () => null);
   }
 
@@ -266,27 +295,28 @@ export function createResumer(options: {
       return;
     }
     const source = cliFor((await api.config.get()).config, job.provider);
+    const same = (current: ResumeJob) => isSameJob(current, job);
     if (!source) {
-      log(`canceled ${job.agentId}: ${job.provider} no longer runs Claude, Codex, or Antigravity`);
-      await store.update(job.agentId, (current) => (isSameJob(current, job) ? null : undefined));
+      await retire(job.agentId, same, canceled("unsupported_cli", `${job.provider} no longer runs Claude, Codex, or Antigravity`));
       return;
     }
     if (!job.enabled) {
-      log(`skipped ${job.agentId}: turned off in Auto Resume`);
-      await store.update(job.agentId, (current) => (isSameJob(current, job) ? null : undefined));
+      await retire(job.agentId, same, { outcome: "skipped", detail: "turned off in Auto Resume" });
       return;
     }
     const agent = await loadAgent(api, job.agentId);
-    const reason = skipReason(job, agent);
-    if (reason) {
-      log(`canceled ${job.agentId}: ${reason}`);
-      await store.update(job.agentId, (current) => (isSameJob(current, job) ? null : undefined));
+    const skip = skipReason(job, agent);
+    if (skip) {
+      await retire(job.agentId, same, skip);
       return;
     }
     const check = await inspect(api, agent!, source, at, launches.get(job.agentId) ?? job.launch);
-    if (check.auth === "api" || (job.identity && check.identity && job.identity !== check.identity)) {
-      await store.update(job.agentId, (current) => isSameJob(current, job) ? null : undefined);
-      log(`canceled ${job.agentId}: authentication, account or model changed`);
+    if (check.auth === "api") {
+      await retire(job.agentId, same, canceled("api_route", "authentication uses API billing"));
+      return;
+    }
+    if (job.identity && check.identity && job.identity !== check.identity) {
+      await retire(job.agentId, same, canceled("account_changed", "account or model changed"));
       return;
     }
     // A used-up window, or a stated reset still ahead, holds the continue until it renews.
@@ -326,8 +356,7 @@ export function createResumer(options: {
   }
 
   async function forgetTurnedOff(job: ResumeJob): Promise<void> {
-    await store.update(job.agentId, (current) => (isSameJob(current, job) ? null : undefined));
-    log(`canceled ${job.agentId}: automatic resume is turned off for ${job.provider}`);
+    await retire(job.agentId, (current) => isSameJob(current, job), canceled("provider_off", `automatic resume is turned off for ${job.provider}`));
   }
 
   /** Turning a provider off also retires the reservations it already has. */
@@ -370,8 +399,7 @@ export function createResumer(options: {
   async function recover(): Promise<void> {
     for (const job of await store.list()) {
       if (job.state !== "sending") continue;
-      await store.update(job.agentId, (current) => (current?.state === "sending" ? null : undefined));
-      log(`dropped interrupted continue for ${job.agentId}`);
+      await retire(job.agentId, (current) => current.state === "sending", { outcome: "interrupted" });
     }
   }
 

@@ -65,6 +65,35 @@ export const setAllEnabledRpc = defineRpc({
   output: z.object({ changed: z.number().int().nonnegative() }),
 });
 
+/** How a reservation ended; only final results, never time changes or toggles. */
+export const HistoryOutcomeSchema = z.enum([
+  /** The continue prompt was sent. */
+  "continued",
+  /** Sending the continue threw. */
+  "send_failed",
+  /** The reservation was turned off when its time came. */
+  "skipped",
+  /** A safety check, agent activity or a setting removed it. */
+  "canceled",
+  /** The retry bound was reached. */
+  "gave_up",
+  /** A restart found it mid-send and dropped it. */
+  "interrupted",
+]);
+
+export type HistoryOutcome = z.infer<typeof HistoryOutcomeSchema>;
+
+export const HistoryReasonSchema = z.enum([
+  // canceled
+  "turn_started", "new_message", "turn_finished", "agent_missing", "archived",
+  "provider_changed", "model_changed", "agent_busy", "permission",
+  "account_changed", "api_route", "provider_off", "unsupported_cli",
+  // gave_up
+  "attempts", "retries",
+]);
+
+export type HistoryReason = z.infer<typeof HistoryReasonSchema>;
+
 export const DiscoveredProviderSchema = z.object({
   id: z.string(),
   label: z.string(),
