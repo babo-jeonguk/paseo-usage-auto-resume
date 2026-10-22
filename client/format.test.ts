@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { DiscoveredProvider, ScheduledJob } from "../shared/rpc";
+import { HistoryReasonSchema, type DiscoveredProvider, type HistoryOutcome, type HistoryReason, type ScheduledJob } from "../shared/rpc";
 import {
   bulkAction,
   composerLabel,
@@ -8,6 +8,9 @@ import {
   dayLabel,
   dayOffset,
   groupByDay,
+  historyLabel,
+  historySummary,
+  historyDayLabel,
   placeLabel,
   providerHint,
   providerLabel,
@@ -164,4 +167,48 @@ test("the server's refusals read the same way", () => {
 test("one bulk button turns everything off while anything is on", () => {
   assert.deepEqual(bulkAction([job({}), job({ enabled: false })]), { enabled: false, label: "Turn all off", shortLabel: "All off" });
   assert.deepEqual(bulkAction([job({ enabled: false }), job({ sending: true })]), { enabled: true, label: "Turn all on", shortLabel: "All on" });
+});
+
+test("every recorded result reads as one line", () => {
+  const cases: Array<[HistoryOutcome, HistoryReason | undefined, string]> = [
+    ["continued", undefined, "Continued"],
+    ["send_failed", undefined, "Couldn’t send the continue"],
+    ["skipped", undefined, "Skipped · turned off"],
+    ["interrupted", undefined, "Dropped · interrupted by a restart"],
+    ["gave_up", "attempts", "Gave up · limit hit 24 times in a row"],
+    ["gave_up", "retries", "Gave up · stopped again after 3 retries"],
+    ["gave_up", undefined, "Gave up"],
+    ["canceled", "turn_started", "Canceled · turn started"],
+    ["canceled", "new_message", "Canceled · a newer message"],
+    ["canceled", "turn_finished", "Canceled · turn finished"],
+    ["canceled", "agent_missing", "Canceled · agent not found"],
+    ["canceled", "archived", "Canceled · agent archived"],
+    ["canceled", "provider_changed", "Canceled · provider changed"],
+    ["canceled", "model_changed", "Canceled · model changed"],
+    ["canceled", "agent_busy", "Canceled · agent was busy"],
+    ["canceled", "permission", "Canceled · waiting for permission"],
+    ["canceled", "account_changed", "Canceled · account changed"],
+    ["canceled", "api_route", "Canceled · API billing route"],
+    ["canceled", "provider_off", "Canceled · provider turned off"],
+    ["canceled", "unsupported_cli", "Canceled · unsupported CLI"],
+    ["canceled", undefined, "Canceled"],
+  ];
+  for (const [outcome, reason, label] of cases) assert.equal(historyLabel({ outcome, reason }), label, `${outcome}/${reason}`);
+  const canceledReasons = new Set(cases.filter(([outcome, reason]) => outcome === "canceled" && reason).map(([, reason]) => reason));
+  const gaveUpReasons = new Set(["attempts", "retries"]);
+  for (const reason of HistoryReasonSchema.options) {
+    assert.ok(canceledReasons.has(reason) || gaveUpReasons.has(reason), `${reason} has a label`);
+  }
+});
+
+test("the collapsed header counts results by kind", () => {
+  const outcomes: HistoryOutcome[] = ["continued", "canceled", "continued", "send_failed", "interrupted", "gave_up", "skipped"];
+  assert.equal(historySummary(outcomes.map((outcome) => ({ outcome }))), "2 continued · 1 canceled · 1 skipped · 1 gave up · 1 failed · 1 dropped");
+  assert.equal(historySummary([{ outcome: "canceled" }]), "1 canceled");
+});
+
+test("history names the day only when it was not today", () => {
+  assert.equal(historyDayLabel(new Date(2026, 9, 6, 0, 5).toISOString(), now), null);
+  assert.equal(historyDayLabel(new Date(2026, 9, 5, 23, 10).toISOString(), now), "Yesterday");
+  assert.equal(historyDayLabel(new Date(2026, 9, 3, 9, 0).toISOString(), now), "Oct 3");
 });

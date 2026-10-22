@@ -5,7 +5,7 @@ import type { HistoryOutcome, HistoryReason, HistoryRow, RescheduleResult, Sched
 import type { HistoryStore } from "./history";
 import type { JobStore, ResumeJob } from "./store";
 import { captureLaunch, createSubscriptionReader, subscriptionModel, unknownCheck, type LaunchContext, type SubscriptionCheck, type SubscriptionReader } from "./subscription";
-import { GRACE_MS, MIN_DELAY_MS, rescheduleWindow } from "../shared/schedule";
+import { GRACE_MS, MAX_ATTEMPTS, MIN_DELAY_MS, RETRY_DELAYS_MS, rescheduleWindow } from "../shared/schedule";
 import { DEFAULT_PROVIDER_SETTINGS, isProviderOn, type ProviderSettings, type UsageSource } from "../shared/settings";
 import { cliFor } from "./providers";
 
@@ -18,13 +18,6 @@ export const CONTINUE_PROMPT =
   "If an existing subagent cannot be resumed, report that blocker instead of silently abandoning its unfinished task.";
 
 const UNKNOWN_RECHECK_MS = 15 * 60_000;
-/**
- * Waits before each continue after a stop whose applicable windows were not used up, such as a
- * credits notice or a transient rate limit; the chain gives up after the last one.
- */
-const RETRY_DELAYS_MS = [15, 30, 60].map((minutes) => minutes * 60_000);
-/** Bounds actual automatic continues; read-only verification checks do not consume retries. */
-const MAX_ATTEMPTS = 24;
 /** Startup scan looks at agents active this recently; older stops are left to the user. */
 const SCAN_WINDOW_MS = 12 * 3_600_000;
 const SCAN_TIMELINE_ITEMS = 20;

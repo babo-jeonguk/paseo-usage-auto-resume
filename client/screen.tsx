@@ -1,20 +1,25 @@
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { useRpc } from "@getpaseo/plugin/client";
 import { Icon, ScrollView, useToast } from "@getpaseo/plugin/client/react-native";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, RefreshControl, Text, View } from "react-native";
 import {
+  listHistoryRpc,
   listScheduledRpc,
   rescheduleRpc,
   setAllEnabledRpc,
   setEnabledRpc,
+  type HistoryRow,
   type ScheduledJob,
 } from "../shared/rpc";
 import {
   bulkAction,
   clockLabel,
   groupByDay,
+  historyDayLabel,
+  historyLabel,
+  historySummary,
   placeLabel,
   providerLabel,
   refusalLabel,
@@ -153,6 +158,26 @@ function createStyles(theme: Theme, compact: boolean) {
       paddingVertical: 8,
     },
     retryText: { color: colors.foreground, fontSize: 14, fontWeight: "500" as const },
+    historyHeader: {
+      flexDirection: "row" as const,
+      alignItems: "flex-start" as const,
+      gap: 6,
+      paddingVertical: 6,
+      paddingHorizontal: 4,
+      marginBottom: 6,
+      borderRadius: 6,
+    },
+    historyChevron: { marginTop: 2 },
+    historyHeadingLine: { flexDirection: "row" as const, alignItems: "baseline" as const, justifyContent: "space-between" as const, gap: 8 },
+    historyHeading: { color: colors.foreground, fontSize: 13, fontWeight: "600" as const },
+    historyHint: { color: colors.foregroundMuted, fontSize: 12, fontVariant: ["tabular-nums" as const] },
+    historySummary: { marginTop: 2 },
+    historyRow: { flexDirection: "row" as const, alignItems: "center" as const, gap: 12, paddingVertical: 10, paddingHorizontal: 16 },
+    historyTime: { width: 64 },
+    historyClock: { color: colors.foreground, fontSize: 14, fontVariant: ["tabular-nums" as const] },
+    historyOutcome: { color: colors.foreground, fontSize: 14, fontWeight: "500" as const },
+    historyMeta: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6, marginTop: 4 },
+    historyError: { flexDirection: "row" as const, alignItems: "center" as const, gap: 8, padding: 16 },
   };
 }
 
@@ -265,9 +290,105 @@ function JobRow(props: {
   );
 }
 
+/** Final results from the last 24 hours, collapsed until asked for. */
+function HistorySection(props: {
+  query: UseQueryResult<HistoryRow[]>;
+  now: number;
+  theme: Theme;
+  styles: Styles;
+  onOpen?: (agentId: string) => void;
+}) {
+  const { query, now, theme, styles, onOpen } = props;
+  const [open, setOpen] = useState(false);
+  if (query.isPending) return null;
+  if (query.isError) {
+    return (
+      <View style={styles.section}>
+        <View style={styles.historyHeader}>
+          <Text style={styles.historyHeading}>Recent activity</Text>
+        </View>
+        <View style={[styles.card, styles.historyError]}>
+          <Icon name="TriangleAlert" size={16} color={theme.colors.statusDanger} />
+          <Text style={[styles.metaText, { flex: 1 }]}>Couldn’t load recent activity</Text>
+          <Pressable accessibilityRole="button" onPress={() => void query.refetch()} style={styles.button}>
+            <Text style={styles.buttonText}>Try again</Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+  const entries = query.data;
+  if (entries.length === 0) return null;
+  const summary = historySummary(entries);
+  return (
+    <View style={styles.section}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        accessibilityLabel={`Recent activity in the last 24 hours: ${summary}`}
+        onPress={() => setOpen(!open)}
+        style={({ pressed }) => [styles.historyHeader, pressed ? styles.pressed : null]}
+      >
+        <View style={styles.historyChevron}>
+          <Icon name={open ? "ChevronDown" : "ChevronRight"} size={14} color={theme.colors.foregroundMuted} />
+        </View>
+        <View style={styles.rowBody}>
+          <View style={styles.historyHeadingLine}>
+            <Text style={styles.historyHeading}>Recent activity</Text>
+            <Text style={styles.historyHint}>Last 24 hours</Text>
+          </View>
+          <Text style={[styles.historyHint, styles.historySummary]}>{summary}</Text>
+        </View>
+      </Pressable>
+      {open ? (
+        <View style={styles.card}>
+          {entries.map((entry, index) => {
+            const title = entry.title ?? "Untitled agent";
+            const day = historyDayLabel(entry.at, now);
+            return (
+              <View key={entry.id} style={[styles.historyRow, index > 0 ? styles.rowDivider : null]}>
+                <View style={styles.historyTime}>
+                  <Text style={styles.historyClock}>{clockLabel(entry.at)}</Text>
+                  {day ? <Text style={styles.relative}>{day}</Text> : null}
+                </View>
+                <View style={styles.rowBody}>
+                  <Text style={styles.historyOutcome} numberOfLines={2}>
+                    {historyLabel(entry)}
+                  </Text>
+                  <View style={styles.historyMeta}>
+                    <View style={styles.chip}>
+                      <Text style={styles.chipText}>{providerLabel(entry.provider)}</Text>
+                    </View>
+                    <Text style={styles.metaText} numberOfLines={1}>
+                      {title}
+                    </Text>
+                  </View>
+                </View>
+                {/* Only a live agent can be opened; one deleted since keeps its recorded name. */}
+                {onOpen && entry.workspaceId ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Open ${title}`}
+                    hitSlop={4}
+                    onPress={() => onOpen(entry.agentId)}
+                    style={({ pressed }) => [styles.iconButton, pressed ? styles.pressed : null]}
+                  >
+                    <Icon name="SquareArrowOutUpRight" size={16} color={theme.colors.foregroundMuted} />
+                  </Pressable>
+                ) : null}
+              </View>
+            );
+          })}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScreenProps) {
   const styles = useMemo(() => createStyles(theme, layout.compact), [theme, layout.compact]);
   const listScheduled = useRpc(listScheduledRpc);
+  const listHistory = useRpc(listHistoryRpc);
   const setEnabled = useRpc(setEnabledRpc);
   const setAllEnabled = useRpc(setAllEnabledRpc);
   const reschedule = useRpc(rescheduleRpc);
@@ -277,11 +398,29 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
   const [editing, setEditing] = useState<string | null>(null);
   const queryKey = useMemo(() => ["usage-auto-resume", "jobs", host.id], [host.id]);
 
+  const historyKey = useMemo(() => ["usage-auto-resume", "history", host.id], [host.id]);
+
   const query = useQuery({
     queryKey,
     queryFn: async () => (await listScheduled({})).jobs,
     refetchInterval: 30_000,
   });
+  const history = useQuery({
+    queryKey: historyKey,
+    queryFn: async () => (await listHistory({})).entries,
+    refetchInterval: 30_000,
+  });
+  const refresh = () => {
+    void query.refetch();
+    void history.refetch();
+  };
+
+  /** A change never records a result itself, but one may have come due meanwhile. */
+  function settled() {
+    notifyScheduleChanged();
+    void queryClient.invalidateQueries({ queryKey: historyKey });
+    return queryClient.invalidateQueries({ queryKey });
+  }
 
   /** Applies a change to the cached list at once and returns what to roll back to. */
   async function optimistic(change: (jobs: ScheduledJob[]) => ScheduledJob[]) {
@@ -308,10 +447,7 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
     onMutate: ({ job, enabled }) =>
       optimistic((jobs) => jobs.map((entry) => (entry.agentId === job.agentId ? { ...entry, enabled } : entry))),
     onError: (error, _input, context) => rollback(error, context),
-    onSettled: () => {
-      notifyScheduleChanged();
-      return queryClient.invalidateQueries({ queryKey });
-    },
+    onSettled: settled,
   });
 
   // Moving a job turns it on, like changing an alarm's time; it may also change its day group.
@@ -327,10 +463,7 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
       );
     },
     onError: (error, _input, context) => rollback(error, context),
-    onSettled: () => {
-      notifyScheduleChanged();
-      return queryClient.invalidateQueries({ queryKey });
-    },
+    onSettled: settled,
   });
 
   // Only the rows on screen change; one being sent cannot be turned off any more.
@@ -349,10 +482,7 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
     onSuccess: (changed, { enabled }) =>
       toast.show(`${changed} ${changed === 1 ? "schedule" : "schedules"} turned ${enabled ? "on" : "off"}`),
     onError: (error, _input, context) => rollback(error, context),
-    onSettled: () => {
-      notifyScheduleChanged();
-      return queryClient.invalidateQueries({ queryKey });
-    },
+    onSettled: settled,
   });
 
   const openAgent = navigation ? (agentId: string) => navigation.openAgent({ agentId }) : undefined;
@@ -413,7 +543,7 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
               accessibilityRole="button"
               accessibilityLabel="Refresh"
               hitSlop={4}
-              onPress={() => void query.refetch()}
+              onPress={refresh}
               style={({ pressed }) => [styles.iconButton, pressed ? styles.pressed : null]}
             >
               <Icon name="RefreshCw" size={16} color={theme.colors.foregroundMuted} />
@@ -456,13 +586,16 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
         layout.compact ? (
           <RefreshControl
             refreshing={query.isRefetching}
-            onRefresh={() => void query.refetch()}
+            onRefresh={refresh}
             tintColor={theme.colors.foregroundMuted}
           />
         ) : undefined
       }
     >
       {content}
+      {query.isPending || query.isError ? null : (
+        <HistorySection query={history} now={now} theme={theme} styles={styles} onOpen={openAgent} />
+      )}
     </ScrollView>
   );
 }
