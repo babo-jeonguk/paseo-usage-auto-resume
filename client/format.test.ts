@@ -19,6 +19,7 @@ import {
   relativeLabel,
   rescheduleProblem,
   resumeNowLabel,
+  resumeNowTone,
   sortProviders,
   summaryLabels,
   timeOnDay,
@@ -189,6 +190,14 @@ test("each Resume now result reads as one toast", () => {
   assert.equal(resumeNowLabel({ result: "sending" }, now), "This agent is continuing now.");
   assert.equal(resumeNowLabel({ result: "changed" }, now), "This schedule already ran or changed.");
   assert.equal(resumeNowLabel({ result: "unavailable" }, now), "Auto Resume settings couldn’t be read.");
+});
+
+test("Resume now toasts warn on a block, inform on a result already reached, and fail only on errors", () => {
+  const tones = (["sent", "sending", "changed", "send_failed", "unavailable"] as const).map((result) => resumeNowTone({ result }));
+  assert.deepEqual(tones, ["success", "info", "info", "error", "error"]);
+  assert.equal(resumeNowTone({ result: "held", until: null }), "warning");
+  assert.equal(resumeNowTone({ result: "held", waiting: "auth", until: null }), "warning");
+  assert.equal(resumeNowTone({ result: "canceled", reason: "new_message" }), "warning");
 });
 
 test("one bulk button turns everything off while anything is on", () => {

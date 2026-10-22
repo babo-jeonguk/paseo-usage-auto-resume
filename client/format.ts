@@ -251,7 +251,30 @@ function outcomeLabel(entry: Pick<HistoryEntry, "outcome" | "reason">): string {
   }
 }
 
-/** The toast after Resume now; only `sent` is a success. */
+/** When Resume now got no result at all: the daemon may still have finished, and sent. */
+export const RESUME_NOW_UNFINISHED = "Resume now didn’t finish. Refresh to see whether the continue was sent.";
+
+/**
+ * The toast's color: a block or a removed reservation warns, a result the user already has or a
+ * stale screen informs, and only a send that failed or settings that could not be read are errors.
+ */
+export function resumeNowTone(result: ResumeNowResult): "success" | "info" | "warning" | "error" {
+  switch (result.result) {
+    case "sent":
+      return "success";
+    case "sending":
+    case "changed":
+      return "info";
+    case "held":
+    case "canceled":
+      return "warning";
+    case "send_failed":
+    case "unavailable":
+      return "error";
+  }
+}
+
+/** The toast after Resume now. */
 export function resumeNowLabel(result: ResumeNowResult, now: number): string {
   switch (result.result) {
     case "sent":

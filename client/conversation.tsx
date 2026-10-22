@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { listScheduledRpc, rescheduleRpc, resumeNowRpc, setEnabledRpc, type ScheduledJob } from "../shared/rpc";
-import { clockLabel, dayLabel, delayChoices, refusalLabel, relativeLabel, resumeNowLabel, waitingLabel } from "./format";
+import { clockLabel, dayLabel, delayChoices, RESUME_NOW_UNFINISHED, refusalLabel, relativeLabel, resumeNowLabel, resumeNowTone, waitingLabel } from "./format";
 import { historyKey, jobsKey } from "./query-keys";
 import { notifyScheduleChanged } from "./schedule-changes";
 import { TimeEditor } from "./time-editor";
@@ -75,18 +75,14 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
       return resumeNow({ agentId, dueAt: shown.dueAt });
     },
     onSuccess: (result, shown) => {
-      const message = resumeNowLabel(result, Date.now());
-      if (result.result !== "sent") {
-        toast.error(message);
-        return;
-      }
+      toast.show(resumeNowLabel(result, Date.now()), { variant: resumeNowTone(result) });
+      if (result.result !== "sent") return;
       queryClient.setQueryData<ScheduledJob[]>(queryKey, (jobs) =>
         jobs?.filter((entry) => entry.agentId !== agentId || entry.dueAt !== shown.dueAt));
-      toast.show(message, { variant: "success" });
       close();
     },
-    // The server finishes the attempt even when its answer is lost on the way.
-    onError: () => toast.error("No answer from Auto Resume. Refresh to see whether the continue was sent."),
+    // A timeout, a lost connection or a server error: the daemon may still have finished, and sent.
+    onError: () => toast.error(RESUME_NOW_UNFINISHED),
     onSettled: () => {
       notifyScheduleChanged();
       return Promise.all([queryClient.invalidateQueries({ queryKey }), queryClient.invalidateQueries({ queryKey: historyKey(host.id) })]);
