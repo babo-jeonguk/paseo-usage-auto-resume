@@ -7,6 +7,7 @@ import {
   dayChoices,
   dayLabel,
   dayOffset,
+  delayChoices,
   groupByDay,
   historyLabel,
   historySummary,
@@ -163,6 +164,17 @@ test("the server's refusals read the same way", () => {
   assert.equal(refusalLabel(limited, { changed: false, reason: "too-late" }), "Pick a time within 7 days.");
   assert.equal(refusalLabel(limited, { changed: false, reason: "sending" }), "This agent is continuing now.");
   assert.equal(refusalLabel(limited, { changed: false, reason: "changed" }), "This schedule already ran or changed.");
+});
+
+test("delay presets add to the reservation's time and are offered only within the allowed window", () => {
+  const at = (day: number, hours: number, minutes: number) => new Date(2026, 9, day, hours, minutes).toISOString();
+  assert.deepEqual(delayChoices(job({}), now), [
+    { label: "+10m", spoken: "Delay 10 minutes", dueAt: at(6, 19, 3), problem: null },
+    { label: "+30m", spoken: "Delay 30 minutes", dueAt: at(6, 19, 23), problem: null },
+    { label: "+1h", spoken: "Delay 1 hour", dueAt: at(6, 19, 53), problem: null },
+  ]);
+  const nearLimit = delayChoices(job({ dueAt: at(13, 17, 30) }), now);
+  assert.deepEqual(nearLimit.map((choice) => choice.problem), [null, null, "Pick a time within 7 days."]);
 });
 
 test("each Resume now result reads as one toast", () => {

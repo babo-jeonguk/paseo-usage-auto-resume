@@ -186,6 +186,28 @@ export function refusalLabel(job: ScheduledJob, result: Extract<RescheduleResult
   }
 }
 
+/** Delays from the reservation's own time, not from now; the sidebar row offers only the first. */
+export const DELAY_PRESETS = [
+  { label: "+10m", spoken: "Delay 10 minutes", ms: 10 * 60_000 },
+  { label: "+30m", spoken: "Delay 30 minutes", ms: 30 * 60_000 },
+  { label: "+1h", spoken: "Delay 1 hour", ms: 60 * 60_000 },
+] as const;
+
+export interface DelayChoice {
+  label: string;
+  spoken: string;
+  dueAt: string;
+  /** Why the server would refuse it, or null when it can be offered. */
+  problem: string | null;
+}
+
+export function delayChoices(job: ScheduledJob, now: number): DelayChoice[] {
+  return DELAY_PRESETS.map(({ label, spoken, ms }) => {
+    const dueAt = new Date(Date.parse(job.dueAt) + ms).toISOString();
+    return { label, spoken, dueAt, problem: rescheduleProblem(job, dueAt, now) };
+  });
+}
+
 const CANCEL_REASONS: Partial<Record<HistoryReason, string>> = {
   turn_started: "turn started",
   new_message: "a newer message",

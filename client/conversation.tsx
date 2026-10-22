@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { listScheduledRpc, rescheduleRpc, resumeNowRpc, setEnabledRpc, type ScheduledJob } from "../shared/rpc";
-import { clockLabel, dayLabel, refusalLabel, relativeLabel, resumeNowLabel, waitingLabel } from "./format";
+import { clockLabel, dayLabel, delayChoices, refusalLabel, relativeLabel, resumeNowLabel, waitingLabel } from "./format";
 import { notifyScheduleChanged } from "./schedule-changes";
 import { TimeEditor } from "./time-editor";
 import { Toggle } from "./toggle";
@@ -128,7 +128,21 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
         {editing && !busy ? <TimeEditor key={job.dueAt} job={job} now={now} compact stackDays theme={theme}
           onSave={(dueAt) => action.mutate({ kind: "move", job, dueAt })} onCancel={() => setEditing(false)} /> : <>
           {button("Change time", () => setEditing(true), "Clock")}
-          {button("+10m", () => action.mutate({ kind: "move", job, dueAt: new Date(Date.parse(job.dueAt) + 600_000).toISOString() }), "Plus")}
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            {delayChoices(job, now).map((choice) => {
+              const unavailable = disabled || !!choice.problem;
+              return (
+                <Pressable
+                  key={choice.label} accessibilityRole="button" accessibilityLabel={choice.spoken}
+                  accessibilityHint={choice.problem ?? undefined} accessibilityState={{ disabled: unavailable }}
+                  disabled={unavailable} onPress={() => action.mutate({ kind: "move", job, dueAt: choice.dueAt })}
+                  style={({ pressed }) => ({ ...outlined(pressed, unavailable), flex: 1, paddingHorizontal: 0 })}
+                >
+                  <Text style={{ ...text, fontVariant: ["tabular-nums"] }}>{choice.label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
           <ResumeNow key={job.dueAt} job={job} theme={theme} disabled={disabled} pending={resume.isPending}
             onSend={() => resume.mutate(job)} />
         </>}

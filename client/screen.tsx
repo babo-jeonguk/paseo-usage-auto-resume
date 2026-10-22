@@ -16,6 +16,7 @@ import {
 import {
   bulkAction,
   clockLabel,
+  DELAY_PRESETS,
   groupByDay,
   historyDateLabel,
   historyLabel,
@@ -33,7 +34,8 @@ import { notifyScheduleChanged } from "./schedule-changes";
 
 type Theme = PluginScreenProps["theme"];
 
-const BUMP_MS = 10 * 60_000;
+/** The row's one delay; the composer offers all of them. */
+const BUMP = DELAY_PRESETS[0];
 
 /** Re-renders on a cadence so countdowns stay current without refetching. */
 function useNow(intervalMs: number): number {
@@ -258,10 +260,10 @@ function JobRow(props: {
               accessibilityState={{ disabled: busy }}
               disabled={busy}
               hitSlop={6}
-              onPress={() => props.onReschedule(job, new Date(Date.parse(job.dueAt) + BUMP_MS).toISOString())}
+              onPress={() => props.onReschedule(job, new Date(Date.parse(job.dueAt) + BUMP.ms).toISOString())}
               style={({ pressed }) => [styles.pill, busy ? styles.disabled : null, pressed ? styles.pressed : null]}
             >
-              <Text style={styles.pillText}>+10m</Text>
+              <Text style={styles.pillText}>{BUMP.label}</Text>
             </Pressable>
             {onOpen ? (
               <Pressable
