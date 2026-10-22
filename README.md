@@ -47,6 +47,8 @@ Each row shows the time, countdown or verification status, conversation title, p
 
 For a verification wait, changing the time moves the next check.
 
+**Recent activity** below the list shows how reservations ended in the last 24 hours: continued, skipped, canceled and why, or gave up.
+
 Scheduled conversations also show an **Auto Resume** composer pill with their time or status. Select it to turn that reservation off or back on, delay it by ten minutes, or change its time without leaving the conversation. Off reservations keep their pill until their due time; reservations that run or are canceled lose it. The sidebar and conversation controls manage the same reservation.
 
 ## Choose providers
