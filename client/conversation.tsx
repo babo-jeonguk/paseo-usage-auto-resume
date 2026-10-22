@@ -143,7 +143,7 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
               );
             })}
           </View>
-          <ResumeNow key={job.dueAt} job={job} theme={theme} disabled={disabled} pending={resume.isPending}
+          <ResumeNow key={job.dueAt} theme={theme} disabled={disabled} pending={resume.isPending}
             onSend={() => resume.mutate(job)} />
         </>}
         {action.isPending ? <ActivityIndicator size="small" color={colors.foregroundMuted} /> : null}
@@ -153,8 +153,7 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
 }
 
 /** Resume now asks once more in place: a sent continue cannot be taken back, and the delays sit right above. */
-function ResumeNow({ job, theme, disabled, pending, onSend }: {
-  job: ScheduledJob;
+function ResumeNow({ theme, disabled, pending, onSend }: {
   theme: PluginButtonContentProps["theme"];
   disabled: boolean;
   pending: boolean;
@@ -177,7 +176,7 @@ function ResumeNow({ job, theme, disabled, pending, onSend }: {
   return (
     <View style={{ gap: 8 }}>
       <Text accessibilityLiveRegion="polite" style={{ color: colors.foreground, fontSize: 14 }}>
-        Send the continue now?{job.enabled ? "" : " This reservation is off; sending turns it into a continue now."}
+        Send the continue now?
       </Text>
       <View style={{ flexDirection: "row", gap: 8 }}>
         <Pressable
