@@ -464,7 +464,12 @@ export function createResumer(options: {
     })));
     return entries.map((entry) => {
       const agent = agents.get(entry.agentId);
-      return { ...entry, title: (agent && titleOf(agent)) || entry.title, workspaceId: agent?.workspaceId ?? null };
+      return {
+        ...entry,
+        title: (agent && titleOf(agent)) || entry.title,
+        workspaceId: agent?.workspaceId ?? null,
+        archived: !!agent?.archivedAt,
+      };
     });
   }
 

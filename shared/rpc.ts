@@ -111,6 +111,8 @@ export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
 export const HistoryRowSchema = HistoryEntrySchema.extend({
   /** The live agent's workspace for opening it; null once the agent is gone. */
   workspaceId: z.string().nullable(),
+  /** The agent still exists but is archived, so its conversation cannot be opened. */
+  archived: z.boolean(),
 });
 
 export type HistoryRow = z.infer<typeof HistoryRowSchema>;

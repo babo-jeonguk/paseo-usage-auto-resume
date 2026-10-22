@@ -1359,6 +1359,23 @@ test("history keeps the title recorded at the time once the agent is gone, and p
   ]);
 });
 
+test("history marks an archived agent so its conversation is not offered to open", async () => {
+  const { api, resumer, agents } = await setup({
+    a1: { provider: "codex", title: "Fix login", workspaceId: "w1" },
+    a2: { provider: "codex", title: "Plan release", workspaceId: "w2" },
+  });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  await resumer.onTurnEnded(turnEnded("a2", "codex", failed(CODEX_LIMIT)), api);
+  agents.set("a1", { provider: "codex", title: "Fix login", workspaceId: "w1", archivedAt: "2026-10-06T03:30:00.000Z" });
+  await resumer.forget("a1");
+  await resumer.onTurnStarted("a2");
+  const rows = await resumer.listHistory(api);
+  assert.deepEqual(rows.map(({ agentId, workspaceId, archived }) => ({ agentId, workspaceId, archived })), [
+    { agentId: "a2", workspaceId: "w2", archived: false },
+    { agentId: "a1", workspaceId: "w1", archived: true },
+  ]);
+});
+
 test("a history that cannot be written never stops a continue", async () => {
   const map = new Map(Object.entries({ a1: { provider: "codex" } as Partial<PaseoAgent> }));
   const fake = fakePaseo(map);

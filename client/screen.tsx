@@ -362,14 +362,16 @@ function HistorySection(props: {
                     </Text>
                   </View>
                 </View>
-                {/* Only a live agent can be opened; one deleted since keeps its recorded name. */}
+                {/* A deleted agent has no button; an archived one cannot be opened, so its button is off. */}
                 {onOpen && entry.workspaceId ? (
                   <Pressable
                     accessibilityRole="button"
-                    accessibilityLabel={`Open ${title}`}
+                    accessibilityLabel={entry.archived ? `Open ${title} (archived)` : `Open ${title}`}
+                    accessibilityState={{ disabled: entry.archived }}
+                    disabled={entry.archived}
                     hitSlop={4}
                     onPress={() => onOpen(entry.agentId)}
-                    style={({ pressed }) => [styles.iconButton, pressed ? styles.pressed : null]}
+                    style={({ pressed }) => [styles.iconButton, entry.archived ? styles.disabled : null, pressed ? styles.pressed : null]}
                   >
                     <Icon name="SquareArrowOutUpRight" size={16} color={theme.colors.foregroundMuted} />
                   </Pressable>
