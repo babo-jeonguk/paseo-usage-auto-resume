@@ -198,6 +198,16 @@ function turnEnded(
   };
 }
 
+/** Replaces the agents' send; `send` gets the original, to wait before it or not call it at all. */
+function overrideSend(api: ResumerApi, send: (text: string, original: (text: string) => Promise<unknown>) => Promise<unknown>) {
+  const originalRef = api.agents.ref;
+  api.agents.ref = (id) => {
+    const handle = originalRef(id);
+    const original = handle.send;
+    return Object.assign(handle, { send: (text: string) => send(text, original) });
+  };
+}
+
 const failed = (message: string): PluginTurnOutcome => ({ kind: "failed", error: { message } });
 const claudeNotice = (text: string): AgentTimelineItem[] => [
   { type: "user_message", text: "Implement the feature" },
@@ -1319,15 +1329,17 @@ test("each safety check that stops a due continue is recorded with its own reaso
   assert.equal((await recorded()).length, 4);
 });
 
-test("a continue that cannot be sent is recorded as failed and leaves no job", async () => {
-  const { api, resumer } = await setup({ a1: { provider: "codex" } });
+test("a continue that cannot be sent is recorded as failed and leaves no job, from the tick or Resume now", async () => {
+  const { api, resumer } = await setup({ a1: { provider: "codex" }, a2: { provider: "codex" } });
   await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
-  const originalRef = api.agents.ref;
-  api.agents.ref = (id) => Object.assign(originalRef(id), { send: async () => { throw new Error("socket closed"); } });
+  await resumer.onTurnEnded(turnEnded("a2", "codex", failed(CODEX_LIMIT)), api);
+  overrideSend(api, async () => { throw new Error("socket closed"); });
+
+  assert.deepEqual(await resumer.resumeNow(api, "a2", "2026-10-06T05:02:00.000Z"), { result: "send_failed" });
   advance(3 * 60 * MINUTE);
   await resumer.tick();
   assert.deepEqual(await store.list(), []);
-  assert.deepEqual(await recorded(), ["a1 send_failed"]);
+  assert.deepEqual(await recorded(), ["a2 send_failed (manual)", "a1 send_failed"]);
 });
 
 test("a restart drops a continue left mid-send and records it once", async () => {
@@ -1477,13 +1489,13 @@ const CODEX_DUE = "2026-10-06T05:02:00.000Z";
 const ready: SubscriptionCheck = { auth: "subscription", status: "ready", identity: "account-model" };
 
 test("Resume now sends before the notice's reset once the account's usage is ready", async () => {
-  for (const [provider, stop, dueAt] of [
-    ["codex", failed(CODEX_LIMIT), CODEX_DUE],
-    ["claude", { kind: "completed" }, "2026-10-06T06:02:00.000Z"],
-  ] as Array<[string, PluginTurnOutcome, string]>) {
+  for (const [provider, stop, timeline, dueAt] of [
+    ["codex", failed(CODEX_LIMIT), undefined, CODEX_DUE],
+    ["claude", { kind: "completed" }, claudeNotice(CLAUDE_LIMIT), "2026-10-06T06:02:00.000Z"],
+  ] as Array<[string, PluginTurnOutcome, AgentTimelineItem[] | undefined, string]>) {
     clock = START;
     const { api, sent, resumer } = await setup({ a1: { provider, title: "Fix login" } }, { readSubscription: async () => ready });
-    await resumer.onTurnEnded(turnEnded("a1", provider, stop, claudeNotice(CLAUDE_LIMIT)), api);
+    await resumer.onTurnEnded(turnEnded("a1", provider, stop, timeline), api);
     assert.equal((await store.list())[0]?.dueAt, dueAt, provider);
 
     assert.deepEqual(await resumer.resumeNow(api, "a1", dueAt), { result: "sent" }, provider);
@@ -1491,7 +1503,6 @@ test("Resume now sends before the notice's reset once the account's usage is rea
     assert.equal((await store.list())[0]?.state, "sent", provider);
     assert.equal((await recorded()).at(-1), "a1 continued (manual)", provider);
     assert.equal((await history.list())[0]?.title, "Fix login", provider);
-    await resumer.tick();
     clock = new Date(dueAt);
     await resumer.tick();
     assert.equal(sent.length, 1, `${provider}: the tick does not send it again`);
@@ -1680,17 +1691,10 @@ test("Resume now that loses to a tick reports the continue as sending, or change
     await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
     let releaseSend!: () => void;
     const sendGate = new Promise<void>((resolve) => { releaseSend = resolve; });
-    const originalRef = api.agents.ref;
-    api.agents.ref = (id) => {
-      const handle = originalRef(id);
-      const send = handle.send;
-      return Object.assign(handle, {
-        send: async (text: string) => {
-          if (name === "mid-send") await sendGate;
-          await send(text);
-        },
-      });
-    };
+    overrideSend(api, async (text, original) => {
+      if (name === "mid-send") await sendGate;
+      return original(text);
+    });
     clock = new Date(CODEX_DUE);
 
     const before = (await recorded()).length;
@@ -1723,17 +1727,6 @@ test("Resume now sends an Antigravity continue before the notice's reset without
   assert.deepEqual(await resumer.resumeNow(api, "g1", job!.dueAt), { result: "sent" });
   assert.equal(sent.length, 1);
   assert.equal(usageReads(), 0);
-});
-
-test("a continue Resume now cannot send is recorded as failed and leaves no job", async () => {
-  const { api, resumer } = await setup({ a1: { provider: "codex" } });
-  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
-  const originalRef = api.agents.ref;
-  api.agents.ref = (id) => Object.assign(originalRef(id), { send: async () => { throw new Error("socket closed"); } });
-
-  assert.deepEqual(await resumer.resumeNow(api, "a1", CODEX_DUE), { result: "send_failed" });
-  assert.deepEqual(await store.list(), []);
-  assert.deepEqual(await recorded(), ["a1 send_failed (manual)"]);
 });
 
 test("a limit hit again after Resume now is reserved like one after an automatic continue", async () => {

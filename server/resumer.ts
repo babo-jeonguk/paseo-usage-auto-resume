@@ -41,6 +41,19 @@ function exhaustedReset(check: SubscriptionCheck, at: Date): Date | null {
   return times.length && times.every((time) => Number.isFinite(time) && time > at.getTime()) ? new Date(Math.max(...times)) : null;
 }
 
+/** What the account says about sending now, before the notice's stated reset is considered. */
+type UsageHold =
+  | { kind: "ready" }
+  | { kind: "used_up"; renews: Date | null }
+  | { kind: "unverified"; waiting: Waiting };
+
+function usageHold(check: SubscriptionCheck, at: Date): UsageHold {
+  if (check.auth !== "subscription") return { kind: "unverified", waiting: "auth" };
+  if (check.status === "limited") return { kind: "used_up", renews: exhaustedReset(check, at) };
+  if (check.status !== "ready") return { kind: "unverified", waiting: "usage" };
+  return { kind: "ready" };
+}
+
 /**
  * Without a reset in the notice, the applicable usage windows decide when to continue.
  * Credits and spending notices are limit stops like any other.
@@ -48,16 +61,18 @@ function exhaustedReset(check: SubscriptionCheck, at: Date): Date | null {
 type Plan =
   | { kind: "reset"; resetAt: Date }
   | { kind: "retry" }
-  | { kind: "check"; waiting: "auth" | "usage" };
+  | { kind: "check"; waiting: Waiting };
 
 function planFor(check: SubscriptionCheck, at: Date): Plan {
-  if (check.auth !== "subscription") return { kind: "check", waiting: "auth" };
-  if (check.status === "limited") {
-    const resetAt = exhaustedReset(check, at);
-    return resetAt ? { kind: "reset", resetAt } : { kind: "check", waiting: "usage" };
+  const hold = usageHold(check, at);
+  switch (hold.kind) {
+    case "unverified":
+      return { kind: "check", waiting: hold.waiting };
+    case "used_up":
+      return hold.renews ? { kind: "reset", resetAt: hold.renews } : { kind: "check", waiting: "usage" };
+    case "ready":
+      return { kind: "retry" };
   }
-  if (check.status !== "ready") return { kind: "check", waiting: "usage" };
-  return { kind: "retry" };
 }
 
 function dueFor(resetAt: Date | null, now: Date): string {
@@ -90,12 +105,6 @@ type DeliverMode = "auto" | "manual";
  */
 type Delivery = ResumeNowResult | { result: "skipped" } | { result: "postponed" };
 
-/** What the account says about sending now, before the notice's stated reset is considered. */
-type UsageHold =
-  | { kind: "ready" }
-  | { kind: "used_up"; renews: Date | null }
-  | { kind: "unverified"; waiting: Waiting };
-
 /**
  * When a held continue can go: the used-up window's renewal, or a reset the notice stated, which
  * counts once the account is verified even while its usage is not. Null leaves only a check.
@@ -114,13 +123,6 @@ function renewalFor(hold: UsageHold, stated: Date | null): Date | null {
 /** What an attempt reports when the row is no longer the one it was given. */
 const staleResult = (row: ResumeJob | null | undefined): ResumeNowResult =>
   row?.state === "sending" ? { result: "sending" } : { result: "changed" };
-
-function usageHold(check: SubscriptionCheck, at: Date): UsageHold {
-  if (check.auth !== "subscription") return { kind: "unverified", waiting: "auth" };
-  if (check.status === "limited") return { kind: "used_up", renews: exhaustedReset(check, at) };
-  if (check.status !== "ready") return { kind: "unverified", waiting: "usage" };
-  return { kind: "ready" };
-}
 
 /** Why a due job must not continue the agent, or null when it is safe to send. */
 function skipReason(job: ResumeJob, agent: PaseoAgent | null): Cancellation | null {
