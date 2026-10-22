@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
@@ -1441,4 +1441,15 @@ test("a reservation switched back on while its skip is being decided is kept and
   await resumer.tick();
   assert.equal(sent.length, 1);
   assert.deepEqual(await recorded(), ["a1 continued"]);
+});
+
+test("history keeps result codes, not the log's wording", async () => {
+  const { api, resumer, agents } = await setup({ a1: { provider: "codex" } });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  agents.set("a1", { provider: "codex", status: "running" });
+  advance(3 * 60 * MINUTE);
+  await resumer.tick();
+  const saved = JSON.parse(await readFile(join(dir, "history.json"), "utf8")) as { entries: Array<Record<string, unknown>> };
+  assert.deepEqual(Object.keys(saved.entries[0]!).sort(), ["agentId", "at", "id", "outcome", "provider", "reason", "title"]);
+  assert.equal(saved.entries[0]!.reason, "agent_busy");
 });

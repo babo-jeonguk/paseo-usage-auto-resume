@@ -102,8 +102,6 @@ export const HistoryEntrySchema = z.object({
   provider: z.string(),
   outcome: HistoryOutcomeSchema,
   reason: HistoryReasonSchema.optional(),
-  /** The log's wording, e.g. "provider changed to codex-sub"; the screen words it from `reason`. */
-  detail: z.string().optional(),
   /** The conversation title when recorded, so a deleted agent still has a name. */
   title: z.string().nullable(),
 });

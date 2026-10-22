@@ -35,7 +35,7 @@ test("results are listed newest first with an ID and the time they were recorded
   const history = open();
   await history.append(entry("a1"));
   clock = new Date(clock.getTime() + 60_000);
-  await history.append(entry("a2", { outcome: "canceled", reason: "new_message", detail: "a newer message reached the agent", title: "Fix login" }));
+  await history.append(entry("a2", { outcome: "canceled", reason: "new_message", title: "Fix login" }));
 
   const [newest, oldest] = await history.list();
   assert.equal(newest?.agentId, "a2");

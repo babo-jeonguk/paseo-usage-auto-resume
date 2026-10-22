@@ -65,7 +65,7 @@ function dueFor(resetAt: Date | null, now: Date): string {
   return new Date(Math.max(resetAt.getTime() + GRACE_MS, now.getTime() + MIN_DELAY_MS)).toISOString();
 }
 
-/** Why a reservation ended, as recorded in the history; `detail` is the log's wording. */
+/** Why a reservation ended. The history keeps the codes; `detail` is only the log's wording. */
 interface Outcome {
   outcome: HistoryOutcome;
   reason?: HistoryReason;
@@ -265,7 +265,7 @@ export function createResumer(options: {
 
   /** Adds a final result to the history; a failed write is logged and never stops a resume. */
   async function record(agentId: string, provider: string, outcome: Outcome): Promise<void> {
-    await history.append({ agentId, provider, ...outcome, title: outcome.title ?? null })
+    await history.append({ agentId, provider, outcome: outcome.outcome, reason: outcome.reason, title: outcome.title ?? null })
       .catch((error) => console.error("[usage-auto-resume] could not record history", String(error)));
   }
 
