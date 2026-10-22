@@ -25,6 +25,8 @@ jobs:
       - run: npm run check
 
   # The account check against real installed CLIs, with fixture logins and in-process HTTP.
+  # Installs are deliberately unpinned except one Codex release, so a new CLI release that breaks
+  # the check fails here; a run can therefore differ from the last one.
   native-cli:
     name: native CLI / ${{ matrix.os }} / ${{ matrix.install }}
     strategy:

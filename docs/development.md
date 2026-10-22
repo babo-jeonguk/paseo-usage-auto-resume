@@ -10,7 +10,7 @@ npm run check
 paseo plugin install "$PWD"
 ```
 
-`npm run check` runs TypeScript checking and the Node test suite. `npm run test:native` runs the account check against an installed CLI selected by `NATIVE_CLI=claude` or `NATIVE_CLI=codex`, using fixture logins in a temporary home; CI runs it on Linux and Windows for native and npm installs. After changing an installed directory plugin:
+`npm run check` runs TypeScript checking and the Node test suite. `npm run test:native` runs the account check against an installed CLI selected by `NATIVE_CLI=claude` or `NATIVE_CLI=codex`, using fixture logins in a temporary home; CI runs it on Linux and Windows for Claude Code (native installer and npm) and Codex (npm: a pinned release through the full check, and the latest release started and stopped only, since it does not answer a fixture login). After changing an installed directory plugin:
 
 ```bash
 paseo plugin reload usage-auto-resume
@@ -38,6 +38,8 @@ Feedback and contributions are welcome on these issues. Real provider limit noti
 ## Implementation references
 
 Reset parsing draws on [panrafal's chat-resume](https://github.com/panrafal/paseo-plugins/tree/main/chat-resume) and [paseo-continuity](https://github.com/keefeere/paseo-continuity). Usage-window selection follows [paseo-limits](https://github.com/ortschun/paseo-limits); the persistent queue was inspired by [paseo-defer](https://github.com/tomgrin10/paseo-defer). The interface follows Paseo settings and the alarm-list pattern in the iOS Clock app.
+
+Windows launches follow Node's documented rule that `.bat` and `.cmd` files start only through a shell ([child_process](https://nodejs.org/api/child_process.html#spawning-bat-and-cmd-files-on-windows), enforced since the [April 2024 security releases](https://nodejs.org/en/blog/vulnerability/april-2024-security-releases-2)); the `cmd.exe` switches and quoting follow [`cmd`](https://learn.microsoft.com/windows-server/administration/windows-commands/cmd), and lookup follows `PATH` and `PATHEXT` order as `cmd.exe` does. The login directories come from the CLIs themselves: `configDirectory` in `claude auth status --json` (observed in Claude Code 2.1.306 and 2.1.308) and `codexHome` in the Codex app server's `initialize` response (observed in 0.152.1 and 0.163.0).
 
 Claude credential-store selection follows the [official authentication guide](https://code.claude.com/docs/en/authentication#credential-management). The macOS account-specific and legacy Keychain lookup behavior references [Paseo v0.12.0's usage source](https://github.com/getpaseo/paseo/blob/v0.12.0/plugins/claude-usage-source/server/usage.ts#L298). Store override precedence was also checked against Claude Code 2.1.303's native selector. Credential tests inject the OS boundary; the Claude limit scenarios exercise the macOS reader with fixture Keychain records even on Linux. Actual macOS permission dialogs and locked-Keychain behavior still require a Mac host to validate.
 
