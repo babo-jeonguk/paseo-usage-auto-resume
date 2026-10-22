@@ -5,9 +5,18 @@ import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { listScheduledRpc, rescheduleRpc, resumeNowRpc, setEnabledRpc, type ScheduledJob } from "../shared/rpc";
 import { clockLabel, dayLabel, delayChoices, refusalLabel, relativeLabel, resumeNowLabel, waitingLabel } from "./format";
+import { historyKey, jobsKey } from "./query-keys";
 import { notifyScheduleChanged } from "./schedule-changes";
 import { TimeEditor } from "./time-editor";
 import { Toggle } from "./toggle";
+
+type Colors = PluginButtonContentProps["theme"]["colors"];
+
+const shape = { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 9, paddingHorizontal: 12, borderRadius: 6 } as const;
+const outlined = (colors: Colors, pressed: boolean, unavailable = false) => ({
+  ...shape, borderWidth: 1, borderColor: colors.border, opacity: unavailable ? 0.4 : 1, backgroundColor: pressed ? colors.surface2 : "transparent",
+});
+const bodyText = (colors: Colors) => ({ color: colors.foreground, fontSize: 14 });
 
 export function ConversationControls(props: PluginButtonContentProps) {
   // Composer contributions are always agent-scoped.
@@ -21,8 +30,7 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
   const resumeNow = useRpc(resumeNowRpc);
   const queryClient = useQueryClient();
   const toast = useToast();
-  const queryKey = ["usage-auto-resume", "jobs", host.id];
-  const historyKey = ["usage-auto-resume", "history", host.id];
+  const queryKey = jobsKey(host.id);
   const query = useQuery({ queryKey, queryFn: async () => (await list({})).jobs, refetchInterval: 10_000 });
   const job = query.data?.find((entry) => entry.agentId === agentId);
   const [now, setNow] = useState(Date.now);
@@ -81,23 +89,18 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
     onError: () => toast.error("No answer from Auto Resume. Refresh to see whether the continue was sent."),
     onSettled: () => {
       notifyScheduleChanged();
-      return Promise.all([queryClient.invalidateQueries({ queryKey }), queryClient.invalidateQueries({ queryKey: historyKey })]);
+      return Promise.all([queryClient.invalidateQueries({ queryKey }), queryClient.invalidateQueries({ queryKey: historyKey(host.id) })]);
     },
   });
   const { colors } = theme;
   const muted = { color: colors.foregroundMuted, fontSize: 13, lineHeight: 19 };
-  const text = { color: colors.foreground, fontSize: 14 };
+  const text = bodyText(colors);
   const busy = action.isPending || resume.isPending || !!job?.sending;
   const disabled = busy || query.isError || query.isPending;
-  const outlined = (pressed: boolean, unavailable: boolean) => ({
-    flexDirection: "row" as const, alignItems: "center" as const, justifyContent: "center" as const, gap: 6,
-    paddingVertical: 9, paddingHorizontal: 12, borderRadius: 6, borderWidth: 1, borderColor: colors.border,
-    opacity: unavailable ? 0.4 : 1, backgroundColor: pressed ? colors.surface2 : "transparent",
-  });
   const button = (label: string, onPress: () => void, icon: string, unavailable = disabled) => (
     <Pressable
       accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled: unavailable }}
-      disabled={unavailable} onPress={onPress} style={({ pressed }) => outlined(pressed, unavailable)}
+      disabled={unavailable} onPress={onPress} style={({ pressed }) => outlined(colors, pressed, unavailable)}
     >
       <Icon name={icon} size={16} color={colors.foreground} /><Text style={text}>{label}</Text>
     </Pressable>
@@ -112,40 +115,52 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
         <Text style={muted}>Nothing scheduled for this conversation.</Text>
         {button("Close", close, "X", false)}
       </> : <>
-        <View style={{ gap: 4 }}>
-          <Text style={muted}>{dayLabel(job.dueAt, now)}</Text>
-          <Text style={{ ...text, fontSize: 28, fontWeight: "600", fontVariant: ["tabular-nums"] }}>{clockLabel(job.dueAt)}</Text>
-          <Text style={muted}>{job.sending ? "Continuing…" : !job.enabled ? "Off"
-            : waitingLabel(job) ?? `Continues ${relativeLabel(job.dueAt, now)}`}</Text>
-          {job.waiting ? <Text style={muted}>Next check {relativeLabel(job.dueAt, now)}</Text> : null}
-        </View>
+        {/* The time and the controls that move it stay together; the editor replaces all of them. */}
+        {editing && !busy ? <TimeEditor key={job.dueAt} job={job} now={now} compact stackDays theme={theme}
+          onSave={(dueAt) => action.mutate({ kind: "move", job, dueAt })} onCancel={() => setEditing(false)} /> : (
+          <View style={{ gap: 4 }}>
+            <Text style={muted}>{dayLabel(job.dueAt, now)}</Text>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              <Text style={{ ...text, fontSize: 28, fontWeight: "600", fontVariant: ["tabular-nums"] }}>{clockLabel(job.dueAt)}</Text>
+              <Pressable
+                accessibilityRole="button" accessibilityLabel="Change time" accessibilityState={{ disabled }}
+                disabled={disabled} hitSlop={6} onPress={() => setEditing(true)}
+                style={({ pressed }) => ({ width: 32, height: 32, borderRadius: 6, alignItems: "center", justifyContent: "center",
+                  opacity: disabled ? 0.4 : 1, backgroundColor: pressed ? colors.surface2 : "transparent" })}
+              >
+                <Icon name="Pencil" size={16} color={colors.foregroundMuted} />
+              </Pressable>
+            </View>
+            <Text style={muted}>{job.sending ? "Continuing…" : !job.enabled ? "Off"
+              : waitingLabel(job) ?? `Continues ${relativeLabel(job.dueAt, now)}`}</Text>
+            {job.waiting ? <Text style={muted}>Next check {relativeLabel(job.dueAt, now)}</Text> : null}
+            <View style={{ flexDirection: "row", gap: 6, marginTop: 6 }}>
+              {delayChoices(job, now).map((choice) => {
+                const unavailable = disabled || !!choice.problem;
+                return (
+                  <Pressable
+                    key={choice.label} accessibilityRole="button" accessibilityLabel={choice.spoken}
+                    accessibilityHint={choice.problem ?? undefined} accessibilityState={{ disabled: unavailable }}
+                    disabled={unavailable} hitSlop={{ top: 8, bottom: 8 }}
+                    onPress={() => action.mutate({ kind: "move", job, dueAt: choice.dueAt })}
+                    style={({ pressed }) => ({ ...outlined(colors, pressed, unavailable), paddingVertical: 4, paddingHorizontal: 10, borderRadius: 999 })}
+                  >
+                    <Text style={{ ...text, fontSize: 13, fontVariant: ["tabular-nums"] }}>{choice.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+        )}
         <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
           <Text style={{ ...text, flex: 1 }}>Resume this reservation</Text>
           <Toggle theme={theme} value={job.enabled} disabled={disabled}
             accessibilityLabel="Resume this reservation"
             onValueChange={(enabled) => action.mutate({ kind: "toggle", job, enabled })} />
         </View>
-        {editing && !busy ? <TimeEditor key={job.dueAt} job={job} now={now} compact stackDays theme={theme}
-          onSave={(dueAt) => action.mutate({ kind: "move", job, dueAt })} onCancel={() => setEditing(false)} /> : <>
-          {button("Change time", () => setEditing(true), "Clock")}
-          <View style={{ flexDirection: "row", gap: 8 }}>
-            {delayChoices(job, now).map((choice) => {
-              const unavailable = disabled || !!choice.problem;
-              return (
-                <Pressable
-                  key={choice.label} accessibilityRole="button" accessibilityLabel={choice.spoken}
-                  accessibilityHint={choice.problem ?? undefined} accessibilityState={{ disabled: unavailable }}
-                  disabled={unavailable} onPress={() => action.mutate({ kind: "move", job, dueAt: choice.dueAt })}
-                  style={({ pressed }) => ({ ...outlined(pressed, unavailable), flex: 1, paddingHorizontal: 0 })}
-                >
-                  <Text style={{ ...text, fontVariant: ["tabular-nums"] }}>{choice.label}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-          <ResumeNow key={job.dueAt} theme={theme} disabled={disabled} pending={resume.isPending}
-            onSend={() => resume.mutate(job)} />
-        </>}
+        {/* A sibling of the editor, so its key must not repeat the editor's. */}
+        <ResumeNow key={`resume-now-${job.dueAt}`} theme={theme} disabled={disabled} pending={resume.isPending}
+          onSend={() => resume.mutate(job)} />
         {action.isPending ? <ActivityIndicator size="small" color={colors.foregroundMuted} /> : null}
       </>}
     </View>
@@ -161,7 +176,6 @@ function ResumeNow({ theme, disabled, pending, onSend }: {
 }) {
   const [confirming, setConfirming] = useState(false);
   const { colors } = theme;
-  const shape = { flexDirection: "row" as const, alignItems: "center" as const, justifyContent: "center" as const, gap: 6, paddingVertical: 9, paddingHorizontal: 12, borderRadius: 6 };
   const primary = (label: string, onPress: () => void, icon?: string) => (
     <Pressable
       accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled }} disabled={disabled} onPress={onPress}
@@ -171,19 +185,19 @@ function ResumeNow({ theme, disabled, pending, onSend }: {
       <Text style={{ color: colors.accentForeground, fontSize: 14, fontWeight: "600" }}>{label}</Text>
     </Pressable>
   );
-  if (pending) return <View style={{ ...shape, borderWidth: 1, borderColor: colors.border }}><ActivityIndicator size="small" color={colors.foregroundMuted} /></View>;
+  if (pending) return <View style={outlined(colors, false)}><ActivityIndicator size="small" color={colors.foregroundMuted} /></View>;
   if (!confirming) return primary("Resume now", () => setConfirming(true), "Play");
   return (
     <View style={{ gap: 8 }}>
-      <Text accessibilityLiveRegion="polite" style={{ color: colors.foreground, fontSize: 14 }}>
+      <Text accessibilityLiveRegion="polite" style={bodyText(colors)}>
         Send the continue now?
       </Text>
       <View style={{ flexDirection: "row", gap: 8 }}>
         <Pressable
           accessibilityRole="button" accessibilityLabel="Cancel" onPress={() => setConfirming(false)}
-          style={({ pressed }) => ({ ...shape, flex: 1, borderWidth: 1, borderColor: colors.border, backgroundColor: pressed ? colors.surface2 : "transparent" })}
+          style={({ pressed }) => ({ ...outlined(colors, pressed), flex: 1 })}
         >
-          <Text style={{ color: colors.foreground, fontSize: 14 }}>Cancel</Text>
+          <Text style={bodyText(colors)}>Cancel</Text>
         </Pressable>
         {primary("Send", () => { setConfirming(false); onSend(); })}
       </View>
