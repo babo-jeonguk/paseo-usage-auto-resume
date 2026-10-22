@@ -1,16 +1,13 @@
 import { createHash } from "node:crypto";
-import { execFile, spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import type { PluginSessionOpenRequest } from "@getpaseo/plugin/server";
 import type { PaseoAgent, PaseoApi } from "./paseo-types";
 import type { UsageSource } from "../shared/settings";
 import { providerLaunch } from "./usage";
 import { createClaudeCredentialReader, type ClaudeCredentialReader } from "./claude-credentials";
+import { CLI_STOP_GRACE_MS, cliHome, runCli, spawnCli, stopProcessTree } from "./cli-launch";
 
-const exec = promisify(execFile);
 const TIMEOUT = 15_000;
 const AUTH_ENV = [
   "OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN", "OPENAI_BASE_URL",
@@ -62,12 +59,11 @@ export function captureLaunch(request: Pick<PluginSessionOpenRequest, "env">): L
 /** Uses native status and read-only endpoints; never requests model turns or token refresh. */
 export function createSubscriptionReader(deps: {
   run?: (command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }) => Promise<string>;
-  codex?: (command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }) => Promise<{ account: unknown; config: unknown }>;
+  codex?: (command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }) => Promise<CodexSnapshot>;
   fetch?: typeof fetch;
   readClaudeCredentials?: ClaudeCredentialReader;
 } = {}): SubscriptionReader {
-  const run = deps.run ?? (async (command, args, options) =>
-    (await exec(command, args, { ...options, timeout: TIMEOUT, maxBuffer: 2_000_000 })).stdout);
+  const run = deps.run ?? ((command, args, options) => runCli(command, args, { ...options, timeoutMs: TIMEOUT, maxBytes: 2_000_000 }));
   const fetchApi = deps.fetch ?? fetch;
   const codex = deps.codex ?? codexSnapshot;
   const readClaudeCredentials = deps.readClaudeCredentials ?? createClaudeCredentialReader();
@@ -117,7 +113,8 @@ export function createSubscriptionReader(deps: {
         const provider = record(record(resolved.model_providers).openai);
         if (provider.env_key || provider.experimental_bearer_token || provider.auth || provider.base_url ||
           provider.requires_openai_auth === false) return apiCheck;
-        const home = env.CODEX_HOME || join(env.HOME || homedir(), ".codex");
+        // The home Codex reports is the one it read; older versions leave it to the same defaults.
+        const home = string(snapshot.home) ?? (env.CODEX_HOME || join(cliHome(env), ".codex"));
         const auth = record(await readJson(join(home, "auth.json")));
         if (auth.auth_mode !== "chatgpt") return unknownCheck();
         const tokens = record(auth.tokens);
@@ -142,7 +139,7 @@ export function createSubscriptionReader(deps: {
         return status.loggedIn === true ? apiCheck : unknownCheck();
       }
       if (!status.subscriptionType || !status.orgId || !status.email || !model) return unknownCheck();
-      const credentials = await readClaudeCredentials(env);
+      const credentials = await readClaudeCredentials(env, string(status.configDirectory));
       if (!credentials?.accessToken || (credentials.expiresAt ?? 0) <= at.getTime()) return unknownCheck();
       const token = credentials.accessToken;
       const headers = {
@@ -220,17 +217,25 @@ export function claudeUsage(usage: Record<string, unknown>, identity: string, mo
   return rolling(windows, identity);
 }
 
+interface CodexSnapshot {
+  account: unknown;
+  config: unknown;
+  /** `codexHome` from the initialize response, where this Codex keeps its login. */
+  home?: unknown;
+}
+
 /** Read configuration and account without creating a thread or refreshing the login. */
 async function codexSnapshot(command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }) {
-  const child = spawn(command, [...args, "app-server", "--stdio"], { ...options, stdio: ["pipe", "pipe", "ignore"] });
-  return await new Promise<{ account: unknown; config: unknown }>((resolve, reject) => {
+  const child = spawnCli(command, [...args, "app-server", "--stdio"], options);
+  return await new Promise<CodexSnapshot>((resolve, reject) => {
     let buffer = "", bytes = 0, settled = false;
     const responses = new Map<number, unknown>();
     const finish = (error?: Error) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer); child.kill();
-      if (error) reject(error); else resolve({ account: responses.get(2), config: responses.get(3) });
+      clearTimeout(timer); child.stdin.end();
+      const snapshot = { account: responses.get(2), config: responses.get(3), home: record(responses.get(1)).codexHome };
+      void stopProcessTree(child, { graceMs: CLI_STOP_GRACE_MS }).then(() => { if (error) reject(error); else resolve(snapshot); });
     };
     const timer = setTimeout(() => finish(new Error("Status timeout")), TIMEOUT);
     const send = (value: unknown) => child.stdin.write(JSON.stringify(value) + "\n");

@@ -51,16 +51,19 @@ for (const first of ["absent", "denied", "timeout", "malformed", "missing-token"
   });
 }
 
-for (const [selection, path] of [
-  [{}, "/tmp/fixture-home/.claude/.credentials.json"],
-  [{ CLAUDE_CONFIG_DIR: "/tmp/claude-team" }, "/tmp/claude-team/.credentials.json"],
-  [{ CLAUDE_CONFIG_DIR: "/tmp/claude-team", CLAUDE_SECURESTORAGE_CONFIG_DIR: "/tmp/shared" }, "/tmp/shared/.credentials.json"],
-  [{ CLAUDE_CONFIG_DIR: "/tmp/claude-team", CLAUDE_SECURESTORAGE_CONFIG_DIR: "" }, "/tmp/fixture-home/.claude/.credentials.json"],
-] as const) test(`macOS credentials: unavailable Keychain falls back only to ${path}`, async () => {
+// The third value is the configDirectory the CLI reports for that environment.
+for (const [selection, path, reported] of [
+  [{}, "/tmp/fixture-home/.claude/.credentials.json", undefined],
+  [{}, "/tmp/reported/.credentials.json", "/tmp/reported"],
+  [{ CLAUDE_CONFIG_DIR: "/tmp/claude-team" }, "/tmp/claude-team/.credentials.json", "/tmp/claude-team"],
+  [{ CLAUDE_CONFIG_DIR: "/tmp/claude-team", CLAUDE_SECURESTORAGE_CONFIG_DIR: "/tmp/shared" }, "/tmp/shared/.credentials.json", "/tmp/claude-team"],
+  // An empty override selects the default store, never the profile the CLI reports.
+  [{ CLAUDE_CONFIG_DIR: "/tmp/claude-team", CLAUDE_SECURESTORAGE_CONFIG_DIR: "" }, "/tmp/fixture-home/.claude/.credentials.json", "/tmp/claude-team"],
+] as const) test(`macOS credentials: unavailable Keychain falls back only to ${path}${reported ? ` (CLI reports ${reported})` : ""}`, async () => {
   let files = 0;
   const read = createClaudeCredentialReader({ platform: "darwin", runSecurity: async () => { throw new Error("locked"); },
     readFile: async (actual) => { files++; assert.equal(actual.replaceAll("\\", "/"), path); return raw; } });
-  assert.deepEqual(await read({ ...base, ...selection }), expected);
+  assert.deepEqual(await read({ ...base, ...selection }, reported), expected);
   assert.equal(files, 1);
 });
 
@@ -88,4 +91,19 @@ for (const platform of ["linux", "win32"] as const) test(`${platform} credential
   const read = createClaudeCredentialReader({ platform, runSecurity: async () => { assert.fail("must not call security"); },
     readFile: async (path) => { assert.equal(path.replaceAll("\\", "/"), "/tmp/shared/.credentials.json"); return raw; } });
   assert.deepEqual(await read({ ...base, CLAUDE_CONFIG_DIR: "/tmp/claude-team", CLAUDE_SECURESTORAGE_CONFIG_DIR: "/tmp/shared" }), expected);
+});
+
+test("win32 credentials: the profile decides the default store even when HOME points elsewhere", async () => {
+  const read = createClaudeCredentialReader({ platform: "win32", runSecurity: async () => { assert.fail("must not call security"); },
+    readFile: async (path) => { assert.equal(path.replaceAll("\\", "/"), "C:/Users/me/.claude/.credentials.json"); return raw; } });
+  assert.deepEqual(await read({ HOME: "C:\\msys64\\home\\me", USERPROFILE: "C:\\Users\\me" }), expected);
+});
+
+test("the CLI's reported config directory decides the default store, below explicit overrides", async () => {
+  const paths: string[] = [];
+  const read = createClaudeCredentialReader({ platform: "linux", readFile: async (path) => { paths.push(path.replaceAll("\\", "/")); return raw; } });
+  await read({ HOME: "/home/me" }, "/srv/claude");
+  await read({ HOME: "/home/me", CLAUDE_CONFIG_DIR: "/tmp/claude-team" }, "/srv/claude");
+  await read({ HOME: "/home/me" });
+  assert.deepEqual(paths, ["/srv/claude/.credentials.json", "/tmp/claude-team/.credentials.json", "/home/me/.claude/.credentials.json"]);
 });

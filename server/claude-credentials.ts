@@ -1,15 +1,17 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { homedir, userInfo } from "node:os";
+import { userInfo } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { cliHome } from "./cli-launch";
 
 export interface ClaudeCredentials {
   accessToken: string;
   expiresAt?: number;
 }
-export type ClaudeCredentialReader = (env: NodeJS.ProcessEnv) => Promise<ClaudeCredentials | null>;
+/** `configDirectory` is where the CLI reported its configuration, when it said. */
+export type ClaudeCredentialReader = (env: NodeJS.ProcessEnv, configDirectory?: string) => Promise<ClaudeCredentials | null>;
 
 const exec = promisify(execFile);
 const SERVICE = "Claude Code-credentials";
@@ -38,10 +40,11 @@ export function createClaudeCredentialReader(deps: {
   const runSecurity = deps.runSecurity ?? (async (args, env) =>
     (await exec("/usr/bin/security", args, { env, timeout: 2_000, maxBuffer: 1_048_576 })).stdout);
 
-  return async (env) => {
+  return async (env, configDirectory) => {
     // An explicitly empty secure-storage override selects the default store, even with
     // CLAUDE_CONFIG_DIR set. Never probe another profile's Keychain item or fallback file.
-    const directory = (env.CLAUDE_SECURESTORAGE_CONFIG_DIR ?? env.CLAUDE_CONFIG_DIR)?.normalize("NFC");
+    const override = env.CLAUDE_SECURESTORAGE_CONFIG_DIR ?? env.CLAUDE_CONFIG_DIR;
+    const directory = override?.normalize("NFC");
     if (platform === "darwin") {
       const service = SERVICE + (directory ? `-${createHash("sha256").update(directory).digest("hex").slice(0, 8)}` : "");
       let username: string;
@@ -54,7 +57,11 @@ export function createClaudeCredentialReader(deps: {
         } catch { /* Locked, denied or missing: try the same service's legacy lookup, then its file. */ }
       }
     }
-    try { return credentials(await read(join(directory || join(env.HOME || homedir(), ".claude"), ".credentials.json"))); }
+    // Any override decides, an empty one meaning the default store. Only without one does the
+    // CLI's reported directory decide; Windows builds default to the profile, not HOME.
+    const reported = override === undefined ? configDirectory?.normalize("NFC") : undefined;
+    const store = directory || reported || join(cliHome(env, platform), ".claude");
+    try { return credentials(await read(join(store, ".credentials.json"))); }
     catch { return null; }
   };
 }

@@ -10,7 +10,11 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -19,3 +23,47 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+
+  # The account check against real installed CLIs, with fixture logins and in-process HTTP.
+  # Installs are deliberately unpinned except one Codex release, so a new CLI release that breaks
+  # the check fails here; a run can therefore differ from the last one.
+  native-cli:
+    name: native CLI / ${{ matrix.os }} / ${{ matrix.install }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        install: [claude-native, claude-npm, codex-npm, codex-npm-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      NATIVE_CLI: ${{ startsWith(matrix.install, 'claude') && 'claude' || 'codex' }}
+      # Recent Codex releases do not answer a fixture login, so they are only started.
+      NATIVE_CLI_HANDSHAKE_ONLY: ${{ matrix.install == 'codex-npm-latest' && '1' || '' }}
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
+      DISABLE_TELEMETRY: '1'
+      DISABLE_AUTOUPDATER: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Install Claude Code with the native installer (Windows)
+        if: matrix.install == 'claude-native' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          irm https://claude.ai/install.ps1 | iex
+          "$env:USERPROFILE\.local\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      - name: Install Claude Code with the native installer (Linux)
+        if: matrix.install == 'claude-native' && runner.os == 'Linux'
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - if: matrix.install == 'claude-npm'
+        run: npm install -g @anthropic-ai/claude-code
+      - if: matrix.install == 'codex-npm'
+        run: npm install -g @openai/codex@0.152.1
+      - if: matrix.install == 'codex-npm-latest'
+        run: npm install -g @openai/codex
+      - run: npm run test:native
