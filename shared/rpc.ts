@@ -94,6 +94,36 @@ export const HistoryReasonSchema = z.enum([
 
 export type HistoryReason = z.infer<typeof HistoryReasonSchema>;
 
+export const HistoryEntrySchema = z.object({
+  id: z.string(),
+  /** When the result was recorded. */
+  at: z.string(),
+  agentId: z.string(),
+  provider: z.string(),
+  outcome: HistoryOutcomeSchema,
+  reason: HistoryReasonSchema.optional(),
+  /** The log's wording, e.g. "provider changed to codex-sub"; the screen words it from `reason`. */
+  detail: z.string().optional(),
+  /** The conversation title when recorded, so a deleted agent still has a name. */
+  title: z.string().nullable(),
+});
+
+export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
+
+export const HistoryRowSchema = HistoryEntrySchema.extend({
+  /** The live agent's workspace for opening it; null once the agent is gone. */
+  workspaceId: z.string().nullable(),
+});
+
+export type HistoryRow = z.infer<typeof HistoryRowSchema>;
+
+export const listHistoryRpc = defineRpc({
+  name: "auto-resume.history",
+  input: z.object({}),
+  /** Newest first. */
+  output: z.object({ entries: z.array(HistoryRowSchema) }),
+});
+
 export const DiscoveredProviderSchema = z.object({
   id: z.string(),
   label: z.string(),

@@ -1,7 +1,8 @@
 import type { AgentTimelineItem, PaseoAgent, PaseoApi } from "./paseo-types";
 import type { PluginLifecycleEvents, PluginSessionOpenRequest } from "@getpaseo/plugin/server";
 import { detectLimitStop } from "./limit";
-import type { HistoryOutcome, HistoryReason, RescheduleResult, ScheduledJob } from "../shared/rpc";
+import type { HistoryOutcome, HistoryReason, HistoryRow, RescheduleResult, ScheduledJob } from "../shared/rpc";
+import type { HistoryStore } from "./history";
 import type { JobStore, ResumeJob } from "./store";
 import { captureLaunch, createSubscriptionReader, subscriptionModel, unknownCheck, type LaunchContext, type SubscriptionCheck, type SubscriptionReader } from "./subscription";
 import { GRACE_MS, MIN_DELAY_MS, rescheduleWindow } from "../shared/schedule";
@@ -34,6 +35,8 @@ type TurnEnded = PluginLifecycleEvents["agent.turn_ended"];
 function log(message: string): void {
   console.log(`[usage-auto-resume] ${message}`);
 }
+
+const titleOf = (agent: Pick<PaseoAgent, "title">): string | null => agent.title?.trim() || null;
 
 function minuteIso(date: Date): string {
   return date.toISOString();
@@ -69,7 +72,7 @@ function dueFor(resetAt: Date | null, now: Date): string {
   return new Date(Math.max(resetAt.getTime() + GRACE_MS, now.getTime() + MIN_DELAY_MS)).toISOString();
 }
 
-/** Why a reservation ended; `detail` is the log's wording. */
+/** Why a reservation ended, as recorded in the history; `detail` is the log's wording. */
 interface Outcome {
   outcome: HistoryOutcome;
   reason?: HistoryReason;
@@ -101,12 +104,15 @@ function skipReason(job: ResumeJob, agent: PaseoAgent | null): Outcome | null {
  */
 export function createResumer(options: {
   store: JobStore;
+  /** Where final results are recorded; without one nothing is kept. */
+  history?: HistoryStore;
   now?: () => Date;
   /** Null means unreadable settings: wait instead of enabling the public defaults. */
   readSettings?: () => Promise<ProviderSettings | null>;
   readSubscription?: SubscriptionReader;
 }) {
   const { store } = options;
+  const history: HistoryStore = options.history ?? { list: async () => [], append: async () => {} };
   const now = options.now ?? (() => new Date());
   const readSettings = options.readSettings ?? (async () => DEFAULT_PROVIDER_SETTINGS);
   let paseo: ResumerApi | null = null;
@@ -168,7 +174,7 @@ export function createResumer(options: {
     const check = await inspect(api, agent, source, at, launch, stated ? "identity" : "usage");
     if (check.auth === "api") {
       launches.delete(agent.id);
-      await retire(agent.id, () => true, canceled("api_route", "authentication uses API billing"));
+      await retire(agent.id, () => true, canceled("api_route", "authentication uses API billing"), titleOf(agent));
       return;
     }
     const plan: Plan = stated ? { kind: "reset", resetAt: stated } : planFor(check, at);
@@ -177,17 +183,20 @@ export function createResumer(options: {
     const resetAt = plan.kind === "reset" ? plan.resetAt : null;
     const key = resetAt ? minuteIso(resetAt) : null;
     const waiting = plan.kind === "check" ? plan.waiting : undefined;
+    let gaveUp = null as Outcome | null;
     await store.update(agent.id, (current) => {
       if (options.onlyIfNone && current) return undefined;
       if (current?.state === "pending" && current.resetAt === key && current.waiting === waiting) return undefined;
       const attempts = current && current.state !== "pending" ? current.attempts + 1 : (current?.attempts ?? 0);
       if (attempts >= MAX_ATTEMPTS) {
         log(`gave up on ${agent.id} after ${attempts} automatic continues hit a limit again`);
+        gaveUp = { outcome: "gave_up", reason: "attempts", detail: `${attempts} automatic continues hit a limit again` };
         return null;
       }
       const retries = plan.kind === "retry" ? (current?.retries ?? 0) : 0;
       if (retries >= RETRY_DELAYS_MS.length) {
         log(`gave up on ${agent.id}: ${retries} continues stopped again while its usage windows were not used up`);
+        gaveUp = { outcome: "gave_up", reason: "retries", detail: `${retries} continues stopped again while its usage windows were not used up` };
         return null;
       }
       const job: ResumeJob = {
@@ -209,6 +218,8 @@ export function createResumer(options: {
       log(`scheduled ${agent.id} (${agent.provider}) for ${job.dueAt}; ${plan.kind === "retry" ? `retry ${job.retries} of ${RETRY_DELAYS_MS.length}` : `reset ${key ?? "unknown"}`}`);
       return job;
     });
+    // Recorded outside the update so the job file is never held waiting on the history file.
+    if (gaveUp) await record(agent.id, agent.provider, gaveUp, titleOf(agent));
   }
 
   async function timelineTail(api: ResumerApi, agentId: string): Promise<AgentTimelineItem[]> {
@@ -255,19 +266,28 @@ export function createResumer(options: {
     }
   }
 
+  /** Adds a final result to the history; a failed write is logged and never stops a resume. */
+  async function record(agentId: string, provider: string, outcome: Outcome, title?: string | null): Promise<void> {
+    await history.append({ agentId, provider, ...outcome, title: title ?? null })
+      .catch((error) => console.error("[usage-auto-resume] could not record history", String(error)));
+  }
+
   /**
-   * Removes the agent's job when `matches` accepts the current row and logs why. Returns whether
-   * this call removed it; a job that changed meanwhile is left alone and nothing is reported.
+   * Removes the agent's job when `matches` accepts the current row, then logs and records why.
+   * Returns whether this call removed it; a job that changed meanwhile is left alone and nothing
+   * is recorded.
    */
-  async function retire(agentId: string, matches: (current: ResumeJob) => boolean, outcome: Outcome): Promise<boolean> {
-    let removed = false;
+  async function retire(agentId: string, matches: (current: ResumeJob) => boolean, outcome: Outcome, title?: string | null): Promise<boolean> {
+    // Assigned inside the callback, which TypeScript does not follow.
+    let removed = null as ResumeJob | null;
     await store.update(agentId, (current) => {
       if (!current || !matches(current)) return undefined;
-      removed = true;
+      removed = current;
       return null;
     });
     if (!removed) return false;
     log(outcome.outcome === "interrupted" ? `dropped interrupted continue for ${agentId}` : `${outcome.outcome} ${agentId}: ${outcome.detail}`);
+    await record(agentId, removed.provider, outcome, title);
     return true;
   }
 
@@ -305,18 +325,19 @@ export function createResumer(options: {
       return;
     }
     const agent = await loadAgent(api, job.agentId);
+    const title = agent && titleOf(agent);
     const skip = skipReason(job, agent);
     if (skip) {
-      await retire(job.agentId, same, skip);
+      await retire(job.agentId, same, skip, title);
       return;
     }
     const check = await inspect(api, agent!, source, at, launches.get(job.agentId) ?? job.launch);
     if (check.auth === "api") {
-      await retire(job.agentId, same, canceled("api_route", "authentication uses API billing"));
+      await retire(job.agentId, same, canceled("api_route", "authentication uses API billing"), title);
       return;
     }
     if (job.identity && check.identity && job.identity !== check.identity) {
-      await retire(job.agentId, same, canceled("account_changed", "account or model changed"));
+      await retire(job.agentId, same, canceled("account_changed", "account or model changed"), title);
       return;
     }
     // A used-up window, or a stated reset still ahead, holds the continue until it renews.
@@ -338,7 +359,7 @@ export function createResumer(options: {
     const currentSettings = await readSettings();
     if (!currentSettings) return;
     if (!isProviderOn(job.provider, currentSettings)) {
-      await forgetTurnedOff(job);
+      await forgetTurnedOff(job, title);
       return;
     }
     const claimed = await store.update(job.agentId, (current) =>
@@ -347,16 +368,20 @@ export function createResumer(options: {
     if (claimed?.state !== "sending") return;
     try {
       await api.agents.ref(job.agentId).send(CONTINUE_PROMPT);
-      await store.update(job.agentId, (current) => (current?.state === "sending" ? { ...current, state: "sent" } : undefined));
-      log(`continued ${job.agentId}`);
     } catch (error) {
       await store.update(job.agentId, (current) => (current?.state === "sending" ? null : undefined));
       console.error(`[usage-auto-resume] could not continue ${job.agentId}`, String(error));
+      await record(job.agentId, job.provider, { outcome: "send_failed" }, title);
+      return;
     }
+    // The sent row stays until the agent's next turn ends, which clears it without a report.
+    await store.update(job.agentId, (current) => (current?.state === "sending" ? { ...current, state: "sent" } : undefined));
+    log(`continued ${job.agentId}`);
+    await record(job.agentId, job.provider, { outcome: "continued" }, title);
   }
 
-  async function forgetTurnedOff(job: ResumeJob): Promise<void> {
-    await retire(job.agentId, (current) => isSameJob(current, job), canceled("provider_off", `automatic resume is turned off for ${job.provider}`));
+  async function forgetTurnedOff(job: ResumeJob, title?: string | null): Promise<void> {
+    await retire(job.agentId, (current) => isSameJob(current, job), canceled("provider_off", `automatic resume is turned off for ${job.provider}`), title);
   }
 
   /** Turning a provider off also retires the reservations it already has. */
@@ -416,7 +441,7 @@ export function createResumer(options: {
           agentId: job.agentId,
           provider: job.provider,
           workspaceId: loaded?.agent.workspaceId ?? null,
-          title: loaded?.agent.title?.trim() || null,
+          title: loaded ? titleOf(loaded.agent) : null,
           projectName: loaded?.project?.projectName ?? null,
           workspaceName: loaded?.project?.workspaceName ?? null,
           resetAt: job.resetAt,
@@ -428,6 +453,20 @@ export function createResumer(options: {
       }),
     );
     return rows.sort((left, right) => left.dueAt.localeCompare(right.dueAt));
+  }
+
+  /** Recent results, newest first, named and placed by the live agent when it still exists. */
+  async function listHistory(api: ResumerApi): Promise<HistoryRow[]> {
+    const entries = await history.list();
+    const ids = [...new Set(entries.map((entry) => entry.agentId))];
+    const agents = new Map(await Promise.all(ids.map(async (id) => {
+      const loaded = await api.agents.ref(id).refresh().catch(() => null);
+      return [id, loaded?.agent ?? null] as const;
+    })));
+    return entries.map((entry) => {
+      const agent = agents.get(entry.agentId);
+      return { ...entry, title: (agent && titleOf(agent)) || entry.title, workspaceId: agent?.workspaceId ?? null };
+    });
   }
 
   /** Turns one pending job on or off; `dueAt` pins the job the screen showed. */
@@ -497,6 +536,7 @@ export function createResumer(options: {
     recover,
     scan,
     listScheduled,
+    listHistory,
     setEnabled,
     setAllEnabled,
     reschedule,
