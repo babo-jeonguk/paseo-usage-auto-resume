@@ -109,3 +109,16 @@ test("entries this version does not recognize are skipped without hiding the res
   }
   assert.equal(errors.length, 2, "one report per problem, not one per read");
 });
+
+test("a Resume now result keeps its trigger, and entries written without one still load", async () => {
+  const older = { id: "o", at: "2026-10-06T02:59:00.000Z", agentId: "a1", provider: "codex", outcome: "continued", title: null };
+  await writeFile(path, JSON.stringify({ version: 1, entries: [older] }));
+  const history = open();
+  await history.append(entry("a2", { trigger: "manual" }));
+
+  const [manual, automatic] = await open().list();
+  assert.equal(manual?.agentId, "a2");
+  assert.equal(manual?.trigger, "manual");
+  assert.equal(automatic?.agentId, "a1");
+  assert.equal(automatic?.trigger, undefined);
+});

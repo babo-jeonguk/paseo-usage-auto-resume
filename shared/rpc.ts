@@ -116,6 +116,13 @@ export const ResumeNowResultSchema = z.discriminatedUnion("result", [
 
 export type ResumeNowResult = z.infer<typeof ResumeNowResultSchema>;
 
+export const resumeNowRpc = defineRpc({
+  name: "auto-resume.resume-now",
+  /** `dueAt` is the time the screen showed. */
+  input: z.object({ agentId: z.string(), dueAt: z.string() }),
+  output: ResumeNowResultSchema,
+});
+
 export const HistoryEntrySchema = z.object({
   id: z.string(),
   /** When the result was recorded. */
@@ -126,6 +133,8 @@ export const HistoryEntrySchema = z.object({
   reason: HistoryReasonSchema.optional(),
   /** The conversation title when recorded, so a deleted agent still has a name. */
   title: z.string().nullable(),
+  /** What started the attempt; absent for automatic results and for entries older versions wrote. */
+  trigger: z.enum(["manual"]).optional(),
 });
 
 export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;

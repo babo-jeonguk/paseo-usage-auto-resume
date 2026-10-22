@@ -17,6 +17,7 @@ import {
   refusalLabel,
   relativeLabel,
   rescheduleProblem,
+  resumeNowLabel,
   sortProviders,
   summaryLabels,
   timeOnDay,
@@ -164,6 +165,20 @@ test("the server's refusals read the same way", () => {
   assert.equal(refusalLabel(limited, { changed: false, reason: "changed" }), "This schedule already ran or changed.");
 });
 
+test("each Resume now result reads as one toast", () => {
+  assert.equal(resumeNowLabel({ result: "sent" }, now), "Continue sent");
+  assert.equal(resumeNowLabel({ result: "held", until: new Date(2026, 9, 6, 18, 53).toISOString() }, now), "Usage is still used up until 18:53");
+  assert.equal(resumeNowLabel({ result: "held", until: new Date(2026, 9, 9, 9, 0).toISOString() }, now), "Usage is still used up until Fri 09:00");
+  assert.equal(resumeNowLabel({ result: "held", until: null }, now), "Usage is still used up");
+  assert.equal(resumeNowLabel({ result: "held", waiting: "auth", until: null }, now), "Couldn’t verify the account. Check the CLI login.");
+  assert.equal(resumeNowLabel({ result: "held", waiting: "usage", until: null }, now), "Couldn’t verify usage. Try again shortly.");
+  assert.equal(resumeNowLabel({ result: "canceled", reason: "new_message" }, now), "Canceled · a newer message");
+  assert.equal(resumeNowLabel({ result: "send_failed" }, now), "Couldn’t send the continue");
+  assert.equal(resumeNowLabel({ result: "sending" }, now), "This agent is continuing now.");
+  assert.equal(resumeNowLabel({ result: "changed" }, now), "This schedule already ran or changed.");
+  assert.equal(resumeNowLabel({ result: "unavailable" }, now), "Auto Resume settings couldn’t be read.");
+});
+
 test("one bulk button turns everything off while anything is on", () => {
   assert.deepEqual(bulkAction([job({}), job({ enabled: false })]), { enabled: false, label: "Turn all off", shortLabel: "All off" });
   assert.deepEqual(bulkAction([job({ enabled: false }), job({ sending: true })]), { enabled: true, label: "Turn all on", shortLabel: "All on" });
@@ -199,6 +214,12 @@ test("every recorded result reads as one line", () => {
   for (const reason of HistoryReasonSchema.options) {
     assert.ok(canceledReasons.has(reason) || gaveUpReasons.has(reason), `${reason} has a label`);
   }
+});
+
+test("a result Resume now started says so", () => {
+  assert.equal(historyLabel({ outcome: "continued", trigger: "manual" }), "Continued · Resume now");
+  assert.equal(historyLabel({ outcome: "canceled", reason: "new_message", trigger: "manual" }), "Canceled · a newer message · Resume now");
+  assert.equal(historyLabel({ outcome: "send_failed", trigger: "manual" }), "Couldn’t send the continue · Resume now");
 });
 
 test("the collapsed header counts results by kind", () => {

@@ -1,4 +1,4 @@
-import type { DiscoveredProvider, HistoryEntry, HistoryOutcome, HistoryReason, RescheduleResult, ScheduledJob } from "../shared/rpc";
+import type { DiscoveredProvider, HistoryEntry, HistoryOutcome, HistoryReason, RescheduleResult, ResumeNowResult, ScheduledJob } from "../shared/rpc";
 import { MAX_ATTEMPTS, RETRY_DELAYS_MS, rescheduleWindow } from "../shared/schedule";
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -105,6 +105,8 @@ export function waitingLabel(job: ScheduledJob): string | null {
   }
 }
 
+const weekdayLabel = (iso: string) => new Date(iso).toLocaleDateString("en-US", { weekday: "short" });
+
 /** Fits Paseo's narrow pill; the popover shows the full day and time. */
 export function composerLabel(job: ScheduledJob, now: number): string {
   if (job.sending) return "Resuming…";
@@ -112,8 +114,7 @@ export function composerLabel(job: ScheduledJob, now: number): string {
   const time = clockLabel(job.dueAt);
   if (job.waiting) return `Check ${time}`;
   const offset = dayOffset(job.dueAt, now);
-  const day = offset === 1 ? "Tmr" : offset > 1
-    ? new Date(job.dueAt).toLocaleDateString("en-US", { weekday: "short" }) : "Resume";
+  const day = offset === 1 ? "Tmr" : offset > 1 ? weekdayLabel(job.dueAt) : "Resume";
   return `${day} ${time}`;
 }
 
@@ -169,6 +170,9 @@ export function rescheduleProblem(job: ScheduledJob, dueAt: string, now: number)
   return null;
 }
 
+const SENDING = "This agent is continuing now.";
+const CHANGED = "This schedule already ran or changed.";
+
 export function refusalLabel(job: ScheduledJob, result: Extract<RescheduleResult, { changed: false }>): string {
   switch (result.reason) {
     case "too-early":
@@ -176,9 +180,9 @@ export function refusalLabel(job: ScheduledJob, result: Extract<RescheduleResult
     case "too-late":
       return TOO_LATE;
     case "sending":
-      return "This agent is continuing now.";
+      return SENDING;
     case "changed":
-      return "This schedule already ran or changed.";
+      return CHANGED;
   }
 }
 
@@ -198,8 +202,13 @@ const CANCEL_REASONS: Partial<Record<HistoryReason, string>> = {
   unsupported_cli: "unsupported CLI",
 };
 
-/** One line for how a reservation ended, e.g. "Canceled · a newer message". */
-export function historyLabel(entry: Pick<HistoryEntry, "outcome" | "reason">): string {
+/** One line for how a reservation ended, e.g. "Canceled · a newer message", naming Resume now when it started it. */
+export function historyLabel(entry: Pick<HistoryEntry, "outcome" | "reason" | "trigger">): string {
+  const label = outcomeLabel(entry);
+  return entry.trigger === "manual" ? `${label} · Resume now` : label;
+}
+
+function outcomeLabel(entry: Pick<HistoryEntry, "outcome" | "reason">): string {
   switch (entry.outcome) {
     case "continued":
       return "Continued";
@@ -217,6 +226,29 @@ export function historyLabel(entry: Pick<HistoryEntry, "outcome" | "reason">): s
       const why = entry.reason && CANCEL_REASONS[entry.reason];
       return why ? `Canceled · ${why}` : "Canceled";
     }
+  }
+}
+
+/** The toast after Resume now; only `sent` is a success. */
+export function resumeNowLabel(result: ResumeNowResult, now: number): string {
+  switch (result.result) {
+    case "sent":
+      return "Continue sent";
+    case "held":
+      if (result.waiting === "auth") return "Couldn’t verify the account. Check the CLI login.";
+      if (result.waiting === "usage") return "Couldn’t verify usage. Try again shortly.";
+      if (!result.until) return "Usage is still used up";
+      return `Usage is still used up until ${dayOffset(result.until, now) === 0 ? "" : `${weekdayLabel(result.until)} `}${clockLabel(result.until)}`;
+    case "canceled":
+      return outcomeLabel({ outcome: "canceled", reason: result.reason });
+    case "send_failed":
+      return outcomeLabel({ outcome: "send_failed" });
+    case "sending":
+      return SENDING;
+    case "changed":
+      return CHANGED;
+    case "unavailable":
+      return "Auto Resume settings couldn’t be read.";
   }
 }
 

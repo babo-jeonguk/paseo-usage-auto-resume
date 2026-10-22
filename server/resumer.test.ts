@@ -60,9 +60,10 @@ const advance = (ms: number) => {
   clock = new Date(clock.getTime() + ms);
 };
 
-/** Recorded results, oldest first, as "agent outcome/reason". */
+/** Recorded results, oldest first, as "agent outcome/reason", with " (manual)" for Resume now's. */
 async function recorded(): Promise<string[]> {
-  return (await history.list()).reverse().map(({ agentId, outcome, reason }) => `${agentId} ${outcome}${reason ? `/${reason}` : ""}`);
+  return (await history.list()).reverse().map(({ agentId, outcome, reason, trigger }) =>
+    `${agentId} ${outcome}${reason ? `/${reason}` : ""}${trigger ? ` (${trigger})` : ""}`);
 }
 
 interface FakeOptions {
@@ -1469,4 +1470,234 @@ test("history keeps result codes, not the log's wording", async () => {
   const saved = JSON.parse(await readFile(join(dir, "history.json"), "utf8")) as { entries: Array<Record<string, unknown>> };
   assert.deepEqual(Object.keys(saved.entries[0]!).sort(), ["agentId", "at", "id", "outcome", "provider", "reason", "title"]);
   assert.equal(saved.entries[0]!.reason, "agent_busy");
+});
+
+// Resume now: the notice's reset is 05:00, so these reservations are due at 05:02.
+const CODEX_DUE = "2026-10-06T05:02:00.000Z";
+const ready: SubscriptionCheck = { auth: "subscription", status: "ready", identity: "account-model" };
+
+test("Resume now sends before the notice's reset once the account's usage is ready", async () => {
+  for (const [provider, stop, dueAt] of [
+    ["codex", failed(CODEX_LIMIT), CODEX_DUE],
+    ["claude", { kind: "completed" }, "2026-10-06T06:02:00.000Z"],
+  ] as Array<[string, PluginTurnOutcome, string]>) {
+    clock = START;
+    const { api, sent, resumer } = await setup({ a1: { provider, title: "Fix login" } }, { readSubscription: async () => ready });
+    await resumer.onTurnEnded(turnEnded("a1", provider, stop, claudeNotice(CLAUDE_LIMIT)), api);
+    assert.equal((await store.list())[0]?.dueAt, dueAt, provider);
+
+    assert.deepEqual(await resumer.resumeNow(api, "a1", dueAt), { result: "sent" }, provider);
+    assert.deepEqual(sent, [{ agentId: "a1", text: CONTINUE_PROMPT }], provider);
+    assert.equal((await store.list())[0]?.state, "sent", provider);
+    assert.equal((await recorded()).at(-1), "a1 continued (manual)", provider);
+    assert.equal((await history.list())[0]?.title, "Fix login", provider);
+    await resumer.tick();
+    clock = new Date(dueAt);
+    await resumer.tick();
+    assert.equal(sent.length, 1, `${provider}: the tick does not send it again`);
+    await store.update("a1", () => null);
+  }
+});
+
+test("Resume now is held while usage is used up, and leaves the reservation as it was", async () => {
+  for (const [name, resetsAt, until] of [
+    ["known reset", "2026-10-06T07:30:00.000Z", "2026-10-06T07:30:00.000Z"],
+    ["unknown reset", null, null],
+  ] as Array<[string, string | null, string | null]>) {
+    clock = START;
+    const usage: FakeOptions["usage"] = [{
+      providerId: "codex", displayName: `Codex (${CODEX_EMAIL})`,
+      windows: [{ id: "five_hour", label: "5-hour", usedPct: 100, resetsAt }],
+    }];
+    const { api, sent, resumer } = await setup({ a1: { provider: "codex" } }, { usage });
+    await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+    await resumer.setEnabled("a1", CODEX_DUE, false);
+    const before = (await store.list())[0];
+
+    assert.deepEqual(await resumer.resumeNow(api, "a1", CODEX_DUE), { result: "held", until }, name);
+    assert.deepEqual(sent, [], name);
+    assert.deepEqual((await store.list())[0], before, `${name}: time, switch and reset unchanged`);
+    assert.deepEqual(await recorded(), [], `${name}: a hold is not a result`);
+    await store.update("a1", () => null);
+  }
+});
+
+test("Resume now is held without changes when the account or its usage cannot be verified", async () => {
+  let check: SubscriptionCheck = ready;
+  const { api, sent, resumer } = await setup({ a1: { provider: "codex" } }, { readSubscription: async () => check });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  const before = (await store.list())[0];
+
+  check = unknownCheck();
+  assert.deepEqual(await resumer.resumeNow(api, "a1", CODEX_DUE), { result: "held", waiting: "auth", until: null });
+  check = { auth: "subscription", status: "unknown", identity: "account-model" };
+  assert.deepEqual(await resumer.resumeNow(api, "a1", CODEX_DUE), { result: "held", waiting: "usage", until: null });
+  assert.deepEqual(sent, []);
+  assert.deepEqual((await store.list())[0], before);
+  assert.deepEqual(await recorded(), []);
+});
+
+test("Resume now sends a reservation that is turned off or waiting for verification", async () => {
+  const { api, sent, resumer } = await setup({ a1: { provider: "codex" }, a2: { provider: "codex" } }, { readSubscription: async () => ready });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  await resumer.setEnabled("a1", CODEX_DUE, false);
+  await store.update("a2", () => ({
+    agentId: "a2", provider: "codex", resetAt: null, dueAt: "2026-10-06T03:15:00.000Z",
+    baseline: "2026-10-06T02:00:00.000Z", attempts: 0, state: "pending", enabled: true, retries: 0, waiting: "usage",
+  }));
+
+  assert.deepEqual(await resumer.resumeNow(api, "a1", CODEX_DUE), { result: "sent" });
+  assert.deepEqual(await resumer.resumeNow(api, "a2", "2026-10-06T03:15:00.000Z"), { result: "sent" });
+  assert.deepEqual(sent.map((message) => message.agentId), ["a1", "a2"]);
+  assert.deepEqual(await recorded(), ["a1 continued (manual)", "a2 continued (manual)"]);
+});
+
+test("Resume now cancels on the same safety checks as an automatic continue", async () => {
+  for (const [reason, change] of [
+    ["new_message", { lastUserMessageAt: "2026-10-06T04:00:00.000Z" }],
+    ["agent_busy", { status: "running" }],
+    ["permission", { pendingPermissions: [{}] }],
+    ["model_changed", { model: "gpt-b" }],
+  ] as Array<[string, Partial<PaseoAgent>]>) {
+    clock = START;
+    const { api, sent, resumer, agents } = await setup({ a1: { provider: "codex", model: "gpt-a" } });
+    await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+    agents.set("a1", { provider: "codex", model: "gpt-a", ...change } as Partial<PaseoAgent>);
+
+    assert.deepEqual(await resumer.resumeNow(api, "a1", CODEX_DUE), { result: "canceled", reason }, reason);
+    assert.deepEqual(sent, [], reason);
+    assert.deepEqual(await store.list(), [], reason);
+    assert.equal((await recorded()).at(-1), `a1 canceled/${reason} (manual)`);
+  }
+  assert.equal((await recorded()).length, 4);
+});
+
+test("Resume now cancels on API billing or a changed account", async () => {
+  let check: SubscriptionCheck = ready;
+  const { api, sent, resumer } = await setup({ a1: { provider: "codex" }, a2: { provider: "codex" } }, { readSubscription: async () => check });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  await resumer.onTurnEnded(turnEnded("a2", "codex", failed(CODEX_LIMIT)), api);
+
+  check = { auth: "api", status: "unknown" };
+  assert.deepEqual(await resumer.resumeNow(api, "a1", CODEX_DUE), { result: "canceled", reason: "api_route" });
+  check = { ...ready, identity: "another-account-model" };
+  assert.deepEqual(await resumer.resumeNow(api, "a2", CODEX_DUE), { result: "canceled", reason: "account_changed" });
+  assert.deepEqual(sent, []);
+  assert.deepEqual(await store.list(), []);
+  assert.deepEqual(await recorded(), ["a1 canceled/api_route (manual)", "a2 canceled/account_changed (manual)"]);
+});
+
+test("Resume now cancels a reservation whose provider is off or no longer runs a supported CLI", async () => {
+  let selection = DEFAULT_PROVIDER_SETTINGS;
+  const { api, sent, resumer } = await setup(
+    { m1: { provider: "claude-main" }, r1: { provider: "codex-reserve" } },
+    { readSettings: async () => selection },
+  );
+  await resumer.onTurnEnded(turnEnded("m1", "claude-main", failed(CLAUDE_LIMIT)), api);
+  await resumer.onTurnEnded(turnEnded("r1", "codex-reserve", failed(CODEX_LIMIT)), api);
+  const m1 = (await store.list()).find((job) => job.agentId === "m1")!;
+  selection = CLAUDE_MAIN_OFF;
+  const config = api.config.get;
+  api.config.get = async () => {
+    const current = await config();
+    return { ...current, config: { ...current.config, providers: { ...current.config.providers, "codex-reserve": { extends: "opencode" } } } } as Awaited<ReturnType<typeof config>>;
+  };
+
+  assert.deepEqual(await resumer.resumeNow(api, "m1", m1.dueAt), { result: "canceled", reason: "provider_off" });
+  assert.deepEqual(await resumer.resumeNow(api, "r1", CODEX_DUE), { result: "canceled", reason: "unsupported_cli" });
+  assert.deepEqual(sent, []);
+  assert.deepEqual(await store.list(), []);
+  assert.deepEqual(await recorded(), ["m1 canceled/provider_off (manual)", "r1 canceled/unsupported_cli (manual)"]);
+});
+
+test("Resume now reports a reservation that moved, is gone, or is being sent", async () => {
+  const { api, sent, resumer } = await setup({ a1: { provider: "codex" } });
+  assert.deepEqual(await resumer.resumeNow(api, "a1", CODEX_DUE), { result: "changed" }, "nothing reserved");
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  assert.deepEqual(await resumer.resumeNow(api, "a1", "2026-10-06T05:12:00.000Z"), { result: "changed" }, "another time");
+  await store.update("a1", (current) => current && { ...current, state: "sending" });
+  assert.deepEqual(await resumer.resumeNow(api, "a1", CODEX_DUE), { result: "sending" });
+  await store.update("a1", (current) => current && { ...current, state: "sent" });
+  assert.deepEqual(await resumer.resumeNow(api, "a1", CODEX_DUE), { result: "changed" }, "already sent");
+  assert.deepEqual(sent, []);
+  assert.deepEqual(await recorded(), []);
+});
+
+test("Resume now does nothing while settings cannot be read", async () => {
+  let selection: ProviderSettings | null = DEFAULT_PROVIDER_SETTINGS;
+  const { api, sent, resumer } = await setup({ a1: { provider: "codex" } }, { readSettings: async () => selection });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  const before = await store.list();
+  selection = null;
+  assert.deepEqual(await resumer.resumeNow(api, "a1", CODEX_DUE), { result: "unavailable" });
+  assert.deepEqual(sent, []);
+  assert.deepEqual(await store.list(), before);
+  assert.deepEqual(await recorded(), []);
+});
+
+test("a tick and Resume now on the same reservation send one continue", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let reads = 0;
+  let bothReading!: () => void;
+  const reading = new Promise<void>((resolve) => { bothReading = resolve; });
+  let holdReads = false;
+  const { api, sent, resumer } = await setup({ a1: { provider: "codex" } }, {
+    readSubscription: async () => {
+      if (holdReads && ++reads === 2) bothReading();
+      if (holdReads) await gate;
+      return ready;
+    },
+  });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  clock = new Date(CODEX_DUE);
+  holdReads = true;
+
+  const tick = resumer.tick();
+  const manual = resumer.resumeNow(api, "a1", CODEX_DUE);
+  await reading;
+  release();
+  const [, result] = await Promise.all([tick, manual]);
+
+  assert.equal(sent.length, 1);
+  assert.ok(result.result === "sent" || result.result === "sending", result.result);
+  assert.equal((await recorded()).length, 1);
+});
+
+test("Resume now sends an Antigravity continue before the notice's reset without reading usage", async () => {
+  const usage = [{
+    providerId: "antigravity", displayName: `Antigravity (${ANTIGRAVITY_EMAIL})`,
+    windows: [{ id: "gemini-5h", label: "Session", usedPct: 100, resetsAt: "2026-10-06T09:00:00.000Z" }],
+  }];
+  const { api, sent, resumer, usageReads } = await setup({ g1: { provider: "antigravity" } }, { usage });
+  await resumer.onTurnEnded(turnEnded("g1", "antigravity", failed(ANTIGRAVITY_LIMIT)), api);
+  const [job] = await store.list();
+  assert.ok(Date.parse(job!.resetAt!) > clock.getTime());
+
+  assert.deepEqual(await resumer.resumeNow(api, "g1", job!.dueAt), { result: "sent" });
+  assert.equal(sent.length, 1);
+  assert.equal(usageReads(), 0);
+});
+
+test("a continue Resume now cannot send is recorded as failed and leaves no job", async () => {
+  const { api, resumer } = await setup({ a1: { provider: "codex" } });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  const originalRef = api.agents.ref;
+  api.agents.ref = (id) => Object.assign(originalRef(id), { send: async () => { throw new Error("socket closed"); } });
+
+  assert.deepEqual(await resumer.resumeNow(api, "a1", CODEX_DUE), { result: "send_failed" });
+  assert.deepEqual(await store.list(), []);
+  assert.deepEqual(await recorded(), ["a1 send_failed (manual)"]);
+});
+
+test("a limit hit again after Resume now is reserved like one after an automatic continue", async () => {
+  const { api, resumer } = await setup({ a1: { provider: "codex" } }, { readSubscription: async () => ready });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  await resumer.resumeNow(api, "a1", CODEX_DUE);
+  advance(MINUTE);
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  const [job] = await store.list();
+  assert.equal(job?.state, "pending");
+  assert.equal(job?.attempts, 1);
+  assert.equal(job?.enabled, true);
 });
