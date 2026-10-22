@@ -99,11 +99,6 @@ export const HistoryReasonSchema = z.enum([
 
 export type HistoryReason = z.infer<typeof HistoryReasonSchema>;
 
-/** What started an attempt other than the tick; Resume now is the only one. */
-export const TriggerSchema = z.enum(["manual"]);
-
-export type Trigger = z.infer<typeof TriggerSchema>;
-
 export const ResumeNowResultSchema = z.discriminatedUnion("result", [
   /** The continue was sent. */
   z.object({ result: z.literal("sent") }),
@@ -144,7 +139,7 @@ export const HistoryEntrySchema = z.object({
   /** The conversation title when recorded, so a deleted agent still has a name. */
   title: z.string().nullable(),
   /** What started the attempt; absent for automatic results and for entries older versions wrote. */
-  trigger: TriggerSchema.optional(),
+  trigger: z.enum(["manual"]).optional(),
 });
 
 export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;

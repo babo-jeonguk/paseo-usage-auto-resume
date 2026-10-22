@@ -1,7 +1,7 @@
 import type { AgentTimelineItem, PaseoAgent, PaseoApi } from "./paseo-types";
 import type { PluginLifecycleEvents, PluginSessionOpenRequest } from "@getpaseo/plugin/server";
 import { detectLimitStop } from "./limit";
-import type { HistoryOutcome, HistoryReason, HistoryRow, RescheduleResult, ResumeNowResult, ScheduledJob, Trigger, Waiting } from "../shared/rpc";
+import type { HistoryEntry, HistoryOutcome, HistoryReason, HistoryRow, RescheduleResult, ResumeNowResult, ScheduledJob, Waiting } from "../shared/rpc";
 import type { HistoryStore } from "./history";
 import type { JobStore, ResumeJob } from "./store";
 import { captureLaunch, createSubscriptionReader, subscriptionModel, unknownCheck, type LaunchContext, type SubscriptionCheck, type SubscriptionReader } from "./subscription";
@@ -73,7 +73,7 @@ interface Outcome {
   /** The conversation title when it is at hand, kept so a deleted agent still has a name. */
   title?: string | null;
   /** Set when Resume now started the attempt. */
-  trigger?: Trigger;
+  trigger?: HistoryEntry["trigger"];
 }
 
 type Cancellation = Outcome & { outcome: "canceled"; reason: HistoryReason };
@@ -81,8 +81,8 @@ type Cancellation = Outcome & { outcome: "canceled"; reason: HistoryReason };
 const canceled = (reason: HistoryReason, detail: string): Cancellation => ({ outcome: "canceled", reason, detail });
 const providerOff = (provider: string) => canceled("provider_off", `automatic resume is turned off for ${provider}`);
 
-/** The tick's attempt at a due job, or one a trigger such as Resume now started. */
-type DeliverMode = "auto" | Trigger;
+/** The tick's attempt at a due job, or Resume now's on the user's request. */
+type DeliverMode = "auto" | "manual";
 
 /**
  * What one delivery attempt did. `skipped` (turned off at its time) and `postponed` (moved to
@@ -352,16 +352,17 @@ export function createResumer(options: {
   }
 
   /**
-   * One delivery attempt: every safety and usage check, then the claim and the send. An attempt
-   * a trigger started runs the same checks with three differences: it sends a reservation that
-   * is turned off, ignores the reset the notice stated, and leaves the reservation as it was
-   * when the usage holds it. Only the tick skips or postpones.
+   * One delivery attempt: every safety and usage check, then the claim and the send. Resume now
+   * runs the same checks with three differences: it sends a reservation that is turned off,
+   * ignores the reset the notice stated, and leaves the reservation as it was when the usage
+   * holds it. Only the tick skips or postpones, so each mode gets its own result type.
    */
   function deliver(job: ResumeJob, api: ResumerApi, at: Date, mode: "auto"): Promise<Delivery>;
-  function deliver(job: ResumeJob, api: ResumerApi, at: Date, mode: Trigger): Promise<ResumeNowResult>;
+  function deliver(job: ResumeJob, api: ResumerApi, at: Date, mode: "manual"): Promise<ResumeNowResult>;
   async function deliver(job: ResumeJob, api: ResumerApi, at: Date, mode: DeliverMode): Promise<Delivery> {
-    const trigger = mode === "auto" ? undefined : mode;
-    const manual = trigger !== undefined;
+    const manual = mode === "manual";
+    // Its results say Resume now caused them; the tick's carry no trigger.
+    const trigger = manual ? "manual" : undefined;
     const same = (current: ResumeJob) => isSameJob(current, job);
     const cancel = async (outcome: Cancellation): Promise<Delivery> =>
       await retire(job.agentId, same, { ...outcome, trigger }) ? { result: "canceled", reason: outcome.reason } : { result: "changed" };
@@ -417,7 +418,7 @@ export function createResumer(options: {
     }
     // The sent row stays until the agent's next turn ends, which clears it without a report.
     await store.update(job.agentId, (current) => (current?.state === "sending" ? { ...current, state: "sent" } : undefined));
-    log(`continued ${job.agentId}${trigger ? ` (${trigger})` : ""}`);
+    log(`continued ${job.agentId}${manual ? " on request" : ""}`);
     await record(job.agentId, job.provider, { outcome: "continued", title, trigger });
     return { result: "sent" };
   }
