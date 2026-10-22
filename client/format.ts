@@ -1,5 +1,5 @@
-import type { DiscoveredProvider, RescheduleResult, ScheduledJob } from "../shared/rpc";
-import { rescheduleWindow } from "../shared/schedule";
+import type { DiscoveredProvider, HistoryEntry, HistoryOutcome, HistoryReason, RescheduleResult, ScheduledJob } from "../shared/rpc";
+import { MAX_ATTEMPTS, RETRY_DELAYS_MS, rescheduleWindow } from "../shared/schedule";
 
 const PROVIDER_LABELS: Record<string, string> = {
   codex: "Codex",
@@ -180,6 +180,68 @@ export function refusalLabel(job: ScheduledJob, result: Extract<RescheduleResult
     case "changed":
       return "This schedule already ran or changed.";
   }
+}
+
+const CANCEL_REASONS: Partial<Record<HistoryReason, string>> = {
+  turn_started: "turn started",
+  new_message: "a newer message",
+  turn_finished: "turn finished",
+  agent_missing: "agent not found",
+  archived: "agent archived",
+  provider_changed: "provider changed",
+  model_changed: "model changed",
+  agent_busy: "agent was busy",
+  permission: "waiting for permission",
+  account_changed: "account changed",
+  api_route: "API billing route",
+  provider_off: "provider turned off",
+  unsupported_cli: "unsupported CLI",
+};
+
+/** One line for how a reservation ended, e.g. "Canceled · a newer message". */
+export function historyLabel(entry: Pick<HistoryEntry, "outcome" | "reason">): string {
+  switch (entry.outcome) {
+    case "continued":
+      return "Continued";
+    case "send_failed":
+      return "Couldn’t send the continue";
+    case "skipped":
+      return "Skipped · turned off";
+    case "interrupted":
+      return "Dropped · interrupted by a restart";
+    case "gave_up":
+      if (entry.reason === "attempts") return `Gave up · limit hit ${MAX_ATTEMPTS} times in a row`;
+      if (entry.reason === "retries") return `Gave up · stopped again after ${RETRY_DELAYS_MS.length} retries`;
+      return "Gave up";
+    case "canceled": {
+      const why = entry.reason && CANCEL_REASONS[entry.reason];
+      return why ? `Canceled · ${why}` : "Canceled";
+    }
+  }
+}
+
+const SUMMARY_WORDS: Array<[HistoryOutcome, string]> = [
+  ["continued", "continued"],
+  ["canceled", "canceled"],
+  ["skipped", "skipped"],
+  ["gave_up", "gave up"],
+  ["send_failed", "failed"],
+  ["interrupted", "dropped"],
+];
+
+/** Counts for the collapsed header, e.g. "2 continued · 1 canceled". */
+export function historySummary(entries: ReadonlyArray<Pick<HistoryEntry, "outcome">>): string {
+  return SUMMARY_WORDS.map(([outcome, word]) => {
+    const count = entries.filter((entry) => entry.outcome === outcome).length;
+    return count ? `${count} ${word}` : null;
+  })
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/** The date under every result's time, e.g. "Oct 22", since the list spans two days. */
+export function historyDateLabel(iso: string): string {
+  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
 /** The one bulk button: turns everything off while anything not already sending is on. */

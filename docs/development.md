@@ -20,6 +20,8 @@ Plugin logs use the `[usage-auto-resume]` prefix in the daemon log. Paseo compil
 
 `client/conversations.ts` registers and removes composer pills from the scheduled-job directory, including disabled reservations. `client/conversation.tsx` provides the per-conversation controls, sharing the list's query key and `client/time-editor.tsx`. Both surfaces use the existing guarded mutation RPCs; the job's displayed `dueAt` must still match before it can be changed. Client-only placement metadata comes from the agent snapshot and is not persisted in jobs.
 
+Canceling, skipping or dropping a reservation goes through `retire` in `server/resumer.ts`, which removes it only if the row is still the one that was checked, then logs and records the reason in `server/history.ts`. Two results are recorded where they are decided instead: giving up, which `schedule` decides in the same update that would otherwise write the next reservation, and a continue that was sent or failed to send. Clearing a continue that was already sent records nothing. History is a separate file, so a failed write never affects jobs.
+
 The plugin uses a persistent queue because the Paseo 0.11 public plugin API supplies agent access inside hooks/RPCs rather than a schedule API. A due reservation rechecks agent and subscription state before sending. See [behavior](behavior.md) for the restart and delivery tradeoffs, and [plugin reference](https://paseo.sh/docs/plugins/reference) for the host API.
 
 ## Registry submission

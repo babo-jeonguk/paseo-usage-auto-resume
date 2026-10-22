@@ -1,8 +1,9 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { createHistoryStore } from "./server/history";
 import { discoverProviders } from "./server/providers";
 import { createResumer } from "./server/resumer";
 import { createJobStore } from "./server/store";
-import { listProvidersRpc, listScheduledRpc, rescheduleRpc, setAllEnabledRpc, setEnabledRpc } from "./shared/rpc";
+import { listHistoryRpc, listProvidersRpc, listScheduledRpc, rescheduleRpc, setAllEnabledRpc, setEnabledRpc } from "./shared/rpc";
 import { providerSettings } from "./shared/settings";
 
 const TICK_MS = 30_000;
@@ -11,6 +12,7 @@ export default function contribute(server: PluginServerContext) {
   const settings = server.registerSettings(providerSettings);
   const resumer = createResumer({
     store: createJobStore(),
+    history: createHistoryStore(),
     readSettings: async () => {
       const current = await settings.read();
       if (current.status === "ready") return current.values;
@@ -45,6 +47,10 @@ export default function contribute(server: PluginServerContext) {
   server.handle(listScheduledRpc, async (_input, { paseo }) => {
     void resumer.attach(paseo);
     return { jobs: await resumer.listScheduled(paseo) };
+  });
+  server.handle(listHistoryRpc, async (_input, { paseo }) => {
+    void resumer.attach(paseo);
+    return { entries: await resumer.listHistory(paseo) };
   });
   server.handle(listProvidersRpc, async (_input, { paseo }) => {
     void resumer.attach(paseo);

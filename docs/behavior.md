@@ -38,6 +38,8 @@ The header switch changes only the pending reservations shown on screen. New res
 
 Conversations with a reservation have an **Auto Resume** composer pill. It shows the reservation time, **Resume off**, **Resuming…**, or a **Check** time for verification waits. Selecting it opens a popover on desktop or a sheet on mobile with the same per-reservation switch, **+10m**, and time editor. Off keeps the pill available for re-enabling before the due time; it does not disable future reservations. Changing the time turns the reservation on. Sending jobs cannot be edited. Executed, skipped-at-due-time and canceled reservations lose their pill.
 
+**Recent activity**, below the list, shows how reservations ended in the last 24 hours, up to 200 results: continued, could not be sent, skipped while off, canceled with its reason, gave up after the retry bound, or dropped by a restart. Only final results are recorded; time changes, switches and postponements are not. It starts collapsed with a count by kind, refreshes with the list, and opens the conversation when the agent still exists. An agent deleted since keeps the title recorded at the time.
+
 The composer directory refreshes every ten seconds while the client is active and immediately after local schedule actions. Open conversation controls share the sidebar's schedule cache and refresh every ten seconds. Other clients see changes on their next refresh. A failed directory read replaces the displayed time with **Unavailable**; failed reads in the controls disable changes and offer a retry. Placement uses the reservation's agent workspace, including background workspaces, without listing unrelated conversations.
 
 Provider discovery follows each provider's `extends` chain to built-in Claude, Codex or Antigravity. Profiles sharing an account still have separate switches. All supported providers, including newly discovered ones, start on. Turning one off cancels all of its pending reservations, including individually disabled ones. Turning it back on does not restore them; subsequent limit stops can create new reservations. A startup scan can also find a recent stop again.
@@ -63,6 +65,7 @@ Continue prompts are sent through Paseo to the existing agent and its provider; 
 | Stored data | Location |
 | --- | --- |
 | Resume jobs, hashed account/model identity, sanitized launch/store selectors, Keychain lookup username and boolean credential-presence flags | `$PASEO_HOME/plugin-data/usage-auto-resume/jobs.json` |
+| Recent activity: result and reason, agent ID, provider and the conversation title when recorded, kept for 24 hours | `$PASEO_HOME/plugin-data/usage-auto-resume/history.json` |
 | Provider switches | `$PASEO_HOME/plugin-settings/usage-auto-resume/providers.json` |
 
 The default Paseo home is `~/.paseo`. Settings and jobs are separate from plugin source code.
@@ -74,7 +77,7 @@ The default Paseo home is `~/.paseo`. Settings and jobs are separate from plugin
 | Empty Auto Resume list | No eligible stop has been found. Use agents normally; only detected limit stops create reservations. Older stops can be outside the startup scan. |
 | Waiting for account verification | The CLI authentication could not be confirmed. Check the CLI login and configured launcher. On Windows, the plugin starts npm-installed `.cmd` launchers through `cmd.exe` and reads the login where the CLI reports it, else from the user profile. A launcher path containing `%` or `"` cannot be passed to `cmd.exe` safely, so the check keeps waiting; install the CLI or configure its command at another path. On macOS, check that the daemon's user can access the selected profile's Keychain item or its fallback file and that the login is unexpired. |
 | Waiting for usage verification | Usage is unreadable, unrecognized or still exhausted without a usable future reset. The displayed time is the next check; time passing alone does not authorize a continue. |
-| Reservation disappeared | It may have been sent, skipped, canceled by agent activity/settings, or reached its retry bound. Check the conversation and daemon log. |
+| Reservation disappeared | It may have been sent, skipped, canceled by agent activity/settings, or reached its retry bound. Open **Recent activity** for the last 24 hours, or check the daemon log. |
 | Saved jobs are not checked after restart | Open Auto Resume or let a lifecycle event reconnect the Paseo API. |
 | Reservation canceled after changing account or model | Codex/Claude reservations are tied to the original identity. A subsequent detected limit stop can create a new one. |
 
