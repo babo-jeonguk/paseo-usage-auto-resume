@@ -4,6 +4,7 @@
 // is answered in-process, so no credential is used or sent.
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -100,22 +101,26 @@ test("Codex starts its app server through the launcher, reports its home and exi
   const env = { ...process.env, CODEX_HOME: join(home, ".codex") };
   const launch = cliLaunch("codex", ["app-server", "--stdio"], env);
   const child = spawn(launch.file, launch.args, { env, cwd: root, windowsVerbatimArguments: launch.windowsVerbatimArguments, stdio: ["pipe", "pipe", "ignore"] });
-  const reported = await new Promise<unknown>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("no initialize response")), 30_000);
-    let buffer = "";
-    child.on("error", reject);
-    child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
-      buffer += chunk;
-      for (let end; (end = buffer.indexOf("\n")) >= 0; buffer = buffer.slice(end + 1)) {
-        const frame = JSON.parse(buffer.slice(0, end));
-        if (frame.id === 1) { clearTimeout(timer); resolve(frame.result?.codexHome); }
-      }
+  try {
+    const reported = await new Promise<unknown>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("no initialize response")), 30_000);
+      let buffer = "";
+      child.on("error", reject);
+      child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+        buffer += chunk;
+        for (let end; (end = buffer.indexOf("\n")) >= 0; buffer = buffer.slice(end + 1)) {
+          const frame = JSON.parse(buffer.slice(0, end));
+          if (frame.id === 1) { clearTimeout(timer); resolve(frame.result?.codexHome); }
+        }
+      });
+      child.stdin.write(JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "usage_auto_resume_status", version: "1.0" } } }) + "\n");
     });
-    child.stdin.write(JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "usage_auto_resume_status", version: "1.0" } } }) + "\n");
-  });
-  assert.equal(String(reported).toLowerCase(), join(home, ".codex").toLowerCase());
-  child.stdin.end();
-  await stopProcessTree(child);
+    // Windows may spell the same directory with its short 8.3 name.
+    assert.equal(realpathSync.native(String(reported)), realpathSync.native(join(home, ".codex")));
+  } finally {
+    child.stdin.end();
+    await stopProcessTree(child);
+  }
   assert.equal(codexProcesses(), before, "no Codex server is left running");
 });
 
