@@ -1664,6 +1664,52 @@ test("a tick and Resume now on the same reservation send one continue", async ()
   assert.equal((await recorded()).length, 1);
 });
 
+test("Resume now that loses to a tick reports the continue as sending, or changed once it was sent", async () => {
+  for (const [name, expected] of [["mid-send", "sending"], ["already sent", "changed"]] as const) {
+    clock = START;
+    // The tick reads usage at once; Resume now, called with its own API handle, waits for the tick.
+    let releaseManual!: () => void;
+    const manualRead = new Promise<void>((resolve) => { releaseManual = resolve; });
+    let manualApi: ResumerApi | null = null;
+    const { api, sent, resumer } = await setup({ a1: { provider: "codex" } }, {
+      readSubscription: async (caller) => {
+        if (caller === manualApi) await manualRead;
+        return ready;
+      },
+    });
+    await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+    let releaseSend!: () => void;
+    const sendGate = new Promise<void>((resolve) => { releaseSend = resolve; });
+    const originalRef = api.agents.ref;
+    api.agents.ref = (id) => {
+      const handle = originalRef(id);
+      const send = handle.send;
+      return Object.assign(handle, {
+        send: async (text: string) => {
+          if (name === "mid-send") await sendGate;
+          await send(text);
+        },
+      });
+    };
+    clock = new Date(CODEX_DUE);
+
+    const before = (await recorded()).length;
+    manualApi = { ...api };
+    const manual = resumer.resumeNow(manualApi, "a1", CODEX_DUE);
+    const tick = resumer.tick();
+    if (name === "already sent") await tick;
+    else while ((await store.list())[0]?.state !== "sending") await new Promise((resolve) => setImmediate(resolve));
+    releaseManual();
+    assert.deepEqual(await manual, { result: expected }, name);
+    releaseSend();
+    await tick;
+
+    assert.equal(sent.length, 1, name);
+    assert.deepEqual((await recorded()).slice(before), ["a1 continued"], `${name}: the tick's send, recorded once`);
+    await store.update("a1", () => null);
+  }
+});
+
 test("Resume now sends an Antigravity continue before the notice's reset without reading usage", async () => {
   const usage = [{
     providerId: "antigravity", displayName: `Antigravity (${ANTIGRAVITY_EMAIL})`,
