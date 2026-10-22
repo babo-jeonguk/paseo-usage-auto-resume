@@ -96,6 +96,25 @@ type UsageHold =
   | { kind: "used_up"; renews: Date | null }
   | { kind: "unverified"; waiting: Waiting };
 
+/**
+ * When a held continue can go: the used-up window's renewal, or a reset the notice stated, which
+ * counts once the account is verified even while its usage is not. Null leaves only a check.
+ */
+function renewalFor(hold: UsageHold, stated: Date | null): Date | null {
+  switch (hold.kind) {
+    case "used_up":
+      return hold.renews;
+    case "unverified":
+      return hold.waiting === "auth" ? null : stated;
+    case "ready":
+      return stated;
+  }
+}
+
+/** What an attempt reports when the row is no longer the one it was given. */
+const staleResult = (row: ResumeJob | null | undefined): ResumeNowResult =>
+  row?.state === "sending" ? { result: "sending" } : { result: "changed" };
+
 function usageHold(check: SubscriptionCheck, at: Date): UsageHold {
   if (check.auth !== "subscription") return { kind: "unverified", waiting: "auth" };
   if (check.status === "limited") return { kind: "used_up", renews: exhaustedReset(check, at) };
@@ -338,15 +357,14 @@ export function createResumer(options: {
    */
   async function postpone(job: ResumeJob, check: SubscriptionCheck, at: Date): Promise<boolean> {
     const hold = usageHold(check, at);
-    // A stated reset is evidence once the account is verified, even while its usage is not.
     const stated = job.resetAt && Date.parse(job.resetAt) > at.getTime() ? new Date(job.resetAt) : null;
-    const held = hold.kind === "used_up" ? hold.renews : hold.kind === "unverified" && hold.waiting === "auth" ? null : stated;
-    if (hold.kind === "ready" && !held) return false;
+    const renewsAt = renewalFor(hold, stated);
+    if (hold.kind === "ready" && !renewsAt) return false;
     await store.update(job.agentId, (current) => current && isSameJob(current, job) && current.enabled ? {
-      ...current, resetAt: held ? minuteIso(held) : current.resetAt, dueAt: dueFor(held, at),
-      waiting: held ? undefined : hold.kind === "unverified" ? hold.waiting : "usage",
+      ...current, resetAt: renewsAt ? minuteIso(renewsAt) : current.resetAt, dueAt: dueFor(renewsAt, at),
+      waiting: renewsAt ? undefined : hold.kind === "unverified" ? hold.waiting : "usage",
       identity: current.identity ?? check.identity,
-      retries: held ? 0 : current.retries,
+      retries: renewsAt ? 0 : current.retries,
     } : undefined);
     return true;
   }
@@ -388,8 +406,8 @@ export function createResumer(options: {
     if (manual) {
       // Only the account's own usage holds a continue the user asked for; the notice may be outdated.
       const hold = usageHold(check, at);
-      if (hold.kind === "used_up") return { result: "held", until: hold.renews?.toISOString() ?? null };
-      if (hold.kind === "unverified") return { result: "held", waiting: hold.waiting, until: null };
+      if (hold.kind === "used_up") return { result: "used_up", until: hold.renews?.toISOString() ?? null };
+      if (hold.kind === "unverified") return { result: "unverified", waiting: hold.waiting };
     } else if (await postpone(job, check, at)) {
       return { result: "postponed" };
     }
@@ -400,14 +418,14 @@ export function createResumer(options: {
     if (!currentSettings) return { result: "unavailable" };
     if (!isProviderOn(job.provider, currentSettings)) return cancel({ ...providerOff(job.provider), title });
     // Assigned inside the callback, which TypeScript does not follow. The returned row cannot
-    // tell: one another attempt already claimed comes back unchanged, also as `sending`.
+    // tell: a row another attempt already claimed comes back unchanged, also as `sending`.
     let claimed = false as boolean;
     const latest = await store.update(job.agentId, (current) => {
       if (!current || !isSameJob(current, job) || (!manual && !current.enabled)) return undefined;
       claimed = true;
       return { ...current, identity: check.identity, waiting: undefined, state: "sending" };
     });
-    if (!claimed) return latest?.state === "sending" ? { result: "sending" } : { result: "changed" };
+    if (!claimed) return staleResult(latest);
     try {
       await api.agents.ref(job.agentId).send(CONTINUE_PROMPT);
     } catch (error) {
@@ -426,14 +444,9 @@ export function createResumer(options: {
   /** Sends the continue now if the agent and its usage allow it; `dueAt` pins the job the screen showed. */
   async function resumeNow(api: ResumerApi, agentId: string, dueAt: string): Promise<ResumeNowResult> {
     const job = (await store.list()).find((entry) => entry.agentId === agentId);
-    if (job?.state === "sending" && job.dueAt === dueAt) return { result: "sending" };
-    if (job?.state !== "pending" || job.dueAt !== dueAt) return { result: "changed" };
+    if (job?.state !== "pending" || job.dueAt !== dueAt) return staleResult(job?.dueAt === dueAt ? job : null);
     log(`resume now requested for ${agentId}`);
     return deliver(job, api, now(), "manual");
-  }
-
-  async function forgetTurnedOff(job: ResumeJob): Promise<void> {
-    await retire(job.agentId, (current) => isSameJob(current, job), providerOff(job.provider));
   }
 
   /** Turning a provider off also retires the reservations it already has. */
@@ -441,7 +454,8 @@ export function createResumer(options: {
     const settings = await readSettings();
     if (!settings) return;
     for (const job of await store.list()) {
-      if (job.state === "pending" && !isProviderOn(job.provider, settings)) await forgetTurnedOff(job);
+      if (job.state !== "pending" || isProviderOn(job.provider, settings)) continue;
+      await retire(job.agentId, (current) => isSameJob(current, job), providerOff(job.provider));
     }
   }
 

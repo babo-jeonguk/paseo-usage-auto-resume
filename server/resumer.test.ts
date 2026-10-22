@@ -1514,7 +1514,7 @@ test("Resume now is held while usage is used up, and leaves the reservation as i
     await resumer.setEnabled("a1", CODEX_DUE, false);
     const before = (await store.list())[0];
 
-    assert.deepEqual(await resumer.resumeNow(api, "a1", CODEX_DUE), { result: "held", until }, name);
+    assert.deepEqual(await resumer.resumeNow(api, "a1", CODEX_DUE), { result: "used_up", until }, name);
     assert.deepEqual(sent, [], name);
     assert.deepEqual((await store.list())[0], before, `${name}: time, switch and reset unchanged`);
     assert.deepEqual(await recorded(), [], `${name}: a hold is not a result`);
@@ -1529,9 +1529,9 @@ test("Resume now is held without changes when the account or its usage cannot be
   const before = (await store.list())[0];
 
   check = unknownCheck();
-  assert.deepEqual(await resumer.resumeNow(api, "a1", CODEX_DUE), { result: "held", waiting: "auth", until: null });
+  assert.deepEqual(await resumer.resumeNow(api, "a1", CODEX_DUE), { result: "unverified", waiting: "auth" });
   check = { auth: "subscription", status: "unknown", identity: "account-model" };
-  assert.deepEqual(await resumer.resumeNow(api, "a1", CODEX_DUE), { result: "held", waiting: "usage", until: null });
+  assert.deepEqual(await resumer.resumeNow(api, "a1", CODEX_DUE), { result: "unverified", waiting: "usage" });
   assert.deepEqual(sent, []);
   assert.deepEqual((await store.list())[0], before);
   assert.deepEqual(await recorded(), []);
