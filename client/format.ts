@@ -239,11 +239,9 @@ export function historySummary(entries: ReadonlyArray<Pick<HistoryEntry, "outcom
     .join(" · ");
 }
 
-/** The day under a past result's time: null today, "Yesterday", or a date before that. */
-export function historyDayLabel(iso: string, now: number): string | null {
-  const days = dayOffset(iso, now);
-  if (days === 0) return null;
-  return days === -1 ? "Yesterday" : new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+/** The date under every result's time, e.g. "Oct 22", since the list spans two days. */
+export function historyDateLabel(iso: string): string {
+  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
 /** The one bulk button: turns everything off while anything not already sending is on. */

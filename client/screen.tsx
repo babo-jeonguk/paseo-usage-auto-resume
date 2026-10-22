@@ -17,7 +17,7 @@ import {
   bulkAction,
   clockLabel,
   groupByDay,
-  historyDayLabel,
+  historyDateLabel,
   historyLabel,
   historySummary,
   placeLabel,
@@ -293,12 +293,11 @@ function JobRow(props: {
 /** Final results from the last 24 hours, collapsed until asked for. */
 function HistorySection(props: {
   query: UseQueryResult<HistoryRow[]>;
-  now: number;
   theme: Theme;
   styles: Styles;
   onOpen?: (agentId: string) => void;
 }) {
-  const { query, now, theme, styles, onOpen } = props;
+  const { query, theme, styles, onOpen } = props;
   const [open, setOpen] = useState(false);
   if (query.isPending) return null;
   if (query.isError) {
@@ -344,12 +343,11 @@ function HistorySection(props: {
         <View style={styles.card}>
           {entries.map((entry, index) => {
             const title = entry.title ?? "Untitled agent";
-            const day = historyDayLabel(entry.at, now);
             return (
               <View key={entry.id} style={[styles.historyRow, index > 0 ? styles.rowDivider : null]}>
                 <View style={styles.historyTime}>
                   <Text style={styles.historyClock}>{clockLabel(entry.at)}</Text>
-                  {day ? <Text style={styles.relative}>{day}</Text> : null}
+                  <Text style={styles.relative}>{historyDateLabel(entry.at)}</Text>
                 </View>
                 <View style={styles.rowBody}>
                   <Text style={styles.historyOutcome} numberOfLines={2}>
@@ -594,7 +592,7 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
     >
       {content}
       {query.isPending || query.isError ? null : (
-        <HistorySection query={history} now={now} theme={theme} styles={styles} onOpen={openAgent} />
+        <HistorySection query={history} theme={theme} styles={styles} onOpen={openAgent} />
       )}
     </ScrollView>
   );

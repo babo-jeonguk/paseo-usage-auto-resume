@@ -10,7 +10,7 @@ import {
   groupByDay,
   historyLabel,
   historySummary,
-  historyDayLabel,
+  historyDateLabel,
   placeLabel,
   providerHint,
   providerLabel,
@@ -207,8 +207,7 @@ test("the collapsed header counts results by kind", () => {
   assert.equal(historySummary([{ outcome: "canceled" }]), "1 canceled");
 });
 
-test("history names the day only when it was not today", () => {
-  assert.equal(historyDayLabel(new Date(2026, 9, 6, 0, 5).toISOString(), now), null);
-  assert.equal(historyDayLabel(new Date(2026, 9, 5, 23, 10).toISOString(), now), "Yesterday");
-  assert.equal(historyDayLabel(new Date(2026, 9, 3, 9, 0).toISOString(), now), "Oct 3");
+test("every history row is dated in local time", () => {
+  assert.equal(historyDateLabel(new Date(2026, 9, 6, 0, 5).toISOString()), "Oct 6");
+  assert.equal(historyDateLabel(new Date(2026, 9, 5, 23, 10).toISOString()), "Oct 5");
 });
