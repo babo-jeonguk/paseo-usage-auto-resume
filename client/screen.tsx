@@ -16,7 +16,7 @@ import {
 import {
   bulkAction,
   clockLabel,
-  DELAY_PRESETS,
+  delayChoices,
   groupByDay,
   historyDateLabel,
   historyLabel,
@@ -31,11 +31,10 @@ import {
 import { Toggle } from "./toggle";
 import { TimeEditor } from "./time-editor";
 import { notifyScheduleChanged } from "./schedule-changes";
+import { historyKey, jobsKey } from "./query-keys";
 
 type Theme = PluginScreenProps["theme"];
 
-/** The row's one delay; the composer offers all of them. */
-const BUMP = DELAY_PRESETS[0];
 
 /** Re-renders on a cadence so countdowns stay current without refetching. */
 function useNow(intervalMs: number): number {
@@ -204,6 +203,9 @@ function JobRow(props: {
   const tone = on ? theme.colors.foreground : theme.colors.foregroundMuted;
   const title = job.title ?? "Untitled agent";
   const place = placeLabel(job);
+  // The row offers only the first delay; the composer offers all of them.
+  const bump = delayChoices(job, now)[0]!;
+  const bumpOff = busy || !!bump.problem;
   const countdown = job.resetAt ? relativeLabel(job.dueAt, now) : `${relativeLabel(job.dueAt, now)} · reset unknown`;
   const status = busy ? "Continuing…" : on ? waitingLabel(job) ?? countdown : "Skipped";
   const resetSpoken = job.resetAt ? `limit resets at ${clockLabel(job.resetAt)}` : "reset time unknown, checks again";
@@ -257,13 +259,14 @@ function JobRow(props: {
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={`Continue ${title} 10 minutes later`}
-              accessibilityState={{ disabled: busy }}
-              disabled={busy}
+              accessibilityHint={bump.problem ?? undefined}
+              accessibilityState={{ disabled: bumpOff }}
+              disabled={bumpOff}
               hitSlop={6}
-              onPress={() => props.onReschedule(job, new Date(Date.parse(job.dueAt) + BUMP.ms).toISOString())}
-              style={({ pressed }) => [styles.pill, busy ? styles.disabled : null, pressed ? styles.pressed : null]}
+              onPress={() => props.onReschedule(job, bump.dueAt)}
+              style={({ pressed }) => [styles.pill, bumpOff ? styles.disabled : null, pressed ? styles.pressed : null]}
             >
-              <Text style={styles.pillText}>{BUMP.label}</Text>
+              <Text style={styles.pillText}>{bump.label}</Text>
             </Pressable>
             {onOpen ? (
               <Pressable
@@ -398,9 +401,9 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
   const toast = useToast();
   const now = useNow(15_000);
   const [editing, setEditing] = useState<string | null>(null);
-  const queryKey = useMemo(() => ["usage-auto-resume", "jobs", host.id], [host.id]);
+  const queryKey = useMemo(() => jobsKey(host.id), [host.id]);
 
-  const historyKey = useMemo(() => ["usage-auto-resume", "history", host.id], [host.id]);
+  const recentKey = useMemo(() => historyKey(host.id), [host.id]);
 
   const query = useQuery({
     queryKey,
@@ -408,7 +411,7 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
     refetchInterval: 30_000,
   });
   const history = useQuery({
-    queryKey: historyKey,
+    queryKey: recentKey,
     queryFn: async () => (await listHistory({})).entries,
     refetchInterval: 30_000,
   });
@@ -420,7 +423,7 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
   /** A change never records a result itself, but one may have come due meanwhile. */
   function settled() {
     notifyScheduleChanged();
-    void queryClient.invalidateQueries({ queryKey: historyKey });
+    void queryClient.invalidateQueries({ queryKey: recentKey });
     return queryClient.invalidateQueries({ queryKey });
   }
 

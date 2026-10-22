@@ -6,6 +6,7 @@ import { Text, View } from "react-native";
 import { listProvidersRpc, listScheduledRpc, type DiscoveredProvider } from "../shared/rpc";
 import { isProviderOn, providerSettings, ProviderSettingsSchema, USAGE_SOURCES } from "../shared/settings";
 import { providerHint, sortProviders } from "./format";
+import { jobsKey } from "./query-keys";
 
 type ReadySettings = Extract<SettingsState<typeof ProviderSettingsSchema>, { status: "ready" }>;
 
@@ -21,7 +22,7 @@ function ProviderSwitches({ settings, host, theme }: { settings: ReadySettings }
   });
   // Shares the Auto Resume screen's cache, so counts match the list there.
   const jobs = useQuery({
-    queryKey: ["usage-auto-resume", "jobs", host.id],
+    queryKey: jobsKey(host.id),
     queryFn: async () => (await listScheduled({})).jobs,
   });
   const pending = new Map<string, number>();
