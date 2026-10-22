@@ -238,7 +238,7 @@ for (const profile of profiles.filter(profile => profile.source !== "antigravity
   });
 }
 
-for (const limit of ["five", "week"] as const) test(`scenario codex/business/${limit}: untimed credit notice uses exact-model availability`, async (t) => {
+for (const limit of ["five", "week"] as const) test(`scenario codex/business/${limit}: untimed credit notice uses exact-model availability`, platformOptions(profiles[2]), async (t) => {
   const h = await scenario(t, profiles[2], limit);
   h.state.exactModel = true;
   await h.resumer.attach(h.api);
