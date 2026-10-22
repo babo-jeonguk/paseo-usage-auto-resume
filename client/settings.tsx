@@ -57,6 +57,12 @@ function ProviderSwitches({ settings, host, theme }: { settings: ReadySettings }
 
   return (
     <>
+      <View style={{ gap: 4, marginBottom: 8 }}>
+        <Text accessibilityRole="header" style={{ color: theme.colors.foreground, fontSize: 16, fontWeight: "600" }}>Automatic resume</Text>
+        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13, lineHeight: 19 }}>
+          Choose which providers continue after a usage limit. Turning one off cancels its pending reservations.
+        </Text>
+      </View>
       {USAGE_SOURCES.map((cli) => {
         const rows = sortProviders(providers.data.filter((provider) => provider.cli === cli));
         if (rows.length === 0) return null;
@@ -80,10 +86,6 @@ function ProviderSwitches({ settings, host, theme }: { settings: ReadySettings }
           </SettingsSection>
         );
       })}
-      <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13 }}>
-        Agents of a provider that is turned off are never scheduled, and its pending reservations are canceled.
-        Turning it back on does not restore them.
-      </Text>
     </>
   );
 }
