@@ -70,6 +70,8 @@ interface Outcome {
   outcome: HistoryOutcome;
   reason?: HistoryReason;
   detail?: string;
+  /** The conversation title when it is at hand, kept so a deleted agent still has a name. */
+  title?: string | null;
 }
 
 const canceled = (reason: HistoryReason, detail: string): Outcome => ({ outcome: "canceled", reason, detail });
@@ -142,8 +144,8 @@ export function createResumer(options: {
     if (!stop) {
       // The agent finished a turn on its own terms; nothing is waiting and retries start over.
       // A continue already sent is cleared without a second report.
-      await retire(agent.id, (current) => current.state === "pending", canceled("turn_finished", "a turn finished before the scheduled continue"));
-      await store.update(agent.id, () => null);
+      await retire(agent.id, (current) => current.state === "pending",
+        canceled("turn_finished", "a turn finished before the scheduled continue"), { clearOthers: true });
       return;
     }
     const snapshot = await loadAgent(api, agent.id);
@@ -166,8 +168,10 @@ export function createResumer(options: {
     // A notice supplies the schedule; only bind identity here, leaving usage until delivery.
     const check = await inspect(api, agent, source, at, launch, stated ? "identity" : "usage");
     if (check.auth === "api") {
+      // Only a reservation still waiting is canceled; a continue already sent was reported.
       launches.delete(agent.id);
-      await retire(agent.id, () => true, canceled("api_route", "authentication uses API billing"), titleOf(agent));
+      await retire(agent.id, (current) => current.state === "pending",
+        { ...canceled("api_route", "authentication uses API billing"), title: titleOf(agent) }, { clearOthers: true });
       return;
     }
     const plan: Plan = stated ? { kind: "reset", resetAt: stated } : planFor(check, at);
@@ -212,7 +216,7 @@ export function createResumer(options: {
       return job;
     });
     // Recorded outside the update so the job file is never held waiting on the history file.
-    if (gaveUp) await record(agent.id, agent.provider, gaveUp, titleOf(agent));
+    if (gaveUp) await record(agent.id, agent.provider, { ...gaveUp, title: titleOf(agent) });
   }
 
   async function timelineTail(api: ResumerApi, agentId: string): Promise<AgentTimelineItem[]> {
@@ -260,27 +264,29 @@ export function createResumer(options: {
   }
 
   /** Adds a final result to the history; a failed write is logged and never stops a resume. */
-  async function record(agentId: string, provider: string, outcome: Outcome, title?: string | null): Promise<void> {
-    await history.append({ agentId, provider, ...outcome, title: title ?? null })
+  async function record(agentId: string, provider: string, outcome: Outcome): Promise<void> {
+    await history.append({ agentId, provider, ...outcome, title: outcome.title ?? null })
       .catch((error) => console.error("[usage-auto-resume] could not record history", String(error)));
   }
 
   /**
    * Removes the agent's job when `matches` accepts the current row, then logs and records why.
-   * Returns whether this call removed it; a job that changed meanwhile is left alone and nothing
-   * is recorded.
+   * With `clearOthers`, a row `matches` rejects is removed in the same update without a report.
+   * Returns whether a matching job was removed; one that changed meanwhile is left alone, or only
+   * cleared, and nothing is recorded.
    */
-  async function retire(agentId: string, matches: (current: ResumeJob) => boolean, outcome: Outcome, title?: string | null): Promise<boolean> {
+  async function retire(agentId: string, matches: (current: ResumeJob) => boolean, outcome: Outcome, options: { clearOthers?: boolean } = {}): Promise<boolean> {
     // Assigned inside the callback, which TypeScript does not follow.
     let removed = null as ResumeJob | null;
     await store.update(agentId, (current) => {
-      if (!current || !matches(current)) return undefined;
+      if (!current) return undefined;
+      if (!matches(current)) return options.clearOthers ? null : undefined;
       removed = current;
       return null;
     });
     if (!removed) return false;
     log(outcome.outcome === "interrupted" ? `dropped interrupted continue for ${agentId}` : `${outcome.outcome} ${agentId}: ${outcome.detail}`);
-    await record(agentId, removed.provider, outcome, title);
+    await record(agentId, removed.provider, outcome);
     return true;
   }
 
@@ -292,8 +298,7 @@ export function createResumer(options: {
   /** An archived agent's reservation goes with it; a continue already sent is cleared quietly. */
   async function forget(agentId: string): Promise<void> {
     launches.delete(agentId);
-    await retire(agentId, (job) => job.state === "pending", canceled("archived", "agent was archived"));
-    await store.update(agentId, () => null);
+    await retire(agentId, (job) => job.state === "pending", canceled("archived", "agent was archived"), { clearOthers: true });
   }
 
   const isSameJob = (left: ResumeJob | null, right: ResumeJob) =>
@@ -314,23 +319,24 @@ export function createResumer(options: {
       return;
     }
     if (!job.enabled) {
-      await retire(job.agentId, same, { outcome: "skipped", detail: "turned off in Auto Resume" });
+      // Switching it back on just now keeps it; the next tick sends it.
+      await retire(job.agentId, (current) => same(current) && !current.enabled, { outcome: "skipped", detail: "turned off in Auto Resume" });
       return;
     }
     const agent = await loadAgent(api, job.agentId);
     const title = agent && titleOf(agent);
     const skip = skipReason(job, agent);
     if (skip) {
-      await retire(job.agentId, same, skip, title);
+      await retire(job.agentId, same, { ...skip, title });
       return;
     }
     const check = await inspect(api, agent!, source, at, launches.get(job.agentId) ?? job.launch);
     if (check.auth === "api") {
-      await retire(job.agentId, same, canceled("api_route", "authentication uses API billing"), title);
+      await retire(job.agentId, same, { ...canceled("api_route", "authentication uses API billing"), title });
       return;
     }
     if (job.identity && check.identity && job.identity !== check.identity) {
-      await retire(job.agentId, same, canceled("account_changed", "account or model changed"), title);
+      await retire(job.agentId, same, { ...canceled("account_changed", "account or model changed"), title });
       return;
     }
     // A used-up window, or a stated reset still ahead, holds the continue until it renews.
@@ -364,17 +370,17 @@ export function createResumer(options: {
     } catch (error) {
       await store.update(job.agentId, (current) => (current?.state === "sending" ? null : undefined));
       console.error(`[usage-auto-resume] could not continue ${job.agentId}`, String(error));
-      await record(job.agentId, job.provider, { outcome: "send_failed" }, title);
+      await record(job.agentId, job.provider, { outcome: "send_failed", title });
       return;
     }
     // The sent row stays until the agent's next turn ends, which clears it without a report.
     await store.update(job.agentId, (current) => (current?.state === "sending" ? { ...current, state: "sent" } : undefined));
     log(`continued ${job.agentId}`);
-    await record(job.agentId, job.provider, { outcome: "continued" }, title);
+    await record(job.agentId, job.provider, { outcome: "continued", title });
   }
 
   async function forgetTurnedOff(job: ResumeJob, title?: string | null): Promise<void> {
-    await retire(job.agentId, (current) => isSameJob(current, job), canceled("provider_off", `automatic resume is turned off for ${job.provider}`), title);
+    await retire(job.agentId, (current) => isSameJob(current, job), { ...canceled("provider_off", `automatic resume is turned off for ${job.provider}`), title });
   }
 
   /** Turning a provider off also retires the reservations it already has. */

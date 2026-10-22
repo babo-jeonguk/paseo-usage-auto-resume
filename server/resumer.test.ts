@@ -1404,3 +1404,41 @@ test("Business raw response goes through auth, exact-model reset, persisted rest
   await restarted.tick();
   assert.equal(sent.length, 1);
 });
+
+test("a continue already sent is cleared without a report when the next stop runs on API billing", async () => {
+  let auth: SubscriptionCheck["auth"] = "subscription";
+  const { api, resumer, sent } = await setup({ a1: { provider: "codex" } }, {
+    readSubscription: async () => auth === "api" ? { auth, status: "unknown" } : { auth, status: "ready", identity: "account-model" },
+  });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  advance(3 * 60 * MINUTE);
+  await resumer.tick();
+  assert.equal(sent.length, 1);
+  auth = "api";
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  assert.deepEqual(await store.list(), []);
+  assert.deepEqual(await recorded(), ["a1 continued"]);
+});
+
+test("a reservation switched back on while its skip is being decided is kept and sent", async () => {
+  let duringSettings: (() => Promise<void>) | undefined;
+  const { api, resumer, sent } = await setup({ a1: { provider: "codex" } }, {
+    readSettings: async () => {
+      const run = duringSettings;
+      duringSettings = undefined;
+      await run?.();
+      return DEFAULT_PROVIDER_SETTINGS;
+    },
+  });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  const dueAt = (await store.list())[0]!.dueAt;
+  await resumer.setEnabled("a1", dueAt, false);
+  advance(3 * 60 * MINUTE);
+  duringSettings = async () => { await resumer.setEnabled("a1", dueAt, true); };
+  await resumer.tick();
+  assert.deepEqual(await recorded(), [], "nothing was skipped");
+  assert.equal((await store.list())[0]?.enabled, true);
+  await resumer.tick();
+  assert.equal(sent.length, 1);
+  assert.deepEqual(await recorded(), ["a1 continued"]);
+});
