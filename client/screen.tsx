@@ -31,10 +31,9 @@ import {
 import { Toggle } from "./toggle";
 import { TimeEditor } from "./time-editor";
 import { notifyScheduleChanged } from "./schedule-changes";
-import { historyKey, jobsKey } from "./query-keys";
+import { historyQueryKey, jobsQueryKey } from "./query-keys";
 
 type Theme = PluginScreenProps["theme"];
-
 
 /** Re-renders on a cadence so countdowns stay current without refetching. */
 function useNow(intervalMs: number): number {
@@ -258,7 +257,7 @@ function JobRow(props: {
           <>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={`Continue ${title} 10 minutes later`}
+              accessibilityLabel={`${bump.spoken} for ${title}`}
               accessibilityHint={bump.problem ?? undefined}
               accessibilityState={{ disabled: bumpOff }}
               disabled={bumpOff}
@@ -401,9 +400,9 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
   const toast = useToast();
   const now = useNow(15_000);
   const [editing, setEditing] = useState<string | null>(null);
-  const queryKey = useMemo(() => jobsKey(host.id), [host.id]);
+  const queryKey = useMemo(() => jobsQueryKey(host.id), [host.id]);
 
-  const recentKey = useMemo(() => historyKey(host.id), [host.id]);
+  const historyKey = useMemo(() => historyQueryKey(host.id), [host.id]);
 
   const query = useQuery({
     queryKey,
@@ -411,7 +410,7 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
     refetchInterval: 30_000,
   });
   const history = useQuery({
-    queryKey: recentKey,
+    queryKey: historyKey,
     queryFn: async () => (await listHistory({})).entries,
     refetchInterval: 30_000,
   });
@@ -423,7 +422,7 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
   /** A change never records a result itself, but one may have come due meanwhile. */
   function settled() {
     notifyScheduleChanged();
-    void queryClient.invalidateQueries({ queryKey: recentKey });
+    void queryClient.invalidateQueries({ queryKey: historyKey });
     return queryClient.invalidateQueries({ queryKey });
   }
 

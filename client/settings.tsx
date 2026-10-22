@@ -6,7 +6,8 @@ import { Text, View } from "react-native";
 import { listProvidersRpc, listScheduledRpc, type DiscoveredProvider } from "../shared/rpc";
 import { isProviderOn, providerSettings, ProviderSettingsSchema, USAGE_SOURCES } from "../shared/settings";
 import { providerHint, sortProviders } from "./format";
-import { jobsKey } from "./query-keys";
+import { jobsQueryKey } from "./query-keys";
+import { headingText, mutedText } from "./text-styles";
 
 type ReadySettings = Extract<SettingsState<typeof ProviderSettingsSchema>, { status: "ready" }>;
 
@@ -22,7 +23,7 @@ function ProviderSwitches({ settings, host, theme }: { settings: ReadySettings }
   });
   // Shares the Auto Resume screen's cache, so counts match the list there.
   const jobs = useQuery({
-    queryKey: jobsKey(host.id),
+    queryKey: jobsQueryKey(host.id),
     queryFn: async () => (await listScheduled({})).jobs,
   });
   const pending = new Map<string, number>();
@@ -59,8 +60,8 @@ function ProviderSwitches({ settings, host, theme }: { settings: ReadySettings }
   return (
     <>
       <View style={{ gap: 4, marginBottom: 8 }}>
-        <Text accessibilityRole="header" style={{ color: theme.colors.foreground, fontSize: 16, fontWeight: "600" }}>Automatic resume</Text>
-        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13, lineHeight: 19 }}>
+        <Text accessibilityRole="header" style={headingText(theme.colors)}>Automatic resume</Text>
+        <Text style={mutedText(theme.colors)}>
           Choose which providers continue after a usage limit. Turning one off cancels its pending reservations.
         </Text>
       </View>

@@ -4,8 +4,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { listScheduledRpc, rescheduleRpc, resumeNowRpc, setEnabledRpc, type ScheduledJob } from "../shared/rpc";
-import { clockLabel, dayLabel, delayChoices, RESUME_NOW_UNFINISHED, refusalLabel, relativeLabel, resumeNowLabel, resumeNowTone, waitingLabel } from "./format";
-import { historyKey, jobsKey } from "./query-keys";
+import { clockLabel, dayLabel, delayChoices, RESUME_NOW_UNFINISHED, refusalLabel, relativeLabel, resumeNowToast, waitingLabel } from "./format";
+import { historyQueryKey, jobsQueryKey } from "./query-keys";
+import { bodyText, headingText, mutedText } from "./text-styles";
 import { notifyScheduleChanged } from "./schedule-changes";
 import { TimeEditor } from "./time-editor";
 import { Toggle } from "./toggle";
@@ -13,10 +14,13 @@ import { Toggle } from "./toggle";
 type Colors = PluginButtonContentProps["theme"]["colors"];
 
 const shape = { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 9, paddingHorizontal: 12, borderRadius: 6 } as const;
-const outlined = (colors: Colors, pressed: boolean, unavailable = false) => ({
-  ...shape, borderWidth: 1, borderColor: colors.border, opacity: unavailable ? 0.4 : 1, backgroundColor: pressed ? colors.surface2 : "transparent",
+/** Dims when unavailable and darkens while pressed, with or without a border around it. */
+const pressable = (colors: Colors, pressed: boolean, unavailable = false) => ({
+  opacity: unavailable ? 0.4 : 1, backgroundColor: pressed ? colors.surface2 : "transparent",
 });
-const bodyText = (colors: Colors) => ({ color: colors.foreground, fontSize: 14 });
+const outlined = (colors: Colors, pressed: boolean, unavailable = false) => ({
+  ...shape, borderWidth: 1, borderColor: colors.border, ...pressable(colors, pressed, unavailable),
+});
 
 export function ConversationControls(props: PluginButtonContentProps) {
   // Composer contributions are always agent-scoped.
@@ -30,7 +34,7 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
   const resumeNow = useRpc(resumeNowRpc);
   const queryClient = useQueryClient();
   const toast = useToast();
-  const queryKey = jobsKey(host.id);
+  const queryKey = jobsQueryKey(host.id);
   const query = useQuery({ queryKey, queryFn: async () => (await list({})).jobs, refetchInterval: 10_000 });
   const job = query.data?.find((entry) => entry.agentId === agentId);
   const [now, setNow] = useState(Date.now);
@@ -75,7 +79,8 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
       return resumeNow({ agentId, dueAt: shown.dueAt });
     },
     onSuccess: (result, shown) => {
-      toast.show(resumeNowLabel(result, Date.now()), { variant: resumeNowTone(result) });
+      const { message, tone } = resumeNowToast(result, Date.now());
+      toast.show(message, { variant: tone });
       if (result.result !== "sent") return;
       queryClient.setQueryData<ScheduledJob[]>(queryKey, (jobs) =>
         jobs?.filter((entry) => entry.agentId !== agentId || entry.dueAt !== shown.dueAt));
@@ -85,11 +90,11 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
     onError: () => toast.error(RESUME_NOW_UNFINISHED),
     onSettled: () => {
       notifyScheduleChanged();
-      return Promise.all([queryClient.invalidateQueries({ queryKey }), queryClient.invalidateQueries({ queryKey: historyKey(host.id) })]);
+      return Promise.all([queryClient.invalidateQueries({ queryKey }), queryClient.invalidateQueries({ queryKey: historyQueryKey(host.id) })]);
     },
   });
   const { colors } = theme;
-  const muted = { color: colors.foregroundMuted, fontSize: 13, lineHeight: 19 };
+  const muted = mutedText(colors);
   const text = bodyText(colors);
   const busy = action.isPending || resume.isPending || !!job?.sending;
   const disabled = busy || query.isError || query.isPending;
@@ -103,7 +108,7 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
   );
   return (
     <View testID={`resume-conversation-${agentId}`} style={{ padding: 16, gap: 16, width: "100%", maxWidth: 360 }}>
-      {!layout.compact ? <Text accessibilityRole="header" style={{ ...text, fontSize: 16, fontWeight: "600" }}>Auto Resume</Text> : null}
+      {!layout.compact ? <Text accessibilityRole="header" style={headingText(colors)}>Auto Resume</Text> : null}
       {query.isPending ? <ActivityIndicator color={colors.foregroundMuted} /> : query.isError ? <>
         <Text accessibilityRole="alert" style={muted}>Couldn’t load this reservation.</Text>
         {button("Refresh status", () => void query.refetch(), "RefreshCw", query.isFetching)}
@@ -121,8 +126,7 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
               <Pressable
                 accessibilityRole="button" accessibilityLabel="Change time" accessibilityState={{ disabled }}
                 disabled={disabled} hitSlop={6} onPress={() => setEditing(true)}
-                style={({ pressed }) => ({ width: 32, height: 32, borderRadius: 6, alignItems: "center", justifyContent: "center",
-                  opacity: disabled ? 0.4 : 1, backgroundColor: pressed ? colors.surface2 : "transparent" })}
+                style={({ pressed }) => ({ ...pressable(colors, pressed, disabled), width: 32, height: 32, borderRadius: 6, alignItems: "center", justifyContent: "center" })}
               >
                 <Icon name="Pencil" size={16} color={colors.foregroundMuted} />
               </Pressable>

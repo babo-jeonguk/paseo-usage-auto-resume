@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { HistoryReasonSchema, type DiscoveredProvider, type HistoryOutcome, type HistoryReason, type ScheduledJob } from "../shared/rpc";
+import { HistoryReasonSchema, type DiscoveredProvider, type HistoryOutcome, type HistoryReason, type ResumeNowResult, type ScheduledJob } from "../shared/rpc";
 import {
   bulkAction,
   composerLabel,
@@ -18,8 +18,7 @@ import {
   refusalLabel,
   relativeLabel,
   rescheduleProblem,
-  resumeNowLabel,
-  resumeNowTone,
+  resumeNowToast,
   sortProviders,
   summaryLabels,
   timeOnDay,
@@ -178,26 +177,20 @@ test("delay presets add to the reservation's time and are offered only within th
   assert.deepEqual(nearLimit.map((choice) => choice.problem), [null, null, "Pick a time within 7 days."]);
 });
 
-test("each Resume now result reads as one toast", () => {
-  assert.equal(resumeNowLabel({ result: "sent" }, now), "Continue sent");
-  assert.equal(resumeNowLabel({ result: "held", until: new Date(2026, 9, 6, 18, 53).toISOString() }, now), "Usage is still used up until 18:53");
-  assert.equal(resumeNowLabel({ result: "held", until: new Date(2026, 9, 9, 9, 0).toISOString() }, now), "Usage is still used up until Fri 09:00");
-  assert.equal(resumeNowLabel({ result: "held", until: null }, now), "Usage is still used up");
-  assert.equal(resumeNowLabel({ result: "held", waiting: "auth", until: null }, now), "Couldn’t verify the account. Check the CLI login.");
-  assert.equal(resumeNowLabel({ result: "held", waiting: "usage", until: null }, now), "Couldn’t verify usage. Try again shortly.");
-  assert.equal(resumeNowLabel({ result: "canceled", reason: "new_message" }, now), "Canceled · a newer message");
-  assert.equal(resumeNowLabel({ result: "send_failed" }, now), "Couldn’t send the continue");
-  assert.equal(resumeNowLabel({ result: "sending" }, now), "This agent is continuing now.");
-  assert.equal(resumeNowLabel({ result: "changed" }, now), "This schedule already ran or changed.");
-  assert.equal(resumeNowLabel({ result: "unavailable" }, now), "Auto Resume settings couldn’t be read.");
-});
-
-test("Resume now toasts warn on a block, inform on a result already reached, and fail only on errors", () => {
-  const tones = (["sent", "sending", "changed", "send_failed", "unavailable"] as const).map((result) => resumeNowTone({ result }));
-  assert.deepEqual(tones, ["success", "info", "info", "error", "error"]);
-  assert.equal(resumeNowTone({ result: "held", until: null }), "warning");
-  assert.equal(resumeNowTone({ result: "held", waiting: "auth", until: null }), "warning");
-  assert.equal(resumeNowTone({ result: "canceled", reason: "new_message" }), "warning");
+test("each Resume now result reads as one toast, colored by what it means", () => {
+  const toast = (result: ResumeNowResult) => { const { tone, message } = resumeNowToast(result, now); return `${tone}: ${message}`; };
+  assert.equal(toast({ result: "sent" }), "success: Continue sent");
+  assert.equal(toast({ result: "held", until: new Date(2026, 9, 6, 18, 53).toISOString() }), "warning: Usage is still used up until 18:53");
+  assert.equal(toast({ result: "held", until: new Date(2026, 9, 7, 9, 0).toISOString() }), "warning: Usage is still used up until Tmr 09:00");
+  assert.equal(toast({ result: "held", until: new Date(2026, 9, 9, 9, 0).toISOString() }), "warning: Usage is still used up until Fri 09:00");
+  assert.equal(toast({ result: "held", until: null }), "warning: Usage is still used up");
+  assert.equal(toast({ result: "held", waiting: "auth", until: null }), "warning: Couldn’t verify the account. Check the CLI login.");
+  assert.equal(toast({ result: "held", waiting: "usage", until: null }), "warning: Couldn’t verify usage. Try again shortly.");
+  assert.equal(toast({ result: "canceled", reason: "new_message" }), "warning: Canceled · a newer message");
+  assert.equal(toast({ result: "send_failed" }), "error: Couldn’t send the continue");
+  assert.equal(toast({ result: "sending" }), "info: This agent is continuing now.");
+  assert.equal(toast({ result: "changed" }), "info: This schedule already ran or changed.");
+  assert.equal(toast({ result: "unavailable" }), "error: Auto Resume settings couldn’t be read.");
 });
 
 test("one bulk button turns everything off while anything is on", () => {

@@ -1,4 +1,4 @@
-import type { DiscoveredProvider, HistoryEntry, HistoryOutcome, HistoryReason, RescheduleResult, ResumeNowResult, ScheduledJob } from "../shared/rpc";
+import type { DiscoveredProvider, HistoryEntry, HistoryOutcome, HistoryReason, RescheduleResult, ResumeNowResult, ScheduledJob, Waiting } from "../shared/rpc";
 import { MAX_ATTEMPTS, RETRY_DELAYS_MS, rescheduleWindow } from "../shared/schedule";
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -105,7 +105,12 @@ export function waitingLabel(job: ScheduledJob): string | null {
   }
 }
 
-const weekdayLabel = (iso: string) => new Date(iso).toLocaleDateString("en-US", { weekday: "short" });
+/** "Tmr" or a short weekday for a later day, as the pill writes them; null for today. */
+function shortDay(iso: string, now: number): string | null {
+  const offset = dayOffset(iso, now);
+  if (offset <= 0) return null;
+  return offset === 1 ? "Tmr" : new Date(iso).toLocaleDateString("en-US", { weekday: "short" });
+}
 
 /** Fits Paseo's narrow pill; the popover shows the full day and time. */
 export function composerLabel(job: ScheduledJob, now: number): string {
@@ -113,9 +118,7 @@ export function composerLabel(job: ScheduledJob, now: number): string {
   if (!job.enabled) return "Resume off";
   const time = clockLabel(job.dueAt);
   if (job.waiting) return `Check ${time}`;
-  const offset = dayOffset(job.dueAt, now);
-  const day = offset === 1 ? "Tmr" : offset > 1 ? weekdayLabel(job.dueAt) : "Resume";
-  return `${day} ${time}`;
+  return `${shortDay(job.dueAt, now) ?? "Resume"} ${time}`;
 }
 
 /** Where the agent lives: "Project · workspace", without repeating a name. */
@@ -254,46 +257,40 @@ function outcomeLabel(entry: Pick<HistoryEntry, "outcome" | "reason">): string {
 /** When Resume now got no result at all: the daemon may still have finished, and sent. */
 export const RESUME_NOW_UNFINISHED = "Resume now didn’t finish. Refresh to see whether the continue was sent.";
 
-/**
- * The toast's color: a block or a removed reservation warns, a result the user already has or a
- * stale screen informs, and only a send that failed or settings that could not be read are errors.
- */
-export function resumeNowTone(result: ResumeNowResult): "success" | "info" | "warning" | "error" {
-  switch (result.result) {
-    case "sent":
-      return "success";
-    case "sending":
-    case "changed":
-      return "info";
-    case "held":
-    case "canceled":
-      return "warning";
-    case "send_failed":
-    case "unavailable":
-      return "error";
-  }
+export interface ResumeNowToast {
+  message: string;
+  /**
+   * A block or a removed reservation warns, a result the user already has or a stale screen
+   * informs, and only a send that failed or settings that could not be read are errors.
+   */
+  tone: "success" | "info" | "warning" | "error";
 }
 
+const UNVERIFIED: Record<Waiting, string> = {
+  auth: "Couldn’t verify the account. Check the CLI login.",
+  usage: "Couldn’t verify usage. Try again shortly.",
+};
+
 /** The toast after Resume now. */
-export function resumeNowLabel(result: ResumeNowResult, now: number): string {
+export function resumeNowToast(result: ResumeNowResult, now: number): ResumeNowToast {
   switch (result.result) {
     case "sent":
-      return "Continue sent";
-    case "held":
-      if (result.waiting === "auth") return "Couldn’t verify the account. Check the CLI login.";
-      if (result.waiting === "usage") return "Couldn’t verify usage. Try again shortly.";
-      if (!result.until) return "Usage is still used up";
-      return `Usage is still used up until ${dayOffset(result.until, now) === 0 ? "" : `${weekdayLabel(result.until)} `}${clockLabel(result.until)}`;
+      return { tone: "success", message: "Continue sent" };
+    case "held": {
+      if (result.waiting) return { tone: "warning", message: UNVERIFIED[result.waiting] };
+      const until = result.until && [shortDay(result.until, now), clockLabel(result.until)].filter(Boolean).join(" ");
+      return { tone: "warning", message: until ? `Usage is still used up until ${until}` : "Usage is still used up" };
+    }
     case "canceled":
-      return outcomeLabel({ outcome: "canceled", reason: result.reason });
+      return { tone: "warning", message: outcomeLabel({ outcome: "canceled", reason: result.reason }) };
     case "send_failed":
-      return outcomeLabel({ outcome: "send_failed" });
+      return { tone: "error", message: outcomeLabel({ outcome: "send_failed" }) };
     case "sending":
-      return SENDING;
+      return { tone: "info", message: SENDING };
     case "changed":
-      return CHANGED;
+      return { tone: "info", message: CHANGED };
     case "unavailable":
-      return "Auto Resume settings couldn’t be read.";
+      return { tone: "error", message: "Auto Resume settings couldn’t be read." };
   }
 }
 
