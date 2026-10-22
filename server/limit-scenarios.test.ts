@@ -40,7 +40,7 @@ if (args.join(' ') === 'auth status --json') {
   const s = state(); log({command:'claude.auth.status'});
   process.stdout.write(JSON.stringify({loggedIn:!s.authFailure, authMethod:s.authFailure?null:s.api?'api_key':'claude.ai',
     apiProvider:s.api?'thirdParty':'firstParty', subscriptionType:s.plan,
-    email:'fixture@example.invalid', orgId:s.authFailure?null:s.orgId}));
+    email:'fixture@example.invalid', orgId:s.authFailure?null:s.orgId, configDirectory:process.env.CLAUDE_CONFIG_DIR}));
 } else if (args.join(' ') === 'app-server --stdio') {
   require('node:readline').createInterface({input:process.stdin}).on('line', line => {
     const m = JSON.parse(line); if (m.id === undefined) return;

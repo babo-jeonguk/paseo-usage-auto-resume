@@ -178,3 +178,14 @@ test("Codex's login is read from the home it reports, before the inferred one", 
     await rm(inferred, { recursive: true, force: true });
   }
 });
+
+test("Claude credentials are looked up where the CLI reports its configuration", async () => {
+  const seen: Array<string | undefined> = [];
+  const read = createSubscriptionReader({
+    run: async () => JSON.stringify({ loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty", subscriptionType: "max",
+      orgId: "org-a", email: "me@example.invalid", configDirectory: "C:\\Users\\me\\.claude" }),
+    readClaudeCredentials: async (_env, configDirectory) => { seen.push(configDirectory); return null; },
+  });
+  assert.equal((await read(api(), agent("claude", "claude-sonnet-4-6"), "claude", at)).auth, "unknown");
+  assert.deepEqual(seen, ["C:\\Users\\me\\.claude"]);
+});
