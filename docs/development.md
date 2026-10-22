@@ -10,7 +10,7 @@ npm run check
 paseo plugin install "$PWD"
 ```
 
-`npm run check` runs TypeScript checking and the Node test suite. After changing an installed directory plugin:
+`npm run check` runs TypeScript checking and the Node test suite. `npm run test:native` runs the account check against an installed CLI selected by `NATIVE_CLI=claude` or `NATIVE_CLI=codex`, using fixture logins in a temporary home; CI runs it on Linux and Windows for native and npm installs. After changing an installed directory plugin:
 
 ```bash
 paseo plugin reload usage-auto-resume
