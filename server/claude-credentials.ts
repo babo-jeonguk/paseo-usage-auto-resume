@@ -43,7 +43,8 @@ export function createClaudeCredentialReader(deps: {
   return async (env, configDirectory) => {
     // An explicitly empty secure-storage override selects the default store, even with
     // CLAUDE_CONFIG_DIR set. Never probe another profile's Keychain item or fallback file.
-    const directory = (env.CLAUDE_SECURESTORAGE_CONFIG_DIR ?? env.CLAUDE_CONFIG_DIR)?.normalize("NFC");
+    const override = env.CLAUDE_SECURESTORAGE_CONFIG_DIR ?? env.CLAUDE_CONFIG_DIR;
+    const directory = override?.normalize("NFC");
     if (platform === "darwin") {
       const service = SERVICE + (directory ? `-${createHash("sha256").update(directory).digest("hex").slice(0, 8)}` : "");
       let username: string;
@@ -56,9 +57,11 @@ export function createClaudeCredentialReader(deps: {
         } catch { /* Locked, denied or missing: try the same service's legacy lookup, then its file. */ }
       }
     }
-    // Without an override the CLI's own answer decides; Windows builds use the profile, not HOME.
-    const fallback = configDirectory?.normalize("NFC") || join(cliHome(env, platform), ".claude");
-    try { return credentials(await read(join(directory || fallback, ".credentials.json"))); }
+    // Any override decides, an empty one meaning the default store. Only without one does the
+    // CLI's reported directory decide; Windows builds default to the profile, not HOME.
+    const reported = override === undefined ? configDirectory?.normalize("NFC") : undefined;
+    const store = directory || reported || join(cliHome(env, platform), ".claude");
+    try { return credentials(await read(join(store, ".credentials.json"))); }
     catch { return null; }
   };
 }
