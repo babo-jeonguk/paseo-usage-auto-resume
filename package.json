@@ -1,7 +1,7 @@
 {
   "name": "usage-auto-resume",
   "private": true,
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Resume Codex, Claude, and Antigravity agents after their usage limits reset in Paseo",
   "license": "MIT",
   "repository": {
@@ -29,6 +29,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "tsx --test client/*.test.ts server/*.test.ts",
+    "test:native": "tsx --test server/native-cli.integration.ts",
     "check": "npm run typecheck && npm test"
   },
   "devDependencies": {

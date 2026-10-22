@@ -155,3 +155,26 @@ test("Antigravity follows the notice without probing agy, and its API routes sta
   assert.deepEqual(await read(api(), agent("antigravity", "gemini-pro"), "antigravity", at, captureLaunch({ env: {} })), { auth: "subscription", status: "ready" });
   assert.equal((await read(api(), agent("antigravity", "gemini-pro"), "antigravity", at, captureLaunch({ env: { GEMINI_API_KEY: "key" } }))).auth, "api");
 });
+
+test("Codex's login is read from the home it reports, before the inferred one", async () => {
+  const reported = await mkdtemp(join(tmpdir(), "resume-auth-"));
+  const inferred = await mkdtemp(join(tmpdir(), "resume-auth-"));
+  await writeFile(join(reported, "auth.json"), JSON.stringify({ auth_mode: "chatgpt", tokens: { access_token: "test-token", account_id: "business-workspace" } }));
+  await writeFile(join(inferred, "auth.json"), JSON.stringify({ auth_mode: "chatgpt", tokens: { access_token: "other-token", account_id: "other-workspace" } }));
+  try {
+    const tokens: string[] = [];
+    const read = createSubscriptionReader({
+      codex: async () => ({ account: { account: { type: "chatgpt" } }, config: { config: { model_provider: "openai" } }, home: reported }),
+      fetch: async (_url, options) => {
+        tokens.push((options?.headers as Record<string, string>).Authorization);
+        return response({ ...baseUsage, model_usage: { [model]: { available: true } } });
+      },
+    });
+    const check = await read(api(), agent("codex"), "codex", at, captureLaunch({ env: { CODEX_HOME: inferred } }));
+    assert.equal(check.status, "ready");
+    assert.deepEqual(tokens, ["Bearer test-token"]);
+  } finally {
+    await rm(reported, { recursive: true, force: true });
+    await rm(inferred, { recursive: true, force: true });
+  }
+});

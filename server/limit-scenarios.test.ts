@@ -30,9 +30,6 @@ const profiles = [
   { source: "antigravity", plan: "unverified", model: "gemini-pro" },
 ] as const;
 type Profile = { source: UsageSource; plan: string; model: string };
-const platformOptions = (profile: Profile) => ({
-  skip: profile.source !== "antigravity" && process.platform === "win32" ? "The native CLI fixture uses a POSIX executable script" : false,
-});
 
 const nativeCli = String.raw`
 const fs = require('node:fs');
@@ -65,8 +62,11 @@ async function scenario(t: TestContext, profile: Profile, limit: "five" | "week"
   t.after(() => rm(dir, { recursive: true, force: true }));
   const home = join(dir, "auth");
   await mkdir(home);
-  const cli = join(dir, "fixture-cli.cjs");
-  await writeFile(cli, `#!${process.execPath}\n${nativeCli}`, { mode: 0o700 });
+  const script = join(dir, "fixture-cli.cjs");
+  await writeFile(script, `#!${process.execPath}\n${nativeCli}`, { mode: 0o700 });
+  // Windows has no shebangs; there a .cmd shim starts the script, as npm installs a CLI.
+  const cli = process.platform === "win32" ? join(dir, "fixture-cli.cmd") : script;
+  if (cli !== script) await writeFile(cli, `@"${process.execPath}" "${script}" %*\r\n`);
   const stateFile = join(dir, "native-state.json"), callsFile = join(dir, "native-calls.jsonl");
   const credentialFile = join(home, source === "codex" ? "auth.json" : ".credentials.json");
   const state = { plan, accountId: "workspace-a", orgId: "org-a", api: false, authFailure: false,
@@ -175,7 +175,7 @@ async function scenario(t: TestContext, profile: Profile, limit: "five" | "week"
 }
 
 for (const profile of profiles.filter(profile => profile.source !== "antigravity")) {
-  for (const failed of ["auth", "usage"] as const) test(`scenario ${profile.source}/${profile.plan}: untimed notice waits after ${failed} failure`, platformOptions(profile), async (t) => {
+  for (const failed of ["auth", "usage"] as const) test(`scenario ${profile.source}/${profile.plan}: untimed notice waits after ${failed} failure`, async (t) => {
     const h = await scenario(t, profile, "five");
     h.state.authFailure = failed === "auth";
     h.state.outage = failed === "usage";
@@ -195,7 +195,7 @@ for (const profile of profiles.filter(profile => profile.source !== "antigravity
     assert.equal(h.sent.length, 1);
   });
 
-  test(`scenario ${profile.source}/${profile.plan}: API login creates no subscription reservation`, platformOptions(profile), async (t) => {
+  test(`scenario ${profile.source}/${profile.plan}: API login creates no subscription reservation`, async (t) => {
     const h = await scenario(t, profile, "five");
     h.state.api = true;
     await h.saveNative();
@@ -205,7 +205,7 @@ for (const profile of profiles.filter(profile => profile.source !== "antigravity
     assert.deepEqual(h.sent, []);
   });
 
-  test(`scenario ${profile.source}/${profile.plan}: account change cancels after restart despite the same email`, platformOptions(profile), async (t) => {
+  test(`scenario ${profile.source}/${profile.plan}: account change cancels after restart despite the same email`, async (t) => {
     const h = await scenario(t, profile, "five");
     await h.stop();
     assert.ok((await h.store.list())[0]?.identity);
@@ -220,7 +220,7 @@ for (const profile of profiles.filter(profile => profile.source !== "antigravity
     assert.deepEqual(await h.store.list(), []);
   });
 
-  test(`scenario ${profile.source}/${profile.plan}: a five-hour notice is postponed for an exhausted weekly window`, platformOptions(profile), async (t) => {
+  test(`scenario ${profile.source}/${profile.plan}: a five-hour notice is postponed for an exhausted weekly window`, async (t) => {
     const h = await scenario(t, profile, "five");
     await h.resumer.attach(h.api);
     await h.stop();
@@ -269,7 +269,7 @@ test("scenario antigravity: an untimed limit retries after 15/30/60 minutes and 
 });
 
 for (const profile of profiles) for (const limit of ["five", "week"] as const) {
-  test(`scenario ${profile.source}/${profile.plan}/${limit}: notice → durable schedule → verified recovery → one continue`, platformOptions(profile), async (t) => {
+  test(`scenario ${profile.source}/${profile.plan}/${limit}: notice → durable schedule → verified recovery → one continue`, async (t) => {
     const h = await scenario(t, profile, limit);
     await h.resumer.attach(h.api);
     await h.stop();
@@ -322,7 +322,7 @@ for (const profile of profiles) for (const limit of ["five", "week"] as const) {
 
 for (const profile of profiles) {
   for (const action of ["new-message", "running", "permission", "archive", "provider", "model", "provider-off", "resume-off"] as const) {
-    test(`scenario ${profile.source}/${profile.plan}: ${action} prevents a scheduled continue`, platformOptions(profile), async (t) => {
+    test(`scenario ${profile.source}/${profile.plan}: ${action} prevents a scheduled continue`, async (t) => {
       const h = await scenario(t, profile, "five");
       await h.resumer.attach(h.api);
       await h.stop();
@@ -345,7 +345,7 @@ for (const profile of profiles) {
     });
   }
 
-  test(`scenario ${profile.source}/${profile.plan}: switches and +10m editing survive restart`, platformOptions(profile), async (t) => {
+  test(`scenario ${profile.source}/${profile.plan}: switches and +10m editing survive restart`, async (t) => {
     const h = await scenario(t, profile, "week");
     await h.resumer.attach(h.api);
     await h.stop();
@@ -369,7 +369,7 @@ for (const profile of profiles) {
     assert.equal(h.sent.length, 1);
   });
 
-  test(`scenario ${profile.source}/${profile.plan}: recovers an unseen hidden-workspace stop`, platformOptions(profile), async (t) => {
+  test(`scenario ${profile.source}/${profile.plan}: recovers an unseen hidden-workspace stop`, async (t) => {
     const h = await scenario(t, profile, "five");
     h.state.hidden = true;
     h.markStopped();
