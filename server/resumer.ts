@@ -1,7 +1,7 @@
 import type { AgentTimelineItem, PaseoAgent, PaseoApi } from "./paseo-types";
 import type { PluginLifecycleEvents, PluginSessionOpenRequest } from "@getpaseo/plugin/server";
 import { detectLimitStop } from "./limit";
-import type { HistoryOutcome, HistoryReason, HistoryRow, RescheduleResult, ResumeNowResult, ScheduledJob } from "../shared/rpc";
+import type { HistoryOutcome, HistoryReason, HistoryRow, RescheduleResult, ResumeNowResult, ScheduledJob, Trigger, Waiting } from "../shared/rpc";
 import type { HistoryStore } from "./history";
 import type { JobStore, ResumeJob } from "./store";
 import { captureLaunch, createSubscriptionReader, subscriptionModel, unknownCheck, type LaunchContext, type SubscriptionCheck, type SubscriptionReader } from "./subscription";
@@ -73,7 +73,7 @@ interface Outcome {
   /** The conversation title when it is at hand, kept so a deleted agent still has a name. */
   title?: string | null;
   /** Set when Resume now started the attempt. */
-  trigger?: "manual";
+  trigger?: Trigger;
 }
 
 type Cancellation = Outcome & { outcome: "canceled"; reason: HistoryReason };
@@ -81,14 +81,27 @@ type Cancellation = Outcome & { outcome: "canceled"; reason: HistoryReason };
 const canceled = (reason: HistoryReason, detail: string): Cancellation => ({ outcome: "canceled", reason, detail });
 const providerOff = (provider: string) => canceled("provider_off", `automatic resume is turned off for ${provider}`);
 
-/** The tick's attempt at a due job, or Resume now's on the user's request. */
-type DeliverMode = "auto" | "manual";
+/** The tick's attempt at a due job, or one a trigger such as Resume now started. */
+type DeliverMode = "auto" | Trigger;
 
 /**
  * What one delivery attempt did. `skipped` (turned off at its time) and `postponed` (moved to
  * when its usage renews or can be checked again) belong to the tick alone.
  */
 type Delivery = ResumeNowResult | { result: "skipped" } | { result: "postponed" };
+
+/** What the account says about sending now, before the notice's stated reset is considered. */
+type UsageHold =
+  | { kind: "ready" }
+  | { kind: "used_up"; renews: Date | null }
+  | { kind: "unverified"; waiting: Waiting };
+
+function usageHold(check: SubscriptionCheck, at: Date): UsageHold {
+  if (check.auth !== "subscription") return { kind: "unverified", waiting: "auth" };
+  if (check.status === "limited") return { kind: "used_up", renews: exhaustedReset(check, at) };
+  if (check.status !== "ready") return { kind: "unverified", waiting: "usage" };
+  return { kind: "ready" };
+}
 
 /** Why a due job must not continue the agent, or null when it is safe to send. */
 function skipReason(job: ResumeJob, agent: PaseoAgent | null): Cancellation | null {
@@ -324,35 +337,34 @@ export function createResumer(options: {
    * auth or usage moves it to the next check. False when nothing holds it.
    */
   async function postpone(job: ResumeJob, check: SubscriptionCheck, at: Date): Promise<boolean> {
-    const held = check.auth !== "subscription" ? null
-      : check.status === "limited" ? exhaustedReset(check, at)
-      : job.resetAt && Date.parse(job.resetAt) > at.getTime() ? new Date(job.resetAt) : null;
-    if (check.auth === "subscription" && check.status === "ready" && !held) return false;
+    const hold = usageHold(check, at);
+    // A stated reset is evidence once the account is verified, even while its usage is not.
+    const stated = job.resetAt && Date.parse(job.resetAt) > at.getTime() ? new Date(job.resetAt) : null;
+    const held = hold.kind === "used_up" ? hold.renews : hold.kind === "unverified" && hold.waiting === "auth" ? null : stated;
+    if (hold.kind === "ready" && !held) return false;
     await store.update(job.agentId, (current) => current && isSameJob(current, job) && current.enabled ? {
       ...current, resetAt: held ? minuteIso(held) : current.resetAt, dueAt: dueFor(held, at),
-      waiting: held ? undefined : check.auth !== "subscription" ? "auth" : "usage",
+      waiting: held ? undefined : hold.kind === "unverified" ? hold.waiting : "usage",
       identity: current.identity ?? check.identity,
       retries: held ? 0 : current.retries,
     } : undefined);
     return true;
   }
 
-  /** The tick's attempt; the result only matters to someone waiting on it. */
-  async function fire(job: ResumeJob, api: ResumerApi, at: Date): Promise<void> {
-    await deliver(job, api, at, "auto");
-  }
-
   /**
-   * One delivery attempt: every safety and usage check, then the claim and the send. Manual mode
-   * runs the same checks, but sends a reservation that is turned off, ignores the reset the
-   * notice stated, and leaves the reservation as it was when the usage holds it.
+   * One delivery attempt: every safety and usage check, then the claim and the send. An attempt
+   * a trigger started runs the same checks with three differences: it sends a reservation that
+   * is turned off, ignores the reset the notice stated, and leaves the reservation as it was
+   * when the usage holds it. Only the tick skips or postpones.
    */
+  function deliver(job: ResumeJob, api: ResumerApi, at: Date, mode: "auto"): Promise<Delivery>;
+  function deliver(job: ResumeJob, api: ResumerApi, at: Date, mode: Trigger): Promise<ResumeNowResult>;
   async function deliver(job: ResumeJob, api: ResumerApi, at: Date, mode: DeliverMode): Promise<Delivery> {
-    const manual = mode === "manual";
-    const trigger = manual ? { trigger: "manual" as const } : {};
+    const trigger = mode === "auto" ? undefined : mode;
+    const manual = trigger !== undefined;
     const same = (current: ResumeJob) => isSameJob(current, job);
     const cancel = async (outcome: Cancellation): Promise<Delivery> =>
-      await retire(job.agentId, same, { ...outcome, ...trigger }) ? { result: "canceled", reason: outcome.reason } : { result: "changed" };
+      await retire(job.agentId, same, { ...outcome, trigger }) ? { result: "canceled", reason: outcome.reason } : { result: "changed" };
     const settings = await readSettings();
     if (!settings) return { result: "unavailable" };
     if (!isProviderOn(job.provider, settings)) return cancel(providerOff(job.provider));
@@ -374,9 +386,9 @@ export function createResumer(options: {
     }
     if (manual) {
       // Only the account's own usage holds a continue the user asked for; the notice may be outdated.
-      if (check.auth !== "subscription") return { result: "held", waiting: "auth", until: null };
-      if (check.status === "limited") return { result: "held", until: exhaustedReset(check, at)?.toISOString() ?? null };
-      if (check.status !== "ready") return { result: "held", waiting: "usage", until: null };
+      const hold = usageHold(check, at);
+      if (hold.kind === "used_up") return { result: "held", until: hold.renews?.toISOString() ?? null };
+      if (hold.kind === "unverified") return { result: "held", waiting: hold.waiting, until: null };
     } else if (await postpone(job, check, at)) {
       return { result: "postponed" };
     }
@@ -400,13 +412,13 @@ export function createResumer(options: {
     } catch (error) {
       await store.update(job.agentId, (current) => (current?.state === "sending" ? null : undefined));
       console.error(`[usage-auto-resume] could not continue ${job.agentId}`, String(error));
-      await record(job.agentId, job.provider, { outcome: "send_failed", title, ...trigger });
+      await record(job.agentId, job.provider, { outcome: "send_failed", title, trigger });
       return { result: "send_failed" };
     }
     // The sent row stays until the agent's next turn ends, which clears it without a report.
     await store.update(job.agentId, (current) => (current?.state === "sending" ? { ...current, state: "sent" } : undefined));
-    log(`continued ${job.agentId}${manual ? " on request" : ""}`);
-    await record(job.agentId, job.provider, { outcome: "continued", title, ...trigger });
+    log(`continued ${job.agentId}${trigger ? ` (${trigger})` : ""}`);
+    await record(job.agentId, job.provider, { outcome: "continued", title, trigger });
     return { result: "sent" };
   }
 
@@ -416,9 +428,7 @@ export function createResumer(options: {
     if (job?.state === "sending" && job.dueAt === dueAt) return { result: "sending" };
     if (job?.state !== "pending" || job.dueAt !== dueAt) return { result: "changed" };
     log(`resume now requested for ${agentId}`);
-    const delivery = await deliver(job, api, now(), "manual");
-    // Manual attempts neither skip nor postpone; this only narrows the type.
-    return delivery.result === "skipped" || delivery.result === "postponed" ? { result: "changed" } : delivery;
+    return deliver(job, api, now(), "manual");
   }
 
   async function forgetTurnedOff(job: ResumeJob): Promise<void> {
@@ -442,7 +452,7 @@ export function createResumer(options: {
       const at = now();
       for (const job of await store.list()) {
         if (job.state !== "pending" || Date.parse(job.dueAt) > at.getTime()) continue;
-        await fire(job, api, at).catch((error) =>
+        await deliver(job, api, at, "auto").catch((error) =>
           console.error(`[usage-auto-resume] resume check failed for ${job.agentId}`, String(error)),
         );
       }

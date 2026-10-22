@@ -1,6 +1,11 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
+/** The check a reservation waits on instead of a promised continue: the account, or its usage. */
+export const WaitingSchema = z.enum(["auth", "usage"]);
+
+export type Waiting = z.infer<typeof WaitingSchema>;
+
 export const ScheduledJobSchema = z.object({
   agentId: z.string(),
   provider: z.string(),
@@ -16,7 +21,7 @@ export const ScheduledJobSchema = z.object({
   /** The continue is being delivered right now. */
   sending: z.boolean(),
   /** This row's time is a status check, not a promised continue. */
-  waiting: z.enum(["auth", "usage"]).optional(),
+  waiting: WaitingSchema.optional(),
 });
 
 export type ScheduledJob = z.infer<typeof ScheduledJobSchema>;
@@ -94,6 +99,11 @@ export const HistoryReasonSchema = z.enum([
 
 export type HistoryReason = z.infer<typeof HistoryReasonSchema>;
 
+/** What started an attempt other than the tick; Resume now is the only one. */
+export const TriggerSchema = z.enum(["manual"]);
+
+export type Trigger = z.infer<typeof TriggerSchema>;
+
 export const ResumeNowResultSchema = z.discriminatedUnion("result", [
   /** The continue was sent. */
   z.object({ result: z.literal("sent") }),
@@ -101,7 +111,7 @@ export const ResumeNowResultSchema = z.discriminatedUnion("result", [
    * Not sent; the reservation is unchanged. `waiting` names the check that could not be verified;
    * without it the usage is used up, and `until` is when the used-up window renews, when known.
    */
-  z.object({ result: z.literal("held"), waiting: z.enum(["auth", "usage"]).optional(), until: z.string().nullable() }),
+  z.object({ result: z.literal("held"), waiting: WaitingSchema.optional(), until: z.string().nullable() }),
   /** A safety check, setting or account change removed the reservation, as an automatic continue would. */
   z.object({ result: z.literal("canceled"), reason: HistoryReasonSchema }),
   /** Sending threw; the reservation was removed. */
@@ -134,7 +144,7 @@ export const HistoryEntrySchema = z.object({
   /** The conversation title when recorded, so a deleted agent still has a name. */
   title: z.string().nullable(),
   /** What started the attempt; absent for automatic results and for entries older versions wrote. */
-  trigger: z.enum(["manual"]).optional(),
+  trigger: TriggerSchema.optional(),
 });
 
 export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
