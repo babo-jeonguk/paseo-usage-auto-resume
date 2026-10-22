@@ -10,7 +10,8 @@ export const HISTORY_WINDOW_MS = 24 * 3_600_000;
 /** The oldest results go first once there are more than this. */
 export const HISTORY_MAX_ENTRIES = 200;
 
-const FileSchema = z.object({ version: z.literal(1), entries: z.array(HistoryEntrySchema) });
+// Entries are checked one by one, so one a newer version wrote does not hide the rest.
+const FileSchema = z.object({ version: z.literal(1), entries: z.array(z.unknown()) });
 
 export type HistoryRecord = Omit<HistoryEntry, "id" | "at">;
 
@@ -36,6 +37,14 @@ export function createHistoryStore(options: { path?: string; now?: () => Date } 
     return next;
   };
 
+  // Each problem is reported once, not on every 30-second read until the next write.
+  const reported = new Set<string>();
+  const report = (problem: string, detail?: string) => {
+    if (reported.has(problem)) return;
+    reported.add(problem);
+    console.error(`[usage-auto-resume] ${problem}`, ...(detail ? [detail] : []));
+  };
+
   const recent = (entries: HistoryEntry[]) => {
     const since = now().getTime() - HISTORY_WINDOW_MS;
     return entries.filter((entry) => Date.parse(entry.at) >= since).slice(-HISTORY_MAX_ENTRIES);
@@ -44,12 +53,18 @@ export function createHistoryStore(options: { path?: string; now?: () => Date } 
   async function read(): Promise<HistoryEntry[]> {
     try {
       const parsed = FileSchema.safeParse(JSON.parse(await readFile(path, "utf8")));
-      if (parsed.success) return recent(parsed.data.entries);
-      console.error("[usage-auto-resume] history file failed validation; starting empty");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        console.error("[usage-auto-resume] could not read history file; starting empty", String(error));
+      if (!parsed.success) {
+        report("history file failed validation; starting empty");
+        return [];
       }
+      const entries = parsed.data.entries.flatMap((entry) => {
+        const checked = HistoryEntrySchema.safeParse(entry);
+        return checked.success ? [checked.data] : [];
+      });
+      if (entries.length < parsed.data.entries.length) report("skipped history entries this version does not recognize");
+      return recent(entries);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") report("could not read history file; starting empty", String(error));
     }
     return [];
   }

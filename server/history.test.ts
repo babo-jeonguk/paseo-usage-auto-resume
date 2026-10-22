@@ -89,3 +89,23 @@ test("results appended at the same time are all kept", async () => {
   await Promise.all(Array.from({ length: 20 }, (_, index) => history.append(entry(`a${index}`))));
   assert.equal((await history.list()).length, 20);
 });
+
+test("entries this version does not recognize are skipped without hiding the rest, and reported once", async () => {
+  const known = { id: "k", at: "2026-10-06T02:59:00.000Z", agentId: "a1", provider: "codex", outcome: "continued", title: null };
+  const newer = { ...known, id: "n", agentId: "a2", outcome: "canceled", reason: "overloaded" };
+  await writeFile(path, JSON.stringify({ version: 1, entries: [known, newer] }));
+  const errors: unknown[][] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => { errors.push(args); };
+  try {
+    const history = open();
+    assert.deepEqual((await history.list()).map((row) => row.agentId), ["a1"]);
+    await history.list();
+    await writeFile(path, "{ not json");
+    await history.list();
+    await history.list();
+  } finally {
+    console.error = original;
+  }
+  assert.equal(errors.length, 2, "one report per problem, not one per read");
+});
