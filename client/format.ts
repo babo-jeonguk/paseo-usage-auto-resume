@@ -1,4 +1,4 @@
-import type { DiscoveredProvider, HistoryEntry, HistoryOutcome, HistoryReason, RescheduleResult, ResumeNowResult, ScheduledJob, Waiting } from "../shared/rpc";
+import type { DiscoveredProvider, HistoryEntry, HistoryOutcome, HistoryReason, RescheduleResult, ResumeNowResult, ScheduledJob, SetNoteResult, Waiting } from "../shared/rpc";
 import { DEFAULT_CONTINUE_PROMPT } from "../shared/prompt";
 import { MAX_ATTEMPTS, RETRY_DELAYS_MS, rescheduleWindow } from "../shared/schedule";
 
@@ -349,7 +349,7 @@ export function notePreview(note: string, maxChars: number): string {
 }
 
 /** Why a note was not saved; the editor stays open with the text. */
-export function noteRefusal(reason: "changed" | "sending"): string {
+export function noteRefusal(reason: Extract<SetNoteResult, { changed: false }>["reason"]): string {
   return reason === "sending"
     ? "This reservation is being sent, so its extra instructions can’t change."
     : "This reservation changed. Review the time and save again.";

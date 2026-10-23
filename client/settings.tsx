@@ -10,7 +10,7 @@ import { isProviderOn, PROMPT_MAX_CHARS, providerSettings, ProviderSettingsSchem
 import { filled, outlined } from "./button-styles";
 import { charactersLeft, promptToSave, providerHint, sortProviders } from "./format";
 import { jobsQueryKey } from "./query-keys";
-import { accentText, bodyText, headingText, mutedText } from "./text-styles";
+import { accentText, bodyText, dangerText, headingText, inputText, mutedText } from "./text-styles";
 
 type ReadySettings = Extract<SettingsState<typeof ProviderSettingsSchema>, { status: "ready" }>;
 type ReadyResumeSettings = Extract<SettingsState<typeof ResumeSettingsSchema>, { status: "ready" }>;
@@ -107,13 +107,13 @@ function PromptEditor({ settings, theme }: { settings: ReadyResumeSettings; them
   const text = draft ?? saved ?? DEFAULT_CONTINUE_PROMPT;
   const next = promptToSave(text);
   const changed = next !== saved;
-  const store = (continuePrompt: string | null, message: string) =>
+  const savePrompt = (continuePrompt: string | null, message: string) =>
     void settings.save({ ...settings.values, continuePrompt }, settings.revision).then((ok) => {
       if (!ok) return;
       setDraft(null);
       toast.show(message, { variant: "success" });
     });
-  const reset = () => (saved === null ? setDraft(null) : store(null, "Continue prompt reset to default"));
+  const reset = () => (saved === null ? setDraft(null) : savePrompt(null, "Continue prompt reset to default"));
   const canSave = changed && !settings.saving;
   const canReset = (saved !== null || text !== DEFAULT_CONTINUE_PROMPT) && !settings.saving;
   const left = charactersLeft(text.length, PROMPT_MAX_CHARS);
@@ -131,11 +131,11 @@ function PromptEditor({ settings, theme }: { settings: ReadyResumeSettings; them
         placeholder="Empty sends the default prompt"
         placeholderTextColor={colors.foregroundMuted}
         textAlignVertical="top"
-        style={{ ...bodyText(colors), lineHeight: 20, minHeight: 184, maxHeight: 360, paddingVertical: 12, paddingHorizontal: 16 }}
+        style={{ ...inputText(colors), minHeight: 184, maxHeight: 360, paddingVertical: 12, paddingHorizontal: 16 }}
       />
       <View style={{ gap: 12, paddingVertical: 12, paddingHorizontal: 16 }}>
         <Text accessibilityLiveRegion="polite" style={mutedText(colors)}>{status}</Text>
-        {settings.saveError ? <Text accessibilityRole="alert" style={{ ...mutedText(colors), color: colors.statusDanger }}>{settings.saveError}</Text> : null}
+        {settings.saveError ? <Text accessibilityRole="alert" style={dangerText(colors)}>{settings.saveError}</Text> : null}
         <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", gap: 8 }}>
           {/* A conflict needs the latest revision; the typed text is kept as the draft. */}
           {settings.saveError ? (
@@ -154,7 +154,7 @@ function PromptEditor({ settings, theme }: { settings: ReadyResumeSettings; them
           </Pressable>
           <Pressable
             accessibilityRole="button" accessibilityLabel="Save" accessibilityState={{ disabled: !canSave, busy: settings.saving }}
-            disabled={!canSave} onPress={() => store(next, next === null ? "Continue prompt reset to default" : "Continue prompt saved")}
+            disabled={!canSave} onPress={() => savePrompt(next, next === null ? "Continue prompt reset to default" : "Continue prompt saved")}
             style={({ pressed }) => filled(colors, pressed, !canSave)}
           >
             {settings.saving ? <ActivityIndicator size="small" color={colors.accentForeground} /> : null}

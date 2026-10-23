@@ -10,7 +10,7 @@ const TICK_MS = 30_000;
 
 export default function contribute(server: PluginServerContext) {
   const settings = server.registerSettings(providerSettings);
-  const resume = server.registerSettings(resumeSettings);
+  const promptSettings = server.registerSettings(resumeSettings);
   // The tick reads these on every send; the same failure is reported once, not every time.
   let resumeError: string | null = null;
   const resumer = createResumer({
@@ -25,7 +25,7 @@ export default function contribute(server: PluginServerContext) {
     // Unlike the provider switches, unreadable values here never hold a resume: the built-in
     // prompt is a safe thing to send.
     readResumeSettings: async () => {
-      const current = await resume.read().catch((error: unknown) => ({ status: "invalid" as const, error: String(error) }));
+      const current = await promptSettings.read().catch((error: unknown) => ({ status: "invalid" as const, error: String(error) }));
       if (current.status === "ready") {
         resumeError = null;
         return current.values;

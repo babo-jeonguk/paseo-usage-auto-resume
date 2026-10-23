@@ -9,7 +9,9 @@ import { filled, outlined } from "./button-styles";
 import { charactersLeft, noteRefusal } from "./format";
 import { jobsQueryKey } from "./query-keys";
 import { notifyScheduleChanged } from "./schedule-changes";
-import { accentText, bodyText, mutedText } from "./text-styles";
+import { accentText, bodyText, dangerText, inputText, mutedText } from "./text-styles";
+
+type Theme = PluginSurfaceProps["theme"];
 
 /**
  * Writes the note sent after one reservation's continue. Saving never moves or switches the
@@ -18,7 +20,7 @@ import { accentText, bodyText, mutedText } from "./text-styles";
 export function NoteEditor(props: {
   job: ScheduledJob;
   hostId: string;
-  theme: PluginSurfaceProps["theme"];
+  theme: Theme;
   onClose(): void;
 }) {
   const { job, theme } = props;
@@ -91,12 +93,12 @@ export function NoteEditor(props: {
           if (event.nativeEvent.key === "Escape" && text === (job.note ?? "")) props.onClose();
         }}
         style={{
-          ...bodyText(colors), lineHeight: 20, minHeight: 112, maxHeight: 220,
+          ...inputText(colors), minHeight: 112, maxHeight: 220,
           borderWidth: 1, borderColor: colors.border, borderRadius: 6, paddingVertical: 8, paddingHorizontal: 10,
         }}
       />
       {problem ? (
-        <Text accessibilityRole="alert" style={{ ...mutedText(colors), color: colors.statusDanger }}>{problem}</Text>
+        <Text accessibilityRole="alert" style={dangerText(colors)}>{problem}</Text>
       ) : left ? (
         <Text accessibilityLiveRegion="polite" style={mutedText(colors)}>{left}</Text>
       ) : null}

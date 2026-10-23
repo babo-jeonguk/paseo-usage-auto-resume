@@ -1778,7 +1778,7 @@ test("prompt settings that cannot be read send the built-in prompt and hold noth
     await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
     clock = new Date(CODEX_DUE);
     await resumer.tick();
-    assert.deepEqual(sent, [{ agentId: "a1", text: continuePrompt({ custom: null }) }]);
+    assert.deepEqual(sent, [{ agentId: "a1", text: CONTINUE_PROMPT }]);
     assert.equal((await store.list())[0]?.state, "sent", "no claim is left behind");
     await store.update("a1", () => null);
   }
