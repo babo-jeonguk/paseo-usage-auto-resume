@@ -359,11 +359,11 @@ test("a message the user sends before the schedule cancels it as its turn starts
   assert.deepEqual(await recorded(), ["a1 canceled/new_message"]);
 });
 
-test("a turn the user did not start keeps the reservation, and a limit again leaves it as it was", async () => {
+test("a turn the user did not start keeps the reservation, and a limit again keeps what the user set", async () => {
   const { api, sent, resumer, agents } = await setup({ a1: { provider: "codex" } });
   await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
   const [first] = await store.list();
-  const dueAt = "2026-10-06T05:30:00.000Z";
+  const dueAt = "2026-10-06T06:00:00.000Z";
   await resumer.reschedule("a1", first!.dueAt, dueAt);
   await resumer.setEnabled("a1", dueAt, false);
   await resumer.setNote("a1", dueAt, "Rerun the failing test first.");
@@ -376,7 +376,21 @@ test("a turn the user did not start keeps the reservation, and a limit again lea
 
   agents.set("a1", { provider: "codex" });
   await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
-  assert.deepEqual(await store.list(), before, "time, switch and note kept");
+  assert.deepEqual(await store.list(), before, "the same reset changes nothing");
+
+  // "Try again in 2 hours" read half an hour later: a new reset, still before the user's time.
+  advance(30 * MINUTE);
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  let [job] = await store.list();
+  assert.equal(job?.resetAt, "2026-10-06T05:30:00.000Z");
+  assert.deepEqual([job?.dueAt, job?.enabled, job?.note], [dueAt, false, "Rerun the failing test first."]);
+
+  // A reset after the user's time moves it there, and the switch and note stay.
+  advance(3 * 60 * MINUTE);
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  [job] = await store.list();
+  assert.deepEqual([job?.dueAt, job?.enabled, job?.note], ["2026-10-06T08:32:00.000Z", false, "Rerun the failing test first."]);
+  assert.equal(job?.userChosenTime, undefined, "the time is the plan's again");
   assert.deepEqual(await recorded(), []);
 
   await resumer.onTurnStarted("a1", api);
@@ -384,6 +398,27 @@ test("a turn the user did not start keeps the reservation, and a limit again lea
   assert.deepEqual(await store.list(), []);
   assert.deepEqual(sent, []);
   assert.deepEqual(await recorded(), ["a1 canceled/turn_finished"]);
+});
+
+test("a snapshot read before a message was recorded never cancels the reservation that message made", async () => {
+  const { api, resumer, agents } = await setup({ a1: { provider: "codex", lastUserMessageAt: "2026-10-06T02:30:00.000Z" } });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  assert.equal((await store.list())[0]?.baseline, "2026-10-06T02:30:00.000Z");
+  agents.set("a1", { provider: "codex", lastUserMessageAt: "2026-10-06T02:00:00.000Z" });
+  await resumer.onTurnStarted("a1", api);
+  assert.equal((await store.list()).length, 1);
+  assert.deepEqual(await recorded(), []);
+});
+
+test("a turn the user stopped still cancels for a message recorded after it started", async () => {
+  const { api, resumer, agents } = await setup({ a1: { provider: "codex" } });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  await resumer.onTurnEnded(turnEnded("a1", "codex", { kind: "canceled", reason: "interrupted" }), api);
+  assert.equal((await store.list()).length, 1, "a stopped turn alone changes nothing");
+  agents.set("a1", { provider: "codex", lastUserMessageAt: "2026-10-06T03:30:00.000Z" });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", { kind: "canceled", reason: "interrupted" }), api);
+  assert.deepEqual(await store.list(), []);
+  assert.deepEqual(await recorded(), ["a1 canceled/new_message"]);
 });
 
 test("a due reservation waits while a turn the user did not start runs, without reading usage", async () => {
@@ -1141,7 +1176,7 @@ test("rescheduling moves only the due time and turns the job on", async () => {
   const result = await resumer.reschedule("a1", "2026-10-06T05:02:00.000Z", "2026-10-06T07:00:00.000Z");
 
   assert.deepEqual(result, { changed: true, dueAt: "2026-10-06T07:00:00.000Z" });
-  assert.deepEqual((await store.list())[0], { ...before, dueAt: "2026-10-06T07:00:00.000Z", enabled: true });
+  assert.deepEqual((await store.list())[0], { ...before, dueAt: "2026-10-06T07:00:00.000Z", enabled: true, userChosenTime: true });
   assert.deepEqual(await recorded(), [], "a time change is not a result");
 });
 
@@ -1938,6 +1973,21 @@ test("a postponed or re-planned reservation keeps its note", async () => {
   clock = new Date(replanned!.dueAt);
   await resumer.tick();
   assert.deepEqual(sent, [{ agentId: "m1", text: withNote(NOTE) }]);
+});
+
+test("a time the usage check postponed is the plan's, so a new stop replaces it", async () => {
+  const usage: FakeOptions["usage"] = [{
+    providerId: "claude", displayName: `Claude (${MAIN_EMAIL})`,
+    windows: [{ id: "seven_day", label: "Weekly", usedPct: 100, resetsAt: "2026-10-09T00:00:00.000Z" }],
+  }];
+  const { api, resumer } = await setup({ m1: { provider: "claude" } }, { usage });
+  await resumer.onTurnEnded(turnEnded("m1", "claude", { kind: "completed" }, claudeNotice(CLAUDE_LIMIT)), api);
+  await resumer.reschedule("m1", "2026-10-06T06:02:00.000Z", "2026-10-06T06:30:00.000Z");
+  clock = new Date("2026-10-06T06:30:00.000Z");
+  await resumer.tick();
+  assert.equal((await store.list())[0]?.dueAt, "2026-10-09T00:02:00.000Z");
+  await resumer.onTurnEnded(turnEnded("m1", "claude", { kind: "completed" }, claudeNotice("You've hit your limit · resets 9pm (Asia/Seoul)")), api);
+  assert.notEqual((await store.list())[0]?.dueAt, "2026-10-09T00:02:00.000Z");
 });
 
 test("a limit hit again after the note was sent makes a reservation without it", async () => {

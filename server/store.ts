@@ -31,6 +31,8 @@ const JobSchema = z.object({
    * dropped alone, so it never costs the file its reservations.
    */
   note: z.string().max(NOTE_MAX_CHARS).optional().catch(undefined),
+  /** The user chose `dueAt`; a new plan for the reservation keeps it while it is later. */
+  userChosenTime: z.literal(true).optional().catch(undefined),
 });
 
 export type ResumeJob = z.infer<typeof JobSchema>;
