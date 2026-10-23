@@ -42,7 +42,7 @@ Each row shows the time, countdown or verification status, conversation title, p
 
 - **Switch:** off skips this resume. Turn it back on before its time to restore it.
 - **+10m / time:** delay by ten minutes or select the time to enter another one. The editor explains the allowed range. Changing the time turns the reservation on.
-- **Note button:** add extra instructions for this continue. The note is sent once, below the continue prompt, and saving it leaves the time and switch as they are.
+- **Extra instructions:** tell the agent something more for this continue. They are sent once, below the continue prompt, and saving them leaves the time and switch as they are.
 - **Header switch:** turn the displayed reservations off or back on together. A resume already being sent is left alone.
 - **Open button:** go to the existing conversation.
 
@@ -50,7 +50,7 @@ For a verification wait, changing the time moves the next check.
 
 **Recent activity** below the list shows how reservations ended in the last 24 hours: continued, skipped, canceled and why, or gave up.
 
-Scheduled conversations also show an **Auto Resume** composer pill with their time or status. Select it to turn that reservation off or back on, delay it by 10 minutes, 30 minutes or an hour, change its time, or write its note without leaving the conversation. **Resume now** sends the continue right away when a limit lifted early; it runs the same checks first and is blocked while Codex or Claude usage is still used up. Off reservations keep their pill until their due time; reservations that run or are canceled lose it. The sidebar and conversation controls manage the same reservation.
+Scheduled conversations also show an **Auto Resume** composer pill with their time or status. Select it to turn that reservation off or back on, delay it by 10 minutes, 30 minutes or an hour, change its time, or add extra instructions without leaving the conversation. **Resume now** sends the continue right away when a limit lifted early; it runs the same checks first and is blocked while Codex or Claude usage is still used up. Off reservations keep their pill until their due time; reservations that run or are canceled lose it. The sidebar and conversation controls manage the same reservation.
 
 ## Choose providers
 
@@ -64,7 +64,7 @@ Below the providers, **Continue prompt** shows the text sent to the agent and le
 
 ## Data and operating limits
 
-The plugin reads agent state, recent limit notices, provider configuration and CLI credentials. Codex and Claude checks contact their providers' account/usage endpoints without model turns. Tokens are never saved in jobs or logged. Resume prompts and notes go through Paseo to the existing agent and its provider; reservations, notes and a custom prompt are stored locally, and a note is deleted once it is sent.
+The plugin reads agent state, recent limit notices, provider configuration and CLI credentials. Codex and Claude checks contact their providers' account/usage endpoints without model turns. Tokens are never saved in jobs or logged. Resume prompts and extra instructions go through Paseo to the existing agent and its provider. Reservations, extra instructions and a custom prompt are stored locally; extra instructions are deleted once sent.
 
 After a restart, checks resume once a lifecycle event or an app request supplies the Paseo API. A connected app does this through composer polling. Unreadable authentication or usage keeps Codex/Claude in verification wait. Subagent continuation depends on the parent agent's tools.
 

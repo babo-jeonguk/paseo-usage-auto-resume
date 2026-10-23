@@ -4,7 +4,7 @@ The Auto Resume sidebar screen groups reservations by day, showing time, status,
 
 Scheduled conversations also have an Auto Resume composer pill for managing that same reservation in place. Turn it off or back on before its due time, delay it by 10 minutes, 30 minutes or an hour, edit its time, or resume it now when a limit lifts early, from a desktop popover or mobile sheet. Resume now runs the same checks and is blocked while Codex or Claude usage is still used up.
 
-You can change what is sent. The plugin's settings show the continue prompt and let you replace it or reset it to the built-in one, which asks the agent to resume unfinished subagents. Each reservation can also carry a note, written from the sidebar or the composer pill. The note is added below the prompt and sent once with that continue.
+You can change what is sent. The plugin's settings show the continue prompt and let you replace it or reset it to the built-in one, which asks the agent to resume unfinished subagents. Each reservation can also carry extra instructions, written from the sidebar or the composer pill. They are added below the prompt and sent once with that continue.
 
 ## Setup
 
@@ -14,6 +14,6 @@ Claude on macOS waits because Keychain credentials are unsupported. API-key and 
 
 ## Data and limits
 
-The plugin reads agent state, recent notices, provider configuration and CLI credentials. Account/usage requests use OAuth tokens without refreshing them; tokens are never saved in jobs or logged. Reservations, notes and a custom continue prompt are stored locally; a note is deleted once sent, and notes are never logged. Resume prompts and notes reach the existing agent's provider through Paseo.
+The plugin reads agent state, recent notices, provider configuration and CLI credentials. Account/usage requests use OAuth tokens without refreshing them; tokens are never saved in jobs or logged. Reservations, extra instructions and a custom continue prompt are stored locally; extra instructions are deleted once sent and never logged. Resume prompts and extra instructions reach the existing agent's provider through Paseo.
 
 New messages, active turns, closed or archived agents and pending permissions cancel resumes. Unverified Codex/Claude authentication or usage waits. Reservations survive restarts; checks need a lifecycle event or Auto Resume request to reconnect the API. Subagent continuation depends on the parent's tools.
