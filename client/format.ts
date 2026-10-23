@@ -1,4 +1,5 @@
-import type { DiscoveredProvider, HistoryEntry, HistoryOutcome, HistoryReason, RescheduleResult, ResumeNowResult, ScheduledJob, Waiting } from "../shared/rpc";
+import type { DiscoveredProvider, HistoryEntry, HistoryOutcome, HistoryReason, RescheduleResult, ResumeNowResult, ScheduledJob, SetNoteResult, Waiting } from "../shared/rpc";
+import { DEFAULT_CONTINUE_PROMPT } from "../shared/prompt";
 import { MAX_ATTEMPTS, RETRY_DELAYS_MS, rescheduleWindow } from "../shared/schedule";
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -287,6 +288,8 @@ export function resumeNowToast(result: ResumeNowResult, now: number): ResumeNowT
       return { tone: "warning", message: outcomeLabel({ outcome: "canceled", reason: result.reason }) };
     case "send_failed":
       return { tone: "error", message: outcomeLabel({ outcome: "send_failed" }) };
+    case "busy":
+      return { tone: "info", message: "The agent is still working. Try again when it stops." };
     case "sending":
       return { tone: "info", message: SENDING };
     case "changed":
@@ -326,4 +329,30 @@ export function bulkAction(jobs: readonly ScheduledJob[]): { enabled: boolean; l
   return anyOn
     ? { enabled: false, label: "Turn all off", shortLabel: "All off" }
     : { enabled: true, label: "Turn all on", shortLabel: "All on" };
+}
+
+/** What Settings stores for the typed prompt: null, the built-in one, when it is empty or the same text. */
+export function promptToSave(text: string): string | null {
+  const trimmed = text.trim();
+  return trimmed && trimmed !== DEFAULT_CONTINUE_PROMPT ? trimmed : null;
+}
+
+/** "120 characters left" once a text is within a tenth of its limit; null before that. */
+export function charactersLeft(length: number, max: number): string | null {
+  const left = max - length;
+  if (left >= max / 10) return null;
+  return `${left} ${left === 1 ? "character" : "characters"} left`;
+}
+
+/** A note on one line, cut to `maxChars` with an ellipsis, for the composer and the list. */
+export function notePreview(note: string, maxChars: number): string {
+  const line = note.replace(/\s+/g, " ").trim();
+  return line.length > maxChars ? `${line.slice(0, maxChars - 1).trimEnd()}…` : line;
+}
+
+/** Why a note was not saved; the editor stays open with the text. */
+export function noteRefusal(reason: Extract<SetNoteResult, { changed: false }>["reason"]): string {
+  return reason === "sending"
+    ? "This reservation is being sent, so its extra instructions can’t change."
+    : "This reservation changed. Review the time and save again.";
 }

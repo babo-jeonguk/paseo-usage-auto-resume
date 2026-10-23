@@ -340,7 +340,8 @@ for (const profile of profiles) {
       h.setTime(h.reset + 2 * MINUTE);
       await h.resumer.tick();
       assert.deepEqual(h.sent, []);
-      assert.deepEqual(await h.store.list(), []);
+      // A running turn the user did not start holds the continue instead of canceling it.
+      assert.deepEqual(await h.store.list(), action === "running" ? [job] : []);
       assert.equal(h.usageReads(), 0, "agent/settings checks prevent unnecessary quota calls");
     });
   }

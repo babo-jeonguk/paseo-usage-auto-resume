@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { HistoryReasonSchema, type DiscoveredProvider, type HistoryOutcome, type HistoryReason, type ResumeNowResult, type ScheduledJob } from "../shared/rpc";
+import { DEFAULT_CONTINUE_PROMPT } from "../shared/prompt";
 import {
   bulkAction,
+  charactersLeft,
   composerLabel,
   dayChoices,
   dayLabel,
@@ -12,7 +14,10 @@ import {
   historyLabel,
   historySummary,
   historyDateLabel,
+  noteRefusal,
+  notePreview,
   placeLabel,
+  promptToSave,
   providerHint,
   providerLabel,
   refusalLabel,
@@ -188,6 +193,7 @@ test("each Resume now result reads as one toast, colored by what it means", () =
   assert.equal(toast({ result: "unverified", waiting: "usage" }), "warning: Couldn’t verify usage. Try again shortly.");
   assert.equal(toast({ result: "canceled", reason: "new_message" }), "warning: Canceled · a newer message");
   assert.equal(toast({ result: "send_failed" }), "error: Couldn’t send the continue");
+  assert.equal(toast({ result: "busy" }), "info: The agent is still working. Try again when it stops.");
   assert.equal(toast({ result: "sending" }), "info: This agent is continuing now.");
   assert.equal(toast({ result: "changed" }), "info: This schedule already ran or changed.");
   assert.equal(toast({ result: "unavailable" }), "error: Auto Resume settings couldn’t be read.");
@@ -245,4 +251,34 @@ test("the collapsed header counts results by kind", () => {
 test("every history row is dated in local time", () => {
   assert.equal(historyDateLabel(new Date(2026, 9, 6, 0, 5).toISOString()), "Oct 6");
   assert.equal(historyDateLabel(new Date(2026, 9, 5, 23, 10).toISOString()), "Oct 5");
+});
+
+test("an empty prompt or the built-in one is saved as the default", () => {
+  for (const text of ["", "  \n ", DEFAULT_CONTINUE_PROMPT, `\n${DEFAULT_CONTINUE_PROMPT}  `]) {
+    assert.equal(promptToSave(text), null, JSON.stringify(text.slice(0, 20)));
+  }
+  assert.equal(promptToSave("  Keep going.\n"), "Keep going.");
+  assert.equal(promptToSave(`${DEFAULT_CONTINUE_PROMPT} Run the tests.`), `${DEFAULT_CONTINUE_PROMPT} Run the tests.`);
+});
+
+test("the characters left show only near the limit", () => {
+  assert.equal(charactersLeft(0, 2000), null);
+  assert.equal(charactersLeft(1800, 2000), null);
+  assert.equal(charactersLeft(1801, 2000), "199 characters left");
+  assert.equal(charactersLeft(1999, 2000), "1 character left");
+  assert.equal(charactersLeft(2000, 2000), "0 characters left");
+  assert.equal(charactersLeft(3601, 4000), "399 characters left");
+});
+
+test("a note preview is one line, cut with an ellipsis", () => {
+  assert.equal(notePreview("Run the tests.", 40), "Run the tests.");
+  assert.equal(notePreview("  Run the tests.\n\n  Then push.  ", 40), "Run the tests. Then push.");
+  assert.equal(notePreview("Run the migration tests first", 12), "Run the mig…");
+  assert.equal(notePreview("Run the tests first", 9), "Run the…", "no space before the ellipsis");
+  assert.equal(notePreview("x".repeat(2000), 80).length, 80);
+});
+
+test("a refused note says why", () => {
+  assert.equal(noteRefusal("changed"), "This reservation changed. Review the time and save again.");
+  assert.match(noteRefusal("sending"), /being sent/);
 });

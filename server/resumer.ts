@@ -1,21 +1,17 @@
 import type { AgentTimelineItem, PaseoAgent, PaseoApi } from "./paseo-types";
 import type { PluginLifecycleEvents, PluginSessionOpenRequest } from "@getpaseo/plugin/server";
 import { detectLimitStop } from "./limit";
-import type { HistoryEntry, HistoryOutcome, HistoryReason, HistoryRow, RescheduleResult, ResumeNowResult, ScheduledJob, Waiting } from "../shared/rpc";
+import type { HistoryEntry, HistoryOutcome, HistoryReason, HistoryRow, RescheduleResult, ResumeNowResult, ScheduledJob, SetNoteResult, Waiting } from "../shared/rpc";
 import type { HistoryStore } from "./history";
 import type { JobStore, ResumeJob } from "./store";
 import { captureLaunch, createSubscriptionReader, subscriptionModel, unknownCheck, type LaunchContext, type SubscriptionCheck, type SubscriptionReader } from "./subscription";
 import { GRACE_MS, MAX_ATTEMPTS, MIN_DELAY_MS, RETRY_DELAYS_MS, rescheduleWindow } from "../shared/schedule";
-import { DEFAULT_PROVIDER_SETTINGS, isProviderOn, type ProviderSettings, type UsageSource } from "../shared/settings";
+import { DEFAULT_PROVIDER_SETTINGS, DEFAULT_RESUME_SETTINGS, isProviderOn, type ProviderSettings, type ResumeSettings, type UsageSource } from "../shared/settings";
 import { cliFor } from "./providers";
+import { continuePrompt, DEFAULT_CONTINUE_PROMPT } from "../shared/prompt";
 
-export const CONTINUE_PROMPT =
-  "The provider usage limit should now be reset. Continue the unfinished work from the previous turn. " +
-  "Review the latest conversation, workspace state, and subagent/task status before acting. " +
-  "Use the provider's existing subagent resume or messaging tools to continue each unfinished subagent that stopped because of the usage limit, " +
-  "using its existing agent ID/name and prior instructions. Tell it to continue from its saved progress. " +
-  "Do not duplicate completed work or interrupt running subagents, and honor any user cancellation or pause. " +
-  "If an existing subagent cannot be resumed, report that blocker instead of silently abandoning its unfinished task.";
+/** Kept for callers that compare against the built-in prompt; sends go through `continuePrompt`. */
+export const CONTINUE_PROMPT = DEFAULT_CONTINUE_PROMPT;
 
 const UNKNOWN_RECHECK_MS = 15 * 60_000;
 /** Startup scan looks at agents active this recently; older stops are left to the user. */
@@ -95,6 +91,7 @@ type Cancellation = Outcome & { outcome: "canceled"; reason: HistoryReason };
 
 const canceled = (reason: HistoryReason, detail: string): Cancellation => ({ outcome: "canceled", reason, detail });
 const providerOff = (provider: string) => canceled("provider_off", `automatic resume is turned off for ${provider}`);
+const NEW_MESSAGE = canceled("new_message", "a newer message reached the agent");
 
 /** The tick's attempt at a due job, or Resume now's on the user's request. */
 type DeliverMode = "auto" | "manual";
@@ -124,14 +121,28 @@ function renewalFor(hold: UsageHold, stated: Date | null): Date | null {
 const staleResult = (row: ResumeJob | null | undefined): ResumeNowResult =>
   row?.state === "sending" ? { result: "sending" } : { result: "changed" };
 
-/** Why a due job must not continue the agent, or null when it is safe to send. */
+/** A turn is in progress. */
+const inTurn = (agent: PaseoAgent) => !!agent.activeTurn || agent.status === "running";
+
+/**
+ * A message the user sent after the reservation was made. Only a later message counts: a snapshot
+ * read before a message was recorded must not cancel the reservation that message's stop made.
+ */
+const hasNewMessage = (agent: PaseoAgent, job: ResumeJob) =>
+  agent.lastUserMessageAt != null && (job.baseline === null || Date.parse(agent.lastUserMessageAt) > Date.parse(job.baseline));
+
+/**
+ * Why a due job must not continue the agent, or null when it is safe to send. A running turn is
+ * not a reason: one the user started also sent a newer message, and any other, such as a
+ * subagent's notification, only holds the continue until it ends.
+ */
 function skipReason(job: ResumeJob, agent: PaseoAgent | null): Cancellation | null {
   if (!agent) return canceled("agent_missing", "agent no longer exists");
   if (agent.archivedAt) return canceled("archived", "agent is archived");
   if (agent.provider !== job.provider) return canceled("provider_changed", `provider changed to ${agent.provider}`);
   if (job.model !== undefined && subscriptionModel(agent) !== job.model) return canceled("model_changed", "model changed");
-  if ((agent.lastUserMessageAt ?? null) !== job.baseline) return canceled("new_message", "a newer message reached the agent");
-  if (agent.activeTurn || (agent.status !== "idle" && agent.status !== "error")) {
+  if (hasNewMessage(agent, job)) return NEW_MESSAGE;
+  if (!inTurn(agent) && agent.status !== "idle" && agent.status !== "error") {
     return canceled("agent_busy", `agent is ${agent.status}`);
   }
   if (agent.pendingPermissions.length > 0 || agent.attentionReason === "permission") {
@@ -152,12 +163,15 @@ export function createResumer(options: {
   now?: () => Date;
   /** Null means unreadable settings: wait instead of enabling the public defaults. */
   readSettings?: () => Promise<ProviderSettings | null>;
+  /** What a continue says. Never holds a resume: anything unreadable sends the built-in prompt. */
+  readResumeSettings?: () => Promise<ResumeSettings>;
   readSubscription?: SubscriptionReader;
 }) {
   const { store } = options;
   const history: HistoryStore = options.history ?? { list: async () => [], append: async () => {} };
   const now = options.now ?? (() => new Date());
   const readSettings = options.readSettings ?? (async () => DEFAULT_PROVIDER_SETTINGS);
+  const readResumeSettings = options.readResumeSettings ?? (async () => DEFAULT_RESUME_SETTINGS);
   let paseo: ResumerApi | null = null;
   let ticking = false;
   const launches = new Map<string, LaunchContext>();
@@ -183,7 +197,8 @@ export function createResumer(options: {
 
   async function onTurnEnded(event: TurnEnded, api: ResumerApi): Promise<void> {
     const { agent } = event;
-    if (event.outcome.kind === "canceled") return;
+    // A turn the user stopped schedules nothing, but its message may have been recorded only now.
+    if (event.outcome.kind === "canceled") return checkForNewMessage(api, agent.id);
     const settings = await readSettings();
     const source = settings && (await resumableSource(api, agent.provider, settings));
     if (!source) return;
@@ -198,6 +213,9 @@ export function createResumer(options: {
     }
     const snapshot = await loadAgent(api, agent.id);
     if (!snapshot) return;
+    // A message the user sent since the reservation was made ends it, even if its turn's start
+    // came before the message was recorded; the stop just seen gets a reservation of its own.
+    await retireForNewMessage(snapshot);
     await schedule(api, snapshot, source, stop.resetAt, observedAt, { onlyIfNone: false });
   }
 
@@ -244,21 +262,28 @@ export function createResumer(options: {
         gaveUp = { outcome: "gave_up", reason: "retries", detail: `${retries} continues stopped again while its usage windows were not used up` };
         return null;
       }
+      const planned = plan.kind === "retry" ? new Date(at.getTime() + RETRY_DELAYS_MS[retries]!).toISOString()
+        : dueFor(plan.kind === "reset" ? plan.resetAt : null, at);
+      // A new plan for a reservation still waiting keeps what the user set: its switch, its note,
+      // and a time they chose that is later than the plan. One already sent starts over.
+      const kept = current?.state === "pending" ? current : null;
+      const keepTime = !!kept?.userChosenTime && Date.parse(kept.dueAt) > Date.parse(planned);
       const job: ResumeJob = {
         agentId: agent.id,
         provider: agent.provider,
         resetAt: key,
-        dueAt: plan.kind === "retry" ? new Date(at.getTime() + RETRY_DELAYS_MS[retries]!).toISOString()
-          : dueFor(plan.kind === "reset" ? plan.resetAt : null, at),
+        dueAt: keepTime ? kept!.dueAt : planned,
         baseline: agent.lastUserMessageAt ?? null,
         attempts,
         retries: plan.kind === "retry" ? retries + 1 : 0,
         state: "pending",
-        enabled: true,
+        enabled: kept?.enabled ?? true,
         waiting,
         identity: check.identity,
         model: subscriptionModel(agent),
         launch,
+        note: kept?.note,
+        userChosenTime: keepTime || undefined,
       };
       log(`scheduled ${agent.id} (${agent.provider}) for ${job.dueAt}; ${plan.kind === "retry" ? `retry ${job.retries} of ${RETRY_DELAYS_MS.length}` : `reset ${key ?? "unknown"}`}`);
       return job;
@@ -338,9 +363,24 @@ export function createResumer(options: {
     return true;
   }
 
-  /** A turn that starts while a job is pending was not started by this plugin. */
-  async function onTurnStarted(agentId: string): Promise<void> {
-    await retire(agentId, (job) => job.state === "pending", canceled("turn_started", "a turn started before the scheduled continue"));
+  /**
+   * A turn started by a message the user sent cancels the pending continue. Any other turn, such
+   * as a subagent's notification, leaves it for the turn's end to decide: a limit again plans the
+   * same reservation anew, keeping what the user set, and a turn that finishes clears it.
+   */
+  function onTurnStarted(agentId: string, api: ResumerApi): Promise<void> {
+    return checkForNewMessage(api, agentId);
+  }
+
+  /** Reads the agent only when it has a pending reservation that a message could cancel. */
+  async function checkForNewMessage(api: ResumerApi, agentId: string): Promise<void> {
+    if (!(await store.list()).some((job) => job.agentId === agentId && job.state === "pending")) return;
+    const agent = await loadAgent(api, agentId);
+    if (agent) await retireForNewMessage(agent);
+  }
+
+  async function retireForNewMessage(agent: PaseoAgent): Promise<void> {
+    await retire(agent.id, (job) => job.state === "pending" && hasNewMessage(agent, job), NEW_MESSAGE);
   }
 
   /** An archived agent's reservation goes with it; a continue already sent is cleared quietly. */
@@ -367,6 +407,7 @@ export function createResumer(options: {
       waiting: renewsAt ? undefined : hold.kind === "unverified" ? hold.waiting : "usage",
       identity: current.identity ?? check.identity,
       retries: renewsAt ? 0 : current.retries,
+      userChosenTime: undefined,
     } : undefined);
     return true;
   }
@@ -400,6 +441,8 @@ export function createResumer(options: {
     const title = agent && titleOf(agent);
     const skip = skipReason(job, agent);
     if (skip) return cancel({ ...skip, title });
+    // Waits for the turn to end, without reading usage; the tick tries again.
+    if (inTurn(agent!)) return { result: "busy" };
     const check = await inspect(api, agent!, source, at, launches.get(job.agentId) ?? job.launch);
     if (check.auth === "api") return cancel({ ...canceled("api_route", "authentication uses API billing"), title });
     if (job.identity && check.identity && job.identity !== check.identity) {
@@ -421,23 +464,31 @@ export function createResumer(options: {
     if (!isProviderOn(job.provider, currentSettings)) return cancel({ ...providerOff(job.provider), title });
     // Assigned inside the callback, which TypeScript does not follow. The returned row cannot
     // tell: a row another attempt already claimed comes back unchanged, also as `sending`.
+    // The note is taken from the claimed row, not `job`: one saved while the agent was being
+    // checked must go with it, and `isSameJob` ignores notes so that saving one never fails a claim.
     let claimed = false as boolean;
+    let note: string | undefined;
     const latest = await store.update(job.agentId, (current) => {
       if (!current || !isSameJob(current, job) || (!manual && !current.enabled)) return undefined;
       claimed = true;
+      note = current.note;
       return { ...current, identity: check.identity, waiting: undefined, state: "sending" };
     });
     if (!claimed) return staleResult(latest);
+    // Read once claimed, so a prompt saved while the agent was being checked is the one sent. A
+    // failure here must not leave the claim behind, so it falls back to the built-in prompt.
+    const { continuePrompt: custom } = await readResumeSettings().catch(() => DEFAULT_RESUME_SETTINGS);
     try {
-      await api.agents.ref(job.agentId).send(CONTINUE_PROMPT);
+      await api.agents.ref(job.agentId).send(continuePrompt({ custom, note }));
     } catch (error) {
       await store.update(job.agentId, (current) => (current?.state === "sending" ? null : undefined));
       console.error(`[usage-auto-resume] could not continue ${job.agentId}`, String(error));
       await record(job.agentId, job.provider, { outcome: "send_failed", title, trigger });
       return { result: "send_failed" };
     }
-    // The sent row stays until the agent's next turn ends, which clears it without a report.
-    await store.update(job.agentId, (current) => (current?.state === "sending" ? { ...current, state: "sent" } : undefined));
+    // The sent row stays until the agent's next turn ends, which clears it without a report. The
+    // note went with the continue, so the user's text is not kept any longer.
+    await store.update(job.agentId, (current) => (current?.state === "sending" ? { ...current, state: "sent", note: undefined } : undefined));
     log(`continued ${job.agentId}${manual ? " on request" : ""}`);
     await record(job.agentId, job.provider, { outcome: "continued", title, trigger });
     return { result: "sent" };
@@ -517,6 +568,7 @@ export function createResumer(options: {
           enabled: job.enabled,
           sending: job.state === "sending",
           waiting: job.waiting,
+          note: job.note,
         };
       }),
     );
@@ -572,6 +624,23 @@ export function createResumer(options: {
   }
 
   /**
+   * Saves or, when blank, removes the note sent with one pending job's continue. Its time and
+   * switch stay as they are; `dueAt` pins the job the screen showed. The log never has the text.
+   */
+  async function setNote(agentId: string, dueAt: string, note: string): Promise<SetNoteResult> {
+    const text = note.trim();
+    let result: SetNoteResult = { changed: false, reason: "changed" };
+    await store.update(agentId, (current) => {
+      if (current?.state === "sending" && current.dueAt === dueAt) result = { changed: false, reason: "sending" };
+      if (current?.state !== "pending" || current.dueAt !== dueAt) return undefined;
+      result = { changed: true };
+      log(`note ${text ? "updated" : "removed"} for ${agentId}`);
+      return { ...current, note: text || undefined };
+    });
+    return result;
+  }
+
+  /**
    * Moves one pending job to `newDueAt` and turns it on, like changing an alarm's time;
    * `dueAt` pins the job the screen showed.
    */
@@ -594,7 +663,7 @@ export function createResumer(options: {
       const next = target.toISOString();
       result = { changed: true, dueAt: next };
       log(`rescheduled ${agentId} for ${next} (was ${current.dueAt}${current.enabled ? "" : "; turned on"})`);
-      return { ...current, dueAt: next, enabled: true };
+      return { ...current, dueAt: next, enabled: true, userChosenTime: true };
     });
     return result;
   }
@@ -613,6 +682,7 @@ export function createResumer(options: {
     setEnabled,
     setAllEnabled,
     reschedule,
+    setNote,
     resumeNow,
     reconcileProviders,
   };

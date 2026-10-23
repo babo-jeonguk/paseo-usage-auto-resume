@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PaseoApi } from "./paseo-types";
 import { cliFor } from "./providers";
-import { DEFAULT_PROVIDER_SETTINGS, isProviderOn, providerSettings, ProviderSettingsSchema } from "../shared/settings";
+import { DEFAULT_PROVIDER_SETTINGS, DEFAULT_RESUME_SETTINGS, isProviderOn, PROMPT_MAX_CHARS, providerSettings, ProviderSettingsSchema, ResumeSettingsSchema } from "../shared/settings";
 
 type DaemonConfig = Awaited<ReturnType<PaseoApi["config"]["get"]>>["config"];
 
@@ -39,6 +39,19 @@ test("a damaged version 1 file or an unknown version stays unreadable", async ()
     await assert.rejects(async () => migrate(values, 1));
   }
   await assert.rejects(async () => migrate({}, 0));
+});
+
+test("the continue prompt is the built-in one until the user saves their own", () => {
+  assert.deepEqual(DEFAULT_RESUME_SETTINGS, { continuePrompt: null });
+  assert.deepEqual(ResumeSettingsSchema.parse({ continuePrompt: null }), { continuePrompt: null });
+});
+
+test("a saved prompt is trimmed, and a blank or overlong one cannot be stored", () => {
+  assert.deepEqual(ResumeSettingsSchema.parse({ continuePrompt: "  Keep going.\n" }), { continuePrompt: "Keep going." });
+  assert.equal(ResumeSettingsSchema.parse({ continuePrompt: "x".repeat(PROMPT_MAX_CHARS) }).continuePrompt?.length, PROMPT_MAX_CHARS);
+  for (const continuePrompt of ["", "   \n ", "x".repeat(PROMPT_MAX_CHARS + 1), 3]) {
+    assert.equal(ResumeSettingsSchema.safeParse({ continuePrompt }).success, false);
+  }
 });
 
 test("a provider's CLI is found by following extends to a supported built-in", () => {

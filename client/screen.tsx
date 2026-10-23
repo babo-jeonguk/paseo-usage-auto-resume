@@ -21,6 +21,7 @@ import {
   historyDateLabel,
   historyLabel,
   historySummary,
+  notePreview,
   placeLabel,
   providerLabel,
   refusalLabel,
@@ -31,6 +32,7 @@ import {
 } from "./format";
 import { Toggle } from "./toggle";
 import { TimeEditor } from "./time-editor";
+import { NoteEditor, type EditorKind } from "./note-editor";
 import { notifyScheduleChanged } from "./schedule-changes";
 import { historyQueryKey, jobsQueryKey } from "./query-keys";
 
@@ -100,6 +102,11 @@ function createStyles(theme: Theme, compact: boolean) {
     },
     relative: { color: colors.foregroundMuted, fontSize: 12, fontVariant: ["tabular-nums" as const] },
     title: { fontSize: 14, marginTop: 2 },
+    note: { color: colors.foregroundMuted, fontSize: 12, marginTop: 4 },
+    noteEditor: { marginTop: 12 },
+    titleLine: { flexDirection: "row" as const, alignItems: "center" as const, gap: 4 },
+    titleText: { flexShrink: 1 },
+    metaButton: { width: 28, height: 28, borderRadius: 6, alignItems: "center" as const, justifyContent: "center" as const },
     meta: {
       flexDirection: "row" as const,
       flexWrap: "wrap" as const,
@@ -188,11 +195,18 @@ function JobRow(props: {
   job: ScheduledJob;
   now: number;
   divided: boolean;
-  editing: boolean;
+  /** The editor open on this row; one at a time across the list. */
+  editing: EditorKind | null;
+  /**
+   * The editor open anywhere in the list. While a note is being written nothing else opens, so
+   * its text is never replaced; while a time is, no note opens.
+   */
+  openEditor: EditorKind | null;
   compact: boolean;
+  hostId: string;
   theme: Theme;
   styles: Styles;
-  onEdit(editing: boolean): void;
+  onEdit(editing: EditorKind | null): void;
   onReschedule(job: ScheduledJob, dueAt: string): void;
   onToggle(job: ScheduledJob, enabled: boolean): void;
   onOpen?: (agentId: string) => void;
@@ -200,6 +214,8 @@ function JobRow(props: {
   const { job, now, styles, theme, onOpen, editing } = props;
   const on = job.enabled;
   const busy = job.sending;
+  const timeLocked = busy || props.openEditor === "note";
+  const noteLocked = busy || props.openEditor !== null;
   const tone = on ? theme.colors.foreground : theme.colors.foregroundMuted;
   const title = job.title ?? "Untitled agent";
   const place = placeLabel(job);
@@ -209,39 +225,62 @@ function JobRow(props: {
   const countdown = job.resetAt ? relativeLabel(job.dueAt, now) : `${relativeLabel(job.dueAt, now)} · reset unknown`;
   const status = busy ? "Continuing…" : on ? waitingLabel(job) ?? countdown : "Skipped";
   const resetSpoken = job.resetAt ? `limit resets at ${clockLabel(job.resetAt)}` : "reset time unknown, checks again";
+  // Beside the other controls on wide layouts; on a phone it ends the title line instead, so
+  // the time and title keep the width they had.
+  const noteButton = (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={job.note ? `Edit extra instructions for ${title}` : `Add extra instructions for ${title}`}
+      accessibilityState={{ disabled: noteLocked }}
+      disabled={noteLocked}
+      hitSlop={4}
+      onPress={() => props.onEdit("note")}
+      style={({ pressed }) => [props.compact ? styles.metaButton : styles.iconButton, noteLocked ? styles.disabled : null, pressed ? styles.pressed : null]}
+    >
+      <Icon name="NotebookPen" size={props.compact ? 16 : 18} color={job.note ? theme.colors.accent : theme.colors.foregroundMuted} />
+    </Pressable>
+  );
 
   return (
     <View style={[styles.row, props.divided ? styles.rowDivider : null]}>
-      {editing ? (
+      {editing === "time" ? (
         <TimeEditor
           job={job}
           now={now}
           compact={props.compact}
           theme={theme}
           onSave={(dueAt) => props.onReschedule(job, dueAt)}
-          onCancel={() => props.onEdit(false)}
+          onCancel={() => props.onEdit(null)}
         />
       ) : null}
       <View style={styles.rowLine}>
         <View style={styles.rowBody}>
-          {editing ? null : (
+          {editing === "time" ? null : (
             <View style={styles.timeLine}>
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={`Change time for ${title}, now ${clockLabel(job.dueAt)}`}
-                accessibilityState={{ disabled: busy }}
-                disabled={busy}
+                accessibilityState={{ disabled: timeLocked }}
+                disabled={timeLocked}
                 hitSlop={8}
-                onPress={() => props.onEdit(true)}
+                onPress={() => props.onEdit("time")}
               >
-                <Text style={[styles.time, { color: tone }, busy ? null : styles.timeEditable]}>{clockLabel(job.dueAt)}</Text>
+                <Text style={[styles.time, { color: tone }, timeLocked ? null : styles.timeEditable]}>{clockLabel(job.dueAt)}</Text>
               </Pressable>
               <Text style={styles.relative}>{status}</Text>
             </View>
           )}
-          <Text style={[styles.title, { color: tone }]} numberOfLines={1}>
-            {title}
-          </Text>
+          <View style={styles.titleLine}>
+            <Text style={[styles.title, styles.titleText, { color: tone }]} numberOfLines={1}>
+              {title}
+            </Text>
+            {props.compact && editing === null ? noteButton : null}
+          </View>
+          {job.note && editing !== "note" ? (
+            <Text style={styles.note} numberOfLines={1}>
+              Extra Instructions : {notePreview(job.note, 120)}
+            </Text>
+          ) : null}
           <View style={styles.meta}>
             <View style={styles.chip}>
               <Text style={styles.chipText}>{providerLabel(job.provider)}</Text>
@@ -268,6 +307,7 @@ function JobRow(props: {
             >
               <Text style={styles.pillText}>{bump.label}</Text>
             </Pressable>
+            {props.compact ? null : noteButton}
             {onOpen ? (
               <Pressable
                 accessibilityRole="button"
@@ -291,6 +331,12 @@ function JobRow(props: {
           </>
         )}
       </View>
+      {/* Below the time and title, which stay in view so a refused save can be checked against them. */}
+      {editing === "note" ? (
+        <View style={styles.noteEditor}>
+          <NoteEditor job={job} hostId={props.hostId} theme={theme} onClose={() => props.onEdit(null)} />
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -400,7 +446,7 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
   const queryClient = useQueryClient();
   const toast = useToast();
   const now = useNow(15_000);
-  const [editing, setEditing] = useState<string | null>(null);
+  const [editing, setEditing] = useState<{ agentId: string; kind: EditorKind } | null>(null);
   const queryKey = useMemo(() => jobsQueryKey(host.id), [host.id]);
 
   const historyKey = useMemo(() => historyQueryKey(host.id), [host.id]);
@@ -462,7 +508,8 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
       if (!result.changed) throw new Error(refusalLabel(input.job, result));
     },
     onMutate: ({ job, dueAt }) => {
-      setEditing(null);
+      // A note being written elsewhere in the list stays open with its text.
+      setEditing((current) => (current?.kind === "time" ? null : current));
       return optimistic((jobs) =>
         byDueAt(jobs.map((entry) => (entry.agentId === job.agentId ? { ...entry, dueAt, enabled: true } : entry))),
       );
@@ -492,6 +539,14 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
 
   const openAgent = navigation ? (agentId: string) => navigation.openAgent({ agentId }) : undefined;
   const jobs = query.data ?? [];
+  // The editor open in the list, if its row is still there; a time editor closes when its continue
+  // starts, while a note editor stays so its text is not lost.
+  const editingJob = editing ? jobs.find((job) => job.agentId === editing.agentId) : undefined;
+  const openEditor = editing && editingJob && (editing.kind === "note" || !editingJob.sending) ? editing.kind : null;
+  // An editor whose row has gone must neither keep the other rows locked nor open on a later reservation.
+  useEffect(() => {
+    if (editing && !openEditor) setEditing(null);
+  }, [editing, openEditor]);
   const summary = summaryLabels(jobs);
   const bulk = bulkAction(jobs);
 
@@ -565,11 +620,13 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
                   job={job}
                   now={now}
                   divided={index > 0}
-                  editing={editing === job.agentId && !job.sending}
+                  editing={editing?.agentId === job.agentId ? openEditor : null}
+                  openEditor={openEditor}
                   compact={layout.compact}
+                  hostId={host.id}
                   theme={theme}
                   styles={styles}
-                  onEdit={(start) => setEditing(start ? job.agentId : null)}
+                  onEdit={(kind) => setEditing(kind ? { agentId: job.agentId, kind } : null)}
                   onOpen={openAgent}
                   onReschedule={(target, dueAt) => move.mutate({ job: target, dueAt })}
                   onToggle={(target, enabled) => toggle.mutate({ job: target, enabled })}

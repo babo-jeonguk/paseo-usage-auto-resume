@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
+import { NOTE_MAX_CHARS } from "../shared/prompt";
 
 const JobSchema = z.object({
   agentId: z.string(),
@@ -25,6 +26,13 @@ const JobSchema = z.object({
   /** Pin the selected model even when account verification is initially unavailable. */
   model: z.string().optional(),
   launch: z.object({ env: z.record(z.string(), z.string()), authEnv: z.record(z.string(), z.boolean()) }).optional(),
+  /**
+   * The user's extra instruction for this continue; sent once, then dropped. A damaged one is
+   * dropped alone, so it never costs the file its reservations.
+   */
+  note: z.string().max(NOTE_MAX_CHARS).optional().catch(undefined),
+  /** The user chose `dueAt`; a new plan for the reservation keeps it while it is later. */
+  userChosenTime: z.literal(true).optional().catch(undefined),
 });
 
 export type ResumeJob = z.infer<typeof JobSchema>;
