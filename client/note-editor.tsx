@@ -29,6 +29,8 @@ export function NoteEditor(props: {
   const queryClient = useQueryClient();
   const toast = useToast();
   const queryKey = jobsQueryKey(props.hostId);
+  // What the editor opened on, which Escape checks for typing. Save compares with the saved note
+  // instead, which another surface may have changed meanwhile.
   const [initial] = useState(job.note ?? "");
   const [text, setText] = useState(initial);
   // The reservation the user saw. A refusal moves it to the latest one, which the screen then
@@ -89,9 +91,10 @@ export function NoteEditor(props: {
         placeholder="Extra instructions sent after the continue prompt"
         placeholderTextColor={colors.foregroundMuted}
         textAlignVertical="top"
-        // Escape closes only an untouched editor; typed text leaves through Cancel.
+        // Escape closes only an untouched editor; typed text leaves through Cancel. Like Cancel, it
+        // waits for a save in flight, whose result closes whichever editor is open by then.
         onKeyPress={(event) => {
-          if (event.nativeEvent.key === "Escape" && text.trim() === initial) props.onClose();
+          if (event.nativeEvent.key === "Escape" && !busy && text.trim() === initial) props.onClose();
         }}
         style={{
           ...inputText(colors), minHeight: 112, maxHeight: 220,
