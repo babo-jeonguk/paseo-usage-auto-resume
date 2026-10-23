@@ -1,6 +1,11 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
+/** The check a reservation waits on instead of a promised continue: the account, or its usage. */
+export const WaitingSchema = z.enum(["auth", "usage"]);
+
+export type Waiting = z.infer<typeof WaitingSchema>;
+
 export const ScheduledJobSchema = z.object({
   agentId: z.string(),
   provider: z.string(),
@@ -16,7 +21,7 @@ export const ScheduledJobSchema = z.object({
   /** The continue is being delivered right now. */
   sending: z.boolean(),
   /** This row's time is a status check, not a promised continue. */
-  waiting: z.enum(["auth", "usage"]).optional(),
+  waiting: WaitingSchema.optional(),
 });
 
 export type ScheduledJob = z.infer<typeof ScheduledJobSchema>;
@@ -94,6 +99,34 @@ export const HistoryReasonSchema = z.enum([
 
 export type HistoryReason = z.infer<typeof HistoryReasonSchema>;
 
+export const ResumeNowResultSchema = z.discriminatedUnion("result", [
+  /** The continue was sent. */
+  z.object({ result: z.literal("sent") }),
+  /** Not sent, the reservation unchanged: usage is used up until `until`, when that is known. */
+  z.object({ result: z.literal("used_up"), until: z.string().nullable() }),
+  /** Not sent, the reservation unchanged: the account or its usage could not be verified. */
+  z.object({ result: z.literal("unverified"), waiting: WaitingSchema }),
+  /** A safety check, setting or account change removed the reservation, as an automatic continue would. */
+  z.object({ result: z.literal("canceled"), reason: HistoryReasonSchema }),
+  /** Sending threw; the reservation was removed. */
+  z.object({ result: z.literal("send_failed") }),
+  /** Already being sent. */
+  z.object({ result: z.literal("sending") }),
+  /** Already ran, was canceled, or moved since it was shown. */
+  z.object({ result: z.literal("changed") }),
+  /** Settings could not be read, so nothing was checked or sent. */
+  z.object({ result: z.literal("unavailable") }),
+]);
+
+export type ResumeNowResult = z.infer<typeof ResumeNowResultSchema>;
+
+export const resumeNowRpc = defineRpc({
+  name: "auto-resume.resume-now",
+  /** `dueAt` is the time the screen showed. */
+  input: z.object({ agentId: z.string(), dueAt: z.string() }),
+  output: ResumeNowResultSchema,
+});
+
 export const HistoryEntrySchema = z.object({
   id: z.string(),
   /** When the result was recorded. */
@@ -104,6 +137,8 @@ export const HistoryEntrySchema = z.object({
   reason: HistoryReasonSchema.optional(),
   /** The conversation title when recorded, so a deleted agent still has a name. */
   title: z.string().nullable(),
+  /** What started the attempt; absent for automatic results and for entries older versions wrote. */
+  trigger: z.enum(["manual"]).optional(),
 });
 
 export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;

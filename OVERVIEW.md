@@ -2,7 +2,7 @@ Usage Auto Resume schedules a continue prompt for the same Codex, Claude, or Ant
 
 The Auto Resume sidebar screen groups reservations by day, showing time, status, conversation, provider and workspace. Switch a reservation off, delay it by ten minutes, enter another time, or turn the displayed reservations off together. Verification waits show the next check time. Recent activity shows which reservations continued, were skipped or canceled, and why, over the last 24 hours.
 
-Scheduled conversations also have an Auto Resume composer pill for managing that same reservation in place. Turn it off or back on before its due time, delay it by ten minutes, or edit its time from a desktop popover or mobile sheet.
+Scheduled conversations also have an Auto Resume composer pill for managing that same reservation in place. Turn it off or back on before its due time, delay it by 10 minutes, 30 minutes or an hour, edit its time, or resume it now when a limit lifts early, from a desktop popover or mobile sheet. Resume now runs the same checks and is blocked while Codex or Claude usage is still used up.
 
 ## Setup
 

@@ -49,7 +49,7 @@ For a verification wait, changing the time moves the next check.
 
 **Recent activity** below the list shows how reservations ended in the last 24 hours: continued, skipped, canceled and why, or gave up.
 
-Scheduled conversations also show an **Auto Resume** composer pill with their time or status. Select it to turn that reservation off or back on, delay it by ten minutes, or change its time without leaving the conversation. Off reservations keep their pill until their due time; reservations that run or are canceled lose it. The sidebar and conversation controls manage the same reservation.
+Scheduled conversations also show an **Auto Resume** composer pill with their time or status. Select it to turn that reservation off or back on, delay it by 10 minutes, 30 minutes or an hour, or change its time without leaving the conversation. **Resume now** sends the continue right away when a limit lifted early; it runs the same checks first and is blocked while Codex or Claude usage is still used up. Off reservations keep their pill until their due time; reservations that run or are canceled lose it. The sidebar and conversation controls manage the same reservation.
 
 ## Choose providers
 

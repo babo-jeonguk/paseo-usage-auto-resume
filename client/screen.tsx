@@ -16,6 +16,7 @@ import {
 import {
   bulkAction,
   clockLabel,
+  delayChoices,
   groupByDay,
   historyDateLabel,
   historyLabel,
@@ -24,16 +25,16 @@ import {
   providerLabel,
   refusalLabel,
   relativeLabel,
+  SCHEDULE_CHANGED,
   summaryLabels,
   waitingLabel,
 } from "./format";
 import { Toggle } from "./toggle";
 import { TimeEditor } from "./time-editor";
 import { notifyScheduleChanged } from "./schedule-changes";
+import { historyQueryKey, jobsQueryKey } from "./query-keys";
 
 type Theme = PluginScreenProps["theme"];
-
-const BUMP_MS = 10 * 60_000;
 
 /** Re-renders on a cadence so countdowns stay current without refetching. */
 function useNow(intervalMs: number): number {
@@ -202,6 +203,9 @@ function JobRow(props: {
   const tone = on ? theme.colors.foreground : theme.colors.foregroundMuted;
   const title = job.title ?? "Untitled agent";
   const place = placeLabel(job);
+  // The row offers only the first delay; the composer offers all of them.
+  const bump = delayChoices(job, now)[0]!;
+  const bumpUnavailable = busy || !!bump.problem;
   const countdown = job.resetAt ? relativeLabel(job.dueAt, now) : `${relativeLabel(job.dueAt, now)} · reset unknown`;
   const status = busy ? "Continuing…" : on ? waitingLabel(job) ?? countdown : "Skipped";
   const resetSpoken = job.resetAt ? `limit resets at ${clockLabel(job.resetAt)}` : "reset time unknown, checks again";
@@ -254,14 +258,15 @@ function JobRow(props: {
           <>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={`Continue ${title} 10 minutes later`}
-              accessibilityState={{ disabled: busy }}
-              disabled={busy}
+              accessibilityLabel={`${bump.spoken} for ${title}`}
+              accessibilityHint={bump.problem ?? undefined}
+              accessibilityState={{ disabled: bumpUnavailable }}
+              disabled={bumpUnavailable}
               hitSlop={6}
-              onPress={() => props.onReschedule(job, new Date(Date.parse(job.dueAt) + BUMP_MS).toISOString())}
-              style={({ pressed }) => [styles.pill, busy ? styles.disabled : null, pressed ? styles.pressed : null]}
+              onPress={() => props.onReschedule(job, bump.dueAt)}
+              style={({ pressed }) => [styles.pill, bumpUnavailable ? styles.disabled : null, pressed ? styles.pressed : null]}
             >
-              <Text style={styles.pillText}>+10m</Text>
+              <Text style={styles.pillText}>{bump.label}</Text>
             </Pressable>
             {onOpen ? (
               <Pressable
@@ -396,9 +401,9 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
   const toast = useToast();
   const now = useNow(15_000);
   const [editing, setEditing] = useState<string | null>(null);
-  const queryKey = useMemo(() => ["usage-auto-resume", "jobs", host.id], [host.id]);
+  const queryKey = useMemo(() => jobsQueryKey(host.id), [host.id]);
 
-  const historyKey = useMemo(() => ["usage-auto-resume", "history", host.id], [host.id]);
+  const historyKey = useMemo(() => historyQueryKey(host.id), [host.id]);
 
   const query = useQuery({
     queryKey,
@@ -442,7 +447,7 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
         dueAt: input.job.dueAt,
         enabled: input.enabled,
       });
-      if (!changed) throw new Error("This schedule already ran or changed.");
+      if (!changed) throw new Error(SCHEDULE_CHANGED);
     },
     onMutate: ({ job, enabled }) =>
       optimistic((jobs) => jobs.map((entry) => (entry.agentId === job.agentId ? { ...entry, enabled } : entry))),

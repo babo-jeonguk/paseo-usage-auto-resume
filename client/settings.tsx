@@ -6,6 +6,8 @@ import { Text, View } from "react-native";
 import { listProvidersRpc, listScheduledRpc, type DiscoveredProvider } from "../shared/rpc";
 import { isProviderOn, providerSettings, ProviderSettingsSchema, USAGE_SOURCES } from "../shared/settings";
 import { providerHint, sortProviders } from "./format";
+import { jobsQueryKey } from "./query-keys";
+import { headingText, mutedText } from "./text-styles";
 
 type ReadySettings = Extract<SettingsState<typeof ProviderSettingsSchema>, { status: "ready" }>;
 
@@ -21,7 +23,7 @@ function ProviderSwitches({ settings, host, theme }: { settings: ReadySettings }
   });
   // Shares the Auto Resume screen's cache, so counts match the list there.
   const jobs = useQuery({
-    queryKey: ["usage-auto-resume", "jobs", host.id],
+    queryKey: jobsQueryKey(host.id),
     queryFn: async () => (await listScheduled({})).jobs,
   });
   const pending = new Map<string, number>();
@@ -57,6 +59,12 @@ function ProviderSwitches({ settings, host, theme }: { settings: ReadySettings }
 
   return (
     <>
+      <View style={{ gap: 4, marginBottom: 8 }}>
+        <Text accessibilityRole="header" style={headingText(theme.colors)}>Automatic resume</Text>
+        <Text style={mutedText(theme.colors)}>
+          Choose which providers continue after a usage limit. Turning one off cancels its pending reservations.
+        </Text>
+      </View>
       {USAGE_SOURCES.map((cli) => {
         const rows = sortProviders(providers.data.filter((provider) => provider.cli === cli));
         if (rows.length === 0) return null;
@@ -80,10 +88,6 @@ function ProviderSwitches({ settings, host, theme }: { settings: ReadySettings }
           </SettingsSection>
         );
       })}
-      <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13 }}>
-        Agents of a provider that is turned off are never scheduled, and its pending reservations are canceled.
-        Turning it back on does not restore them.
-      </Text>
     </>
   );
 }

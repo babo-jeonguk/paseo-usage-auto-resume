@@ -3,7 +3,7 @@ import { createHistoryStore } from "./server/history";
 import { discoverProviders } from "./server/providers";
 import { createResumer } from "./server/resumer";
 import { createJobStore } from "./server/store";
-import { listHistoryRpc, listProvidersRpc, listScheduledRpc, rescheduleRpc, setAllEnabledRpc, setEnabledRpc } from "./shared/rpc";
+import { listHistoryRpc, listProvidersRpc, listScheduledRpc, rescheduleRpc, resumeNowRpc, setAllEnabledRpc, setEnabledRpc } from "./shared/rpc";
 import { providerSettings } from "./shared/settings";
 
 const TICK_MS = 30_000;
@@ -67,6 +67,10 @@ export default function contribute(server: PluginServerContext) {
   server.handle(rescheduleRpc, async ({ agentId, dueAt, newDueAt }, { paseo }) => {
     void resumer.attach(paseo);
     return resumer.reschedule(agentId, dueAt, newDueAt);
+  });
+  server.handle(resumeNowRpc, async ({ agentId, dueAt }, { paseo }) => {
+    void resumer.attach(paseo);
+    return resumer.resumeNow(paseo, agentId, dueAt);
   });
   const timer = setInterval(() => void resumer.tick().catch(report), TICK_MS);
 
