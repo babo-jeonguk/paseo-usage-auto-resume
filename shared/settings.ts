@@ -39,3 +39,20 @@ export const providerSettings = defineSettings({
 export function isProviderOn(provider: string, settings: ProviderSettings): boolean {
   return !settings.disabledProviders.includes(provider);
 }
+
+/** Longest custom continue prompt; the default is about 700 characters. */
+export const PROMPT_MAX_CHARS = 4000;
+
+export const ResumeSettingsSchema = z.object({
+  /** Null sends the built-in prompt, so its later improvements reach everyone who never changed it. */
+  continuePrompt: z.string().trim().min(1).max(PROMPT_MAX_CHARS).nullable().default(null),
+});
+
+export type ResumeSettings = z.output<typeof ResumeSettingsSchema>;
+export const DEFAULT_RESUME_SETTINGS = ResumeSettingsSchema.parse({});
+
+/**
+ * What a continue says. Kept apart from the provider switches: when this cannot be read, the
+ * built-in prompt is sent instead of holding resumes.
+ */
+export const resumeSettings = defineSettings({ id: "resume", scope: "host", version: 1, schema: ResumeSettingsSchema });

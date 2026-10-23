@@ -6,7 +6,7 @@ import type { HistoryStore } from "./history";
 import type { JobStore, ResumeJob } from "./store";
 import { captureLaunch, createSubscriptionReader, subscriptionModel, unknownCheck, type LaunchContext, type SubscriptionCheck, type SubscriptionReader } from "./subscription";
 import { GRACE_MS, MAX_ATTEMPTS, MIN_DELAY_MS, RETRY_DELAYS_MS, rescheduleWindow } from "../shared/schedule";
-import { DEFAULT_PROVIDER_SETTINGS, isProviderOn, type ProviderSettings, type UsageSource } from "../shared/settings";
+import { DEFAULT_PROVIDER_SETTINGS, DEFAULT_RESUME_SETTINGS, isProviderOn, type ProviderSettings, type ResumeSettings, type UsageSource } from "../shared/settings";
 import { cliFor } from "./providers";
 import { continuePrompt, DEFAULT_CONTINUE_PROMPT } from "../shared/prompt";
 
@@ -148,12 +148,15 @@ export function createResumer(options: {
   now?: () => Date;
   /** Null means unreadable settings: wait instead of enabling the public defaults. */
   readSettings?: () => Promise<ProviderSettings | null>;
+  /** What a continue says. Never holds a resume: anything unreadable sends the built-in prompt. */
+  readResumeSettings?: () => Promise<ResumeSettings>;
   readSubscription?: SubscriptionReader;
 }) {
   const { store } = options;
   const history: HistoryStore = options.history ?? { list: async () => [], append: async () => {} };
   const now = options.now ?? (() => new Date());
   const readSettings = options.readSettings ?? (async () => DEFAULT_PROVIDER_SETTINGS);
+  const readResumeSettings = options.readResumeSettings ?? (async () => DEFAULT_RESUME_SETTINGS);
   let paseo: ResumerApi | null = null;
   let ticking = false;
   const launches = new Map<string, LaunchContext>();
@@ -424,8 +427,11 @@ export function createResumer(options: {
       return { ...current, identity: check.identity, waiting: undefined, state: "sending" };
     });
     if (!claimed) return staleResult(latest);
+    // Read once claimed, so a prompt saved while the agent was being checked is the one sent. A
+    // failure here must not leave the claim behind, so it falls back to the built-in prompt.
+    const { continuePrompt: custom } = await readResumeSettings().catch(() => DEFAULT_RESUME_SETTINGS);
     try {
-      await api.agents.ref(job.agentId).send(continuePrompt({ custom: null }));
+      await api.agents.ref(job.agentId).send(continuePrompt({ custom }));
     } catch (error) {
       await store.update(job.agentId, (current) => (current?.state === "sending" ? null : undefined));
       console.error(`[usage-auto-resume] could not continue ${job.agentId}`, String(error));

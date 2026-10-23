@@ -4,12 +4,15 @@ import { discoverProviders } from "./server/providers";
 import { createResumer } from "./server/resumer";
 import { createJobStore } from "./server/store";
 import { listHistoryRpc, listProvidersRpc, listScheduledRpc, rescheduleRpc, resumeNowRpc, setAllEnabledRpc, setEnabledRpc } from "./shared/rpc";
-import { providerSettings } from "./shared/settings";
+import { DEFAULT_RESUME_SETTINGS, providerSettings, resumeSettings } from "./shared/settings";
 
 const TICK_MS = 30_000;
 
 export default function contribute(server: PluginServerContext) {
   const settings = server.registerSettings(providerSettings);
+  const resume = server.registerSettings(resumeSettings);
+  // The tick reads these on every send; the same failure is reported once, not every time.
+  let resumeError: string | null = null;
   const resumer = createResumer({
     store: createJobStore(),
     history: createHistoryStore(),
@@ -18,6 +21,20 @@ export default function contribute(server: PluginServerContext) {
       if (current.status === "ready") return current.values;
       console.error("[usage-auto-resume] settings unreadable; automatic resumes are waiting", current.error);
       return null;
+    },
+    // Unlike the provider switches, unreadable values here never hold a resume: the built-in
+    // prompt is a safe thing to send.
+    readResumeSettings: async () => {
+      const current = await resume.read().catch((error: unknown) => ({ status: "invalid" as const, error: String(error) }));
+      if (current.status === "ready") {
+        resumeError = null;
+        return current.values;
+      }
+      if (current.error !== resumeError) {
+        console.error("[usage-auto-resume] continue prompt settings unreadable; sending the built-in prompt", current.error);
+      }
+      resumeError = current.error;
+      return DEFAULT_RESUME_SETTINGS;
     },
   });
   const report = (error: unknown) => console.error("[usage-auto-resume] hook failed", String(error));

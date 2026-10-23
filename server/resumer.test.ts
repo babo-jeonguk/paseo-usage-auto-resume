@@ -9,7 +9,8 @@ import type { PluginLifecycleEvents, PluginTurnOutcome } from "@getpaseo/plugin/
 import { CONTINUE_PROMPT, createResumer, type ResumerApi } from "./resumer";
 import { createJobStore, type JobStore } from "./store";
 import { createHistoryStore, type HistoryStore } from "./history";
-import { DEFAULT_PROVIDER_SETTINGS, type ProviderSettings } from "../shared/settings";
+import { DEFAULT_PROVIDER_SETTINGS, DEFAULT_RESUME_SETTINGS, type ProviderSettings, type ResumeSettings } from "../shared/settings";
+import { continuePrompt } from "../shared/prompt";
 import { accountEmail } from "./usage";
 import { createSubscriptionReader, unknownCheck, type SubscriptionCheck, type SubscriptionReader } from "./subscription";
 
@@ -79,6 +80,7 @@ interface FakeOptions {
   claudeConfigDir?: string;
   claudeAliasEnv?: Record<string, string>;
   readSettings?: () => Promise<ProviderSettings | null>;
+  readResumeSettings?: () => Promise<ResumeSettings>;
 }
 
 /** Daemon stand-in: agent snapshots by ID, recorded sends, and no way to create agents. */
@@ -218,7 +220,10 @@ const claudeNotice = (text: string): AgentTimelineItem[] => [
 async function setup(agents: Record<string, Partial<PaseoAgent>>, options?: FakeOptions) {
   const map = new Map(Object.entries(agents));
   const fake = fakePaseo(map, options);
-  const resumer = createResumer({ store, history, now: () => clock, readSettings: options?.readSettings, readSubscription: fake.readSubscription });
+  const resumer = createResumer({
+    store, history, now: () => clock, readSettings: options?.readSettings, readResumeSettings: options?.readResumeSettings,
+    readSubscription: fake.readSubscription,
+  });
   await resumer.attach(fake.api);
   return { ...fake, agents: map, resumer };
 }
@@ -1739,4 +1744,58 @@ test("a limit hit again after Resume now is reserved like one after an automatic
   assert.equal(job?.state, "pending");
   assert.equal(job?.attempts, 1);
   assert.equal(job?.enabled, true);
+});
+
+test("a custom continue prompt is sent by the tick and by Resume now", async () => {
+  const custom = "Pick up where you left off.";
+  for (const manual of [false, true]) {
+    clock = START;
+    const { api, sent, resumer } = await setup({ a1: { provider: "codex" } }, {
+      readSubscription: async () => ready,
+      readResumeSettings: async () => ({ continuePrompt: custom }),
+    });
+    await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+    if (manual) {
+      assert.deepEqual(await resumer.resumeNow(api, "a1", CODEX_DUE), { result: "sent" });
+    } else {
+      clock = new Date(CODEX_DUE);
+      await resumer.tick();
+    }
+    assert.deepEqual(sent, [{ agentId: "a1", text: custom }], manual ? "Resume now" : "tick");
+    await store.update("a1", () => null);
+  }
+});
+
+test("prompt settings that cannot be read send the built-in prompt and hold nothing", async () => {
+  const unreadable = [
+    // index.server.ts answers an invalid file with the defaults.
+    async () => DEFAULT_RESUME_SETTINGS,
+    async (): Promise<ResumeSettings> => { throw new Error("EACCES"); },
+  ];
+  for (const readResumeSettings of unreadable) {
+    clock = START;
+    const { api, sent, resumer } = await setup({ a1: { provider: "codex" } }, { readSubscription: async () => ready, readResumeSettings });
+    await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+    clock = new Date(CODEX_DUE);
+    await resumer.tick();
+    assert.deepEqual(sent, [{ agentId: "a1", text: continuePrompt({ custom: null }) }]);
+    assert.equal((await store.list())[0]?.state, "sent", "no claim is left behind");
+    await store.update("a1", () => null);
+  }
+});
+
+test("unreadable provider switches still hold resumes while the prompt settings read fine", async () => {
+  let providers: ProviderSettings | null = DEFAULT_PROVIDER_SETTINGS;
+  const { api, sent, resumer } = await setup({ a1: { provider: "codex" } }, {
+    readSubscription: async () => ready,
+    readSettings: async () => providers,
+    readResumeSettings: async () => ({ continuePrompt: "Keep going." }),
+  });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  providers = null;
+  clock = new Date(CODEX_DUE);
+  await resumer.tick();
+  assert.deepEqual(sent, []);
+  assert.deepEqual(await resumer.resumeNow(api, "a1", CODEX_DUE), { result: "unavailable" });
+  assert.equal((await store.list())[0]?.state, "pending");
 });

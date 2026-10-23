@@ -1,4 +1,5 @@
 import type { DiscoveredProvider, HistoryEntry, HistoryOutcome, HistoryReason, RescheduleResult, ResumeNowResult, ScheduledJob, Waiting } from "../shared/rpc";
+import { DEFAULT_CONTINUE_PROMPT } from "../shared/prompt";
 import { MAX_ATTEMPTS, RETRY_DELAYS_MS, rescheduleWindow } from "../shared/schedule";
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -326,4 +327,17 @@ export function bulkAction(jobs: readonly ScheduledJob[]): { enabled: boolean; l
   return anyOn
     ? { enabled: false, label: "Turn all off", shortLabel: "All off" }
     : { enabled: true, label: "Turn all on", shortLabel: "All on" };
+}
+
+/** What Settings stores for the typed prompt: null, the built-in one, when it is empty or the same text. */
+export function promptToSave(text: string): string | null {
+  const trimmed = text.trim();
+  return trimmed && trimmed !== DEFAULT_CONTINUE_PROMPT ? trimmed : null;
+}
+
+/** "120 characters left" once a text is within a tenth of its limit; null before that. */
+export function charactersLeft(length: number, max: number): string | null {
+  const left = max - length;
+  if (left >= max / 10) return null;
+  return `${left} ${left === 1 ? "character" : "characters"} left`;
 }

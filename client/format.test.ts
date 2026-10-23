@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { HistoryReasonSchema, type DiscoveredProvider, type HistoryOutcome, type HistoryReason, type ResumeNowResult, type ScheduledJob } from "../shared/rpc";
+import { DEFAULT_CONTINUE_PROMPT } from "../shared/prompt";
 import {
   bulkAction,
+  charactersLeft,
   composerLabel,
   dayChoices,
   dayLabel,
@@ -13,6 +15,7 @@ import {
   historySummary,
   historyDateLabel,
   placeLabel,
+  promptToSave,
   providerHint,
   providerLabel,
   refusalLabel,
@@ -245,4 +248,21 @@ test("the collapsed header counts results by kind", () => {
 test("every history row is dated in local time", () => {
   assert.equal(historyDateLabel(new Date(2026, 9, 6, 0, 5).toISOString()), "Oct 6");
   assert.equal(historyDateLabel(new Date(2026, 9, 5, 23, 10).toISOString()), "Oct 5");
+});
+
+test("an empty prompt or the built-in one is saved as the default", () => {
+  for (const text of ["", "  \n ", DEFAULT_CONTINUE_PROMPT, `\n${DEFAULT_CONTINUE_PROMPT}  `]) {
+    assert.equal(promptToSave(text), null, JSON.stringify(text.slice(0, 20)));
+  }
+  assert.equal(promptToSave("  Keep going.\n"), "Keep going.");
+  assert.equal(promptToSave(`${DEFAULT_CONTINUE_PROMPT} Run the tests.`), `${DEFAULT_CONTINUE_PROMPT} Run the tests.`);
+});
+
+test("the characters left show only near the limit", () => {
+  assert.equal(charactersLeft(0, 2000), null);
+  assert.equal(charactersLeft(1800, 2000), null);
+  assert.equal(charactersLeft(1801, 2000), "199 characters left");
+  assert.equal(charactersLeft(1999, 2000), "1 character left");
+  assert.equal(charactersLeft(2000, 2000), "0 characters left");
+  assert.equal(charactersLeft(3601, 4000), "399 characters left");
 });

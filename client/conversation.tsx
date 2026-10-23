@@ -6,19 +6,11 @@ import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { listScheduledRpc, rescheduleRpc, resumeNowRpc, setEnabledRpc, type ScheduledJob } from "../shared/rpc";
 import { clockLabel, dayLabel, delayChoices, RESUME_NOW_UNFINISHED, refusalLabel, relativeLabel, resumeNowToast, SCHEDULE_CHANGED, waitingLabel } from "./format";
 import { historyQueryKey, jobsQueryKey } from "./query-keys";
-import { accentText, bodyText, chipText, clockText, headingText, mutedText, type Colors } from "./text-styles";
+import { accentText, bodyText, chipText, clockText, headingText, mutedText } from "./text-styles";
+import { filled, outlined, pressFeedback } from "./button-styles";
 import { notifyScheduleChanged } from "./schedule-changes";
 import { TimeEditor } from "./time-editor";
 import { Toggle } from "./toggle";
-
-const buttonShape = { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 9, paddingHorizontal: 12, borderRadius: 6 } as const;
-/** Dims when unavailable and darkens while pressed, with or without a border around it. */
-const pressFeedback = (colors: Colors, pressed: boolean, unavailable = false) => ({
-  opacity: unavailable ? 0.4 : 1, backgroundColor: pressed ? colors.surface2 : "transparent",
-});
-const outlined = (colors: Colors, pressed: boolean, unavailable = false) => ({
-  ...buttonShape, borderWidth: 1, borderColor: colors.border, ...pressFeedback(colors, pressed, unavailable),
-});
 
 export function ConversationControls(props: PluginButtonContentProps) {
   // Composer contributions are always agent-scoped.
@@ -177,7 +169,7 @@ function ResumeNow({ theme, disabled, pending, onSend }: {
   const primary = (label: string, onPress: () => void, icon?: string) => (
     <Pressable
       accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled }} disabled={disabled} onPress={onPress}
-      style={({ pressed }) => ({ ...buttonShape, flex: confirming ? 1 : undefined, backgroundColor: colors.accent, opacity: disabled ? 0.4 : pressed ? 0.85 : 1 })}
+      style={({ pressed }) => ({ ...filled(colors, pressed, disabled), flex: confirming ? 1 : undefined })}
     >
       {icon ? <Icon name={icon} size={16} color={colors.accentForeground} /> : null}
       <Text style={accentText(colors)}>{label}</Text>
