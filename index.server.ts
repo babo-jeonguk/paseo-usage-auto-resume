@@ -46,7 +46,7 @@ export default function contribute(server: PluginServerContext) {
     settings.subscribe(() => void resumer.reconcileProviders().catch(report)),
     server.on("agent.turn_started", (event, { paseo }) => {
       void resumer.attach(paseo);
-      void resumer.onTurnStarted(event.agent.id).catch(report);
+      void resumer.onTurnStarted(event.agent.id, paseo).catch(report);
     }),
     server.on("agent.turn_ended", (event, { paseo }) => {
       void resumer.attach(paseo);

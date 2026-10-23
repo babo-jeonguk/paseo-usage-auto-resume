@@ -234,6 +234,13 @@ for (const source of ["codex", "claude", "antigravity"] as const) {
         h.setTime("2026-10-23T01:02:00.000Z");
         await h.resumer.tick();
         assert.equal(h.sent.length, 1);
+      } else if (guard === "running") {
+        // A turn the user did not start holds the continue until it ends.
+        assert.deepEqual(await h.store.list(), [job]);
+        h.agent.status = "idle";
+        await h.resumer.tick();
+        await h.resumer.tick();
+        assert.equal(h.sent.length, 1);
       } else assert.deepEqual(await h.store.list(), []);
     });
   }

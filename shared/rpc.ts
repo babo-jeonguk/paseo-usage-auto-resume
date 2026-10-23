@@ -128,6 +128,8 @@ export const ResumeNowResultSchema = z.discriminatedUnion("result", [
   z.object({ result: z.literal("canceled"), reason: HistoryReasonSchema }),
   /** Sending threw; the reservation was removed. */
   z.object({ result: z.literal("send_failed") }),
+  /** Not sent, the reservation unchanged: the agent is running a turn the user did not start. */
+  z.object({ result: z.literal("busy") }),
   /** Already being sent. */
   z.object({ result: z.literal("sending") }),
   /** Already ran, was canceled, or moved since it was shown. */

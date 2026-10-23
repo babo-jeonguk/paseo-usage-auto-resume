@@ -193,6 +193,7 @@ test("each Resume now result reads as one toast, colored by what it means", () =
   assert.equal(toast({ result: "unverified", waiting: "usage" }), "warning: Couldn’t verify usage. Try again shortly.");
   assert.equal(toast({ result: "canceled", reason: "new_message" }), "warning: Canceled · a newer message");
   assert.equal(toast({ result: "send_failed" }), "error: Couldn’t send the continue");
+  assert.equal(toast({ result: "busy" }), "info: The agent is still working. Try again when it stops.");
   assert.equal(toast({ result: "sending" }), "info: This agent is continuing now.");
   assert.equal(toast({ result: "changed" }), "info: This schedule already ran or changed.");
   assert.equal(toast({ result: "unavailable" }), "error: Auto Resume settings couldn’t be read.");

@@ -91,6 +91,7 @@ type Cancellation = Outcome & { outcome: "canceled"; reason: HistoryReason };
 
 const canceled = (reason: HistoryReason, detail: string): Cancellation => ({ outcome: "canceled", reason, detail });
 const providerOff = (provider: string) => canceled("provider_off", `automatic resume is turned off for ${provider}`);
+const NEW_MESSAGE = canceled("new_message", "a newer message reached the agent");
 
 /** The tick's attempt at a due job, or Resume now's on the user's request. */
 type DeliverMode = "auto" | "manual";
@@ -120,14 +121,24 @@ function renewalFor(hold: UsageHold, stated: Date | null): Date | null {
 const staleResult = (row: ResumeJob | null | undefined): ResumeNowResult =>
   row?.state === "sending" ? { result: "sending" } : { result: "changed" };
 
-/** Why a due job must not continue the agent, or null when it is safe to send. */
+/** A turn is in progress. */
+const isRunning = (agent: PaseoAgent) => !!agent.activeTurn || agent.status === "running";
+
+/** A message the user sent after the reservation was made. */
+const hasNewMessage = (agent: PaseoAgent, job: ResumeJob) => (agent.lastUserMessageAt ?? null) !== job.baseline;
+
+/**
+ * Why a due job must not continue the agent, or null when it is safe to send. A running turn is
+ * not a reason: one the user started also sent a newer message, and any other, such as a
+ * subagent's notification, only holds the continue until it ends.
+ */
 function skipReason(job: ResumeJob, agent: PaseoAgent | null): Cancellation | null {
   if (!agent) return canceled("agent_missing", "agent no longer exists");
   if (agent.archivedAt) return canceled("archived", "agent is archived");
   if (agent.provider !== job.provider) return canceled("provider_changed", `provider changed to ${agent.provider}`);
   if (job.model !== undefined && subscriptionModel(agent) !== job.model) return canceled("model_changed", "model changed");
-  if ((agent.lastUserMessageAt ?? null) !== job.baseline) return canceled("new_message", "a newer message reached the agent");
-  if (agent.activeTurn || (agent.status !== "idle" && agent.status !== "error")) {
+  if (hasNewMessage(agent, job)) return NEW_MESSAGE;
+  if (!isRunning(agent) && agent.status !== "idle" && agent.status !== "error") {
     return canceled("agent_busy", `agent is ${agent.status}`);
   }
   if (agent.pendingPermissions.length > 0 || agent.attentionReason === "permission") {
@@ -197,6 +208,9 @@ export function createResumer(options: {
     }
     const snapshot = await loadAgent(api, agent.id);
     if (!snapshot) return;
+    // A message the user sent since the reservation was made ends it, even if its turn's start
+    // came before the message was recorded; the stop just seen gets a reservation of its own.
+    await retire(agent.id, (current) => current.state === "pending" && hasNewMessage(snapshot, current), NEW_MESSAGE);
     await schedule(api, snapshot, source, stop.resetAt, observedAt, { onlyIfNone: false });
   }
 
@@ -339,9 +353,16 @@ export function createResumer(options: {
     return true;
   }
 
-  /** A turn that starts while a job is pending was not started by this plugin. */
-  async function onTurnStarted(agentId: string): Promise<void> {
-    await retire(agentId, (job) => job.state === "pending", canceled("turn_started", "a turn started before the scheduled continue"));
+  /**
+   * A turn started by a message the user sent cancels the pending continue. Any other turn, such
+   * as a subagent's notification, leaves it for the turn's end to decide: a limit again keeps the
+   * reservation as it is, and a turn that finishes clears it.
+   */
+  async function onTurnStarted(agentId: string, api: ResumerApi): Promise<void> {
+    if (!(await store.list()).some((job) => job.agentId === agentId && job.state === "pending")) return;
+    const agent = await loadAgent(api, agentId);
+    if (!agent) return;
+    await retire(agentId, (job) => job.state === "pending" && hasNewMessage(agent, job), NEW_MESSAGE);
   }
 
   /** An archived agent's reservation goes with it; a continue already sent is cleared quietly. */
@@ -401,6 +422,8 @@ export function createResumer(options: {
     const title = agent && titleOf(agent);
     const skip = skipReason(job, agent);
     if (skip) return cancel({ ...skip, title });
+    // Waits for the turn to end, without reading usage; the tick tries again.
+    if (isRunning(agent!)) return { result: "busy" };
     const check = await inspect(api, agent!, source, at, launches.get(job.agentId) ?? job.launch);
     if (check.auth === "api") return cancel({ ...canceled("api_route", "authentication uses API billing"), title });
     if (job.identity && check.identity && job.identity !== check.identity) {

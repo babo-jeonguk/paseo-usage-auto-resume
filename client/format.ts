@@ -288,6 +288,8 @@ export function resumeNowToast(result: ResumeNowResult, now: number): ResumeNowT
       return { tone: "warning", message: outcomeLabel({ outcome: "canceled", reason: result.reason }) };
     case "send_failed":
       return { tone: "error", message: outcomeLabel({ outcome: "send_failed" }) };
+    case "busy":
+      return { tone: "info", message: "The agent is still working. Try again when it stops." };
     case "sending":
       return { tone: "info", message: SENDING };
     case "changed":
