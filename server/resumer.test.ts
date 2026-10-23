@@ -1799,3 +1799,171 @@ test("unreadable provider switches still hold resumes while the prompt settings 
   assert.deepEqual(await resumer.resumeNow(api, "a1", CODEX_DUE), { result: "unavailable" });
   assert.equal((await store.list())[0]?.state, "pending");
 });
+
+const NOTE = "Run the migration tests before anything else.";
+const withNote = (note: string) => continuePrompt({ custom: null, note });
+
+test("a note follows the continue prompt once, and the sent row drops it", async () => {
+  const { api, sent, resumer } = await setup({ a1: { provider: "codex" } }, { readSubscription: async () => ready });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  assert.deepEqual(await resumer.setNote("a1", CODEX_DUE, `  ${NOTE}\n`), { changed: true });
+  assert.equal((await resumer.listScheduled(api))[0]?.note, NOTE);
+
+  clock = new Date(CODEX_DUE);
+  await resumer.tick();
+  await resumer.tick();
+  assert.deepEqual(sent, [{ agentId: "a1", text: withNote(NOTE) }]);
+  const [row] = await store.list();
+  assert.equal(row?.state, "sent");
+  assert.equal(row?.note, undefined);
+  assert.equal((await readFile(join(dir, "jobs.json"), "utf8")).includes(NOTE), false, "the text is not kept once sent");
+});
+
+test("Resume now sends the note and the custom prompt together", async () => {
+  const { api, sent, resumer } = await setup({ a1: { provider: "codex" } }, {
+    readSubscription: async () => ready,
+    readResumeSettings: async () => ({ continuePrompt: "Keep going." }),
+  });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  await resumer.setNote("a1", CODEX_DUE, NOTE);
+  assert.deepEqual(await resumer.resumeNow(api, "a1", CODEX_DUE), { result: "sent" });
+  assert.deepEqual(sent, [{ agentId: "a1", text: continuePrompt({ custom: "Keep going.", note: NOTE }) }]);
+});
+
+test("a postponed or re-planned reservation keeps its note", async () => {
+  const usage: FakeOptions["usage"] = [{
+    providerId: "claude", displayName: `Claude (${MAIN_EMAIL})`,
+    windows: [{ id: "seven_day", label: "Weekly", usedPct: 100, resetsAt: "2026-10-09T00:00:00.000Z" }],
+  }];
+  const { api, sent, resumer } = await setup({ m1: { provider: "claude" } }, { usage });
+  await resumer.onTurnEnded(turnEnded("m1", "claude", { kind: "completed" }, claudeNotice(CLAUDE_LIMIT)), api);
+  await resumer.setNote("m1", "2026-10-06T06:02:00.000Z", NOTE);
+
+  clock = new Date("2026-10-06T06:02:00.000Z");
+  await resumer.tick();
+  const [postponed] = await store.list();
+  assert.equal(postponed?.dueAt, "2026-10-09T00:02:00.000Z");
+  assert.equal(postponed?.note, NOTE, "postponed");
+
+  // Another stop before the continue replaces the plan of the reservation still waiting.
+  await resumer.onTurnEnded(turnEnded("m1", "claude", { kind: "completed" }, claudeNotice("You've hit your limit · resets 9pm (Asia/Seoul)")), api);
+  const [replanned] = await store.list();
+  assert.notEqual(replanned?.dueAt, postponed?.dueAt);
+  assert.equal(replanned?.note, NOTE, "re-planned");
+
+  usage[0]!.windows[0]!.usedPct = 0;
+  clock = new Date(replanned!.dueAt);
+  await resumer.tick();
+  assert.deepEqual(sent, [{ agentId: "m1", text: withNote(NOTE) }]);
+});
+
+test("a limit hit again after the note was sent makes a reservation without it", async () => {
+  const { api, sent, resumer } = await setup({ a1: { provider: "codex" } }, { readSubscription: async () => ready });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  await resumer.setNote("a1", CODEX_DUE, NOTE);
+  clock = new Date(CODEX_DUE);
+  await resumer.tick();
+  assert.equal(sent.length, 1);
+
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  const [next] = await store.list();
+  assert.equal(next?.state, "pending");
+  assert.equal(next?.attempts, 1);
+  assert.equal(next?.note, undefined);
+});
+
+test("a note saved while the agent is being checked is the one sent", async () => {
+  let during: (() => Promise<unknown>) | undefined;
+  const { api, sent, resumer } = await setup({ a1: { provider: "codex" } }, {
+    readSubscription: async () => {
+      const run = during;
+      during = undefined;
+      await run?.();
+      return ready;
+    },
+  });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  await resumer.setNote("a1", CODEX_DUE, "An older note.");
+  for (const [mode, note] of [["tick", NOTE], ["Resume now", ""]] as const) {
+    clock = new Date(CODEX_DUE);
+    during = () => resumer.setNote("a1", CODEX_DUE, note);
+    if (mode === "tick") await resumer.tick();
+    else assert.deepEqual(await resumer.resumeNow(api, "a1", CODEX_DUE), { result: "sent" });
+    assert.deepEqual(sent.at(-1), { agentId: "a1", text: note ? withNote(note) : CONTINUE_PROMPT }, mode);
+    // Back to a waiting reservation for the next mode.
+    await store.update("a1", (current) => current && { ...current, state: "pending", note: "An older note." });
+  }
+  assert.equal(sent.length, 2);
+});
+
+test("a note changes only a waiting reservation the screen showed, and never its time or switch", async () => {
+  const { api, resumer } = await setup({ a1: { provider: "codex" } }, { readSubscription: async () => ready });
+  assert.deepEqual(await resumer.setNote("a1", CODEX_DUE, NOTE), { changed: false, reason: "changed" }, "no reservation");
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  assert.deepEqual(await resumer.setNote("a1", "2026-10-06T05:12:00.000Z", NOTE), { changed: false, reason: "changed" }, "moved");
+
+  await resumer.setEnabled("a1", CODEX_DUE, false);
+  const before = (await store.list())[0]!;
+  assert.deepEqual(await resumer.setNote("a1", CODEX_DUE, NOTE), { changed: true });
+  const after = (await store.list())[0]!;
+  assert.deepEqual(after, { ...before, note: NOTE }, "only the note changed; an off reservation stays off");
+
+  for (const blank of ["", "  \n "]) {
+    await resumer.setNote("a1", CODEX_DUE, NOTE);
+    assert.deepEqual(await resumer.setNote("a1", CODEX_DUE, blank), { changed: true });
+    assert.equal("note" in (await store.list())[0]!, false, JSON.stringify(blank));
+  }
+
+  await store.update("a1", (current) => current && { ...current, state: "sending" });
+  assert.deepEqual(await resumer.setNote("a1", CODEX_DUE, NOTE), { changed: false, reason: "sending" });
+  await store.update("a1", (current) => current && { ...current, state: "sent" });
+  assert.deepEqual(await resumer.setNote("a1", CODEX_DUE, NOTE), { changed: false, reason: "changed" }, "sent");
+});
+
+test("the log says a note changed, never what it says", async () => {
+  const lines: string[] = [];
+  const original = console.log;
+  console.log = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+  try {
+    const { api, resumer } = await setup({ a1: { provider: "codex" } }, { readSubscription: async () => ready });
+    await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+    await resumer.setNote("a1", CODEX_DUE, NOTE);
+    await resumer.setNote("a1", CODEX_DUE, "");
+    await resumer.setNote("a1", CODEX_DUE, NOTE);
+    clock = new Date(CODEX_DUE);
+    await resumer.tick();
+  } finally {
+    console.log = original;
+  }
+  assert.ok(lines.some((line) => line.includes("note updated for a1")));
+  assert.ok(lines.some((line) => line.includes("note removed for a1")));
+  assert.ok(lines.some((line) => line.includes("continued a1")));
+  assert.equal(lines.some((line) => line.includes("migration")), false, lines.join("\n"));
+});
+
+test("a job file without notes still loads, and a saved note survives a restart", async () => {
+  const legacy = { agentId: "a1", provider: "codex", resetAt: "2026-10-06T05:00:00.000Z", dueAt: CODEX_DUE, baseline: "2026-10-06T02:00:00.000Z", attempts: 0, state: "pending" };
+  await writeFile(join(dir, "jobs.json"), JSON.stringify({ version: 1, jobs: [legacy] }));
+  assert.equal((await store.list())[0]?.note, undefined);
+
+  const first = await setup({ a1: { provider: "codex" } }, { readSubscription: async () => ready });
+  assert.deepEqual(await first.resumer.setNote("a1", CODEX_DUE, NOTE), { changed: true });
+
+  // A new store and resumer read the same file, as after a daemon restart.
+  store = createJobStore(join(dir, "jobs.json"));
+  const { sent, resumer } = await setup({ a1: { provider: "codex" } }, { readSubscription: async () => ready });
+  await resumer.recover();
+  clock = new Date(CODEX_DUE);
+  await resumer.tick();
+  assert.deepEqual(sent, [{ agentId: "a1", text: withNote(NOTE) }]);
+});
+
+test("a damaged note is dropped alone and the reservation is kept", async () => {
+  const job = {
+    agentId: "a1", provider: "codex", resetAt: null, dueAt: CODEX_DUE, baseline: null, attempts: 0, state: "pending",
+    note: "x".repeat(5000),
+  };
+  await writeFile(join(dir, "jobs.json"), JSON.stringify({ version: 1, jobs: [job, { ...job, agentId: "a2", note: 7 }] }));
+  const rows = await store.list();
+  assert.deepEqual(rows.map((row) => [row.agentId, row.note]), [["a1", undefined], ["a2", undefined]]);
+});

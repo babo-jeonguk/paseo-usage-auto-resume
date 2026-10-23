@@ -1,5 +1,6 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { NOTE_MAX_CHARS } from "./prompt";
 
 /** The check a reservation waits on instead of a promised continue: the account, or its usage. */
 export const WaitingSchema = z.enum(["auth", "usage"]);
@@ -22,6 +23,8 @@ export const ScheduledJobSchema = z.object({
   sending: z.boolean(),
   /** This row's time is a status check, not a promised continue. */
   waiting: WaitingSchema.optional(),
+  /** The user's extra instruction sent after the continue prompt; older servers never send it. */
+  note: z.string().optional(),
 });
 
 export type ScheduledJob = z.infer<typeof ScheduledJobSchema>;
@@ -60,6 +63,21 @@ export const rescheduleRpc = defineRpc({
   /** `dueAt` is the time the screen showed; `newDueAt` replaces it. */
   input: z.object({ agentId: z.string(), dueAt: z.string(), newDueAt: z.iso.datetime() }),
   output: RescheduleResultSchema,
+});
+
+export const SetNoteResultSchema = z.discriminatedUnion("changed", [
+  z.object({ changed: z.literal(true) }),
+  /** `changed`: it already ran, was canceled, or moved since it was shown. `sending`: being delivered. */
+  z.object({ changed: z.literal(false), reason: z.enum(["changed", "sending"]) }),
+]);
+
+export type SetNoteResult = z.infer<typeof SetNoteResultSchema>;
+
+export const setNoteRpc = defineRpc({
+  name: "auto-resume.set-note",
+  /** An empty or blank note removes it. `dueAt` pins the reservation the screen showed. */
+  input: z.object({ agentId: z.string(), dueAt: z.string(), note: z.string().max(NOTE_MAX_CHARS) }),
+  output: SetNoteResultSchema,
 });
 
 export const setAllEnabledRpc = defineRpc({

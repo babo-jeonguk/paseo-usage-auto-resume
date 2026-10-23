@@ -14,6 +14,8 @@ import {
   historyLabel,
   historySummary,
   historyDateLabel,
+  noteRefusal,
+  notePreview,
   placeLabel,
   promptToSave,
   providerHint,
@@ -265,4 +267,17 @@ test("the characters left show only near the limit", () => {
   assert.equal(charactersLeft(1999, 2000), "1 character left");
   assert.equal(charactersLeft(2000, 2000), "0 characters left");
   assert.equal(charactersLeft(3601, 4000), "399 characters left");
+});
+
+test("a note preview is one line, cut with an ellipsis", () => {
+  assert.equal(notePreview("Run the tests.", 40), "Run the tests.");
+  assert.equal(notePreview("  Run the tests.\n\n  Then push.  ", 40), "Run the tests. Then push.");
+  assert.equal(notePreview("Run the migration tests first", 12), "Run the mig…");
+  assert.equal(notePreview("Run the tests first", 9), "Run the…", "no space before the ellipsis");
+  assert.equal(notePreview("x".repeat(2000), 80).length, 80);
+});
+
+test("a refused note says why", () => {
+  assert.equal(noteRefusal("changed"), "This reservation changed. Review the time and save again.");
+  assert.match(noteRefusal("sending"), /being sent/);
 });

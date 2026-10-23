@@ -341,3 +341,16 @@ export function charactersLeft(length: number, max: number): string | null {
   if (left >= max / 10) return null;
   return `${left} ${left === 1 ? "character" : "characters"} left`;
 }
+
+/** A note on one line, cut to `maxChars` with an ellipsis, for the composer and the list. */
+export function notePreview(note: string, maxChars: number): string {
+  const line = note.replace(/\s+/g, " ").trim();
+  return line.length > maxChars ? `${line.slice(0, maxChars - 1).trimEnd()}…` : line;
+}
+
+/** Why a note was not saved; the editor stays open with the text. */
+export function noteRefusal(reason: "changed" | "sending"): string {
+  return reason === "sending"
+    ? "This reservation is being sent, so its note can’t change."
+    : "This reservation changed. Review the time and save again.";
+}

@@ -1,7 +1,7 @@
 import type { AgentTimelineItem, PaseoAgent, PaseoApi } from "./paseo-types";
 import type { PluginLifecycleEvents, PluginSessionOpenRequest } from "@getpaseo/plugin/server";
 import { detectLimitStop } from "./limit";
-import type { HistoryEntry, HistoryOutcome, HistoryReason, HistoryRow, RescheduleResult, ResumeNowResult, ScheduledJob, Waiting } from "../shared/rpc";
+import type { HistoryEntry, HistoryOutcome, HistoryReason, HistoryRow, RescheduleResult, ResumeNowResult, ScheduledJob, SetNoteResult, Waiting } from "../shared/rpc";
 import type { HistoryStore } from "./history";
 import type { JobStore, ResumeJob } from "./store";
 import { captureLaunch, createSubscriptionReader, subscriptionModel, unknownCheck, type LaunchContext, type SubscriptionCheck, type SubscriptionReader } from "./subscription";
@@ -258,6 +258,8 @@ export function createResumer(options: {
         identity: check.identity,
         model: subscriptionModel(agent),
         launch,
+        // A new plan for a reservation still waiting keeps its note; one already sent is not sent twice.
+        note: current?.state === "pending" ? current.note : undefined,
       };
       log(`scheduled ${agent.id} (${agent.provider}) for ${job.dueAt}; ${plan.kind === "retry" ? `retry ${job.retries} of ${RETRY_DELAYS_MS.length}` : `reset ${key ?? "unknown"}`}`);
       return job;
@@ -420,10 +422,14 @@ export function createResumer(options: {
     if (!isProviderOn(job.provider, currentSettings)) return cancel({ ...providerOff(job.provider), title });
     // Assigned inside the callback, which TypeScript does not follow. The returned row cannot
     // tell: a row another attempt already claimed comes back unchanged, also as `sending`.
+    // The note is taken from the claimed row, not `job`: one saved while the agent was being
+    // checked must go with it, and `isSameJob` ignores notes so that saving one never fails a claim.
     let claimed = false as boolean;
+    let note: string | undefined;
     const latest = await store.update(job.agentId, (current) => {
       if (!current || !isSameJob(current, job) || (!manual && !current.enabled)) return undefined;
       claimed = true;
+      note = current.note;
       return { ...current, identity: check.identity, waiting: undefined, state: "sending" };
     });
     if (!claimed) return staleResult(latest);
@@ -431,15 +437,16 @@ export function createResumer(options: {
     // failure here must not leave the claim behind, so it falls back to the built-in prompt.
     const { continuePrompt: custom } = await readResumeSettings().catch(() => DEFAULT_RESUME_SETTINGS);
     try {
-      await api.agents.ref(job.agentId).send(continuePrompt({ custom }));
+      await api.agents.ref(job.agentId).send(continuePrompt({ custom, note }));
     } catch (error) {
       await store.update(job.agentId, (current) => (current?.state === "sending" ? null : undefined));
       console.error(`[usage-auto-resume] could not continue ${job.agentId}`, String(error));
       await record(job.agentId, job.provider, { outcome: "send_failed", title, trigger });
       return { result: "send_failed" };
     }
-    // The sent row stays until the agent's next turn ends, which clears it without a report.
-    await store.update(job.agentId, (current) => (current?.state === "sending" ? { ...current, state: "sent" } : undefined));
+    // The sent row stays until the agent's next turn ends, which clears it without a report. The
+    // note went with the continue, so the user's text is not kept any longer.
+    await store.update(job.agentId, (current) => (current?.state === "sending" ? { ...current, state: "sent", note: undefined } : undefined));
     log(`continued ${job.agentId}${manual ? " on request" : ""}`);
     await record(job.agentId, job.provider, { outcome: "continued", title, trigger });
     return { result: "sent" };
@@ -519,6 +526,7 @@ export function createResumer(options: {
           enabled: job.enabled,
           sending: job.state === "sending",
           waiting: job.waiting,
+          note: job.note,
         };
       }),
     );
@@ -574,6 +582,23 @@ export function createResumer(options: {
   }
 
   /**
+   * Saves or, when blank, removes the note sent with one pending job's continue. Its time and
+   * switch stay as they are; `dueAt` pins the job the screen showed. The log never has the text.
+   */
+  async function setNote(agentId: string, dueAt: string, note: string): Promise<SetNoteResult> {
+    const text = note.trim();
+    let result: SetNoteResult = { changed: false, reason: "changed" };
+    await store.update(agentId, (current) => {
+      if (current?.state === "sending" && current.dueAt === dueAt) result = { changed: false, reason: "sending" };
+      if (current?.state !== "pending" || current.dueAt !== dueAt) return undefined;
+      result = { changed: true };
+      log(`note ${text ? "updated" : "removed"} for ${agentId}`);
+      return { ...current, note: text || undefined };
+    });
+    return result;
+  }
+
+  /**
    * Moves one pending job to `newDueAt` and turns it on, like changing an alarm's time;
    * `dueAt` pins the job the screen showed.
    */
@@ -615,6 +640,7 @@ export function createResumer(options: {
     setEnabled,
     setAllEnabled,
     reschedule,
+    setNote,
     resumeNow,
     reconcileProviders,
   };
