@@ -8,14 +8,10 @@ import { captureLaunch, createSubscriptionReader, subscriptionModel, unknownChec
 import { GRACE_MS, MAX_ATTEMPTS, MIN_DELAY_MS, RETRY_DELAYS_MS, rescheduleWindow } from "../shared/schedule";
 import { DEFAULT_PROVIDER_SETTINGS, isProviderOn, type ProviderSettings, type UsageSource } from "../shared/settings";
 import { cliFor } from "./providers";
+import { continuePrompt, DEFAULT_CONTINUE_PROMPT } from "../shared/prompt";
 
-export const CONTINUE_PROMPT =
-  "The provider usage limit should now be reset. Continue the unfinished work from the previous turn. " +
-  "Review the latest conversation, workspace state, and subagent/task status before acting. " +
-  "Use the provider's existing subagent resume or messaging tools to continue each unfinished subagent that stopped because of the usage limit, " +
-  "using its existing agent ID/name and prior instructions. Tell it to continue from its saved progress. " +
-  "Do not duplicate completed work or interrupt running subagents, and honor any user cancellation or pause. " +
-  "If an existing subagent cannot be resumed, report that blocker instead of silently abandoning its unfinished task.";
+/** Kept for callers that compare against the built-in prompt; sends go through `continuePrompt`. */
+export const CONTINUE_PROMPT = DEFAULT_CONTINUE_PROMPT;
 
 const UNKNOWN_RECHECK_MS = 15 * 60_000;
 /** Startup scan looks at agents active this recently; older stops are left to the user. */
@@ -429,7 +425,7 @@ export function createResumer(options: {
     });
     if (!claimed) return staleResult(latest);
     try {
-      await api.agents.ref(job.agentId).send(CONTINUE_PROMPT);
+      await api.agents.ref(job.agentId).send(continuePrompt({ custom: null }));
     } catch (error) {
       await store.update(job.agentId, (current) => (current?.state === "sending" ? null : undefined));
       console.error(`[usage-auto-resume] could not continue ${job.agentId}`, String(error));
