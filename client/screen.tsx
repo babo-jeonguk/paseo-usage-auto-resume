@@ -231,7 +231,7 @@ function JobRow(props: {
   const noteButton = (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={job.note ? `Edit the note for ${title}` : `Add a note for ${title}`}
+      accessibilityLabel={job.note ? `Edit extra instructions for ${title}` : `Add extra instructions for ${title}`}
       accessibilityState={{ disabled: noteLocked }}
       disabled={noteLocked}
       hitSlop={4}
@@ -279,7 +279,7 @@ function JobRow(props: {
           </View>
           {job.note && editing !== "note" ? (
             <Text style={styles.note} numberOfLines={1}>
-              Note · {notePreview(job.note, 120)}
+              Extra Instructions : {notePreview(job.note, 120)}
             </Text>
           ) : null}
           <View style={styles.meta}>

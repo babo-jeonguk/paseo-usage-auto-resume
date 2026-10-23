@@ -351,6 +351,6 @@ export function notePreview(note: string, maxChars: number): string {
 /** Why a note was not saved; the editor stays open with the text. */
 export function noteRefusal(reason: "changed" | "sending"): string {
   return reason === "sending"
-    ? "This reservation is being sent, so its note can’t change."
+    ? "This reservation is being sent, so its extra instructions can’t change."
     : "This reservation changed. Review the time and save again.";
 }

@@ -51,10 +51,10 @@ export function NoteEditor(props: {
       const saved = note.trim() || undefined;
       queryClient.setQueryData<ScheduledJob[]>(queryKey, (jobs) => jobs?.map((entry) =>
         entry.agentId === job.agentId && entry.dueAt === pin ? { ...entry, note: saved } : entry));
-      toast.show(saved ? "Note saved" : "Note removed", { variant: "success" });
+      toast.show(saved ? "Extra instructions saved" : "Extra instructions removed", { variant: "success" });
       props.onClose();
     },
-    onError: () => setProblem("Couldn’t save the note. Try again."),
+    onError: () => setProblem("Couldn’t save the extra instructions. Try again."),
     onSettled: () => {
       notifyScheduleChanged();
       return queryClient.invalidateQueries({ queryKey });
@@ -75,7 +75,7 @@ export function NoteEditor(props: {
   return (
     <View style={{ gap: 8 }}>
       <TextInput
-        accessibilityLabel={`Note for ${job.title ?? "Untitled agent"}`}
+        accessibilityLabel={`Extra instructions for ${job.title ?? "Untitled agent"}`}
         multiline
         numberOfLines={5}
         maxLength={NOTE_MAX_CHARS}
@@ -105,7 +105,7 @@ export function NoteEditor(props: {
         <View style={{ flex: 1 }} />
         {button("Cancel", props.onClose, false)}
         <Pressable
-          accessibilityRole="button" accessibilityLabel="Save note" accessibilityState={{ disabled: busy || unchanged, busy }}
+          accessibilityRole="button" accessibilityLabel="Save extra instructions" accessibilityState={{ disabled: busy || unchanged, busy }}
           disabled={busy || unchanged} onPress={() => save.mutate(text)}
           style={({ pressed }) => filled(colors, pressed, busy || unchanged)}
         >

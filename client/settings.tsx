@@ -135,9 +135,6 @@ function PromptEditor({ settings, theme }: { settings: ReadyResumeSettings; them
       />
       <View style={{ gap: 12, paddingVertical: 12, paddingHorizontal: 16 }}>
         <Text accessibilityLiveRegion="polite" style={mutedText(colors)}>{status}</Text>
-        <Text style={mutedText(colors)}>
-          The default asks the agent to resume unfinished subagents by their existing IDs. Removing that changes how subagents continue.
-        </Text>
         {settings.saveError ? <Text accessibilityRole="alert" style={{ ...mutedText(colors), color: colors.statusDanger }}>{settings.saveError}</Text> : null}
         <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", gap: 8 }}>
           {/* A conflict needs the latest revision; the typed text is kept as the draft. */}
@@ -177,7 +174,7 @@ function ContinuePromptSettings({ theme }: { theme: Theme }) {
     <View style={{ gap: 8 }}>
       <View style={{ gap: 4 }}>
         <Text accessibilityRole="header" style={headingText(colors)}>Continue prompt</Text>
-        <Text style={mutedText(colors)}>Sent to the agent when its reservation continues. A reservation's note is added below it.</Text>
+        <Text style={mutedText(colors)}>Sent to the agent when its reservation continues.</Text>
       </View>
       {settings.status === "ready" ? (
         <PromptEditor settings={settings} theme={theme} />
