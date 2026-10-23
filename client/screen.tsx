@@ -32,7 +32,7 @@ import {
 } from "./format";
 import { Toggle } from "./toggle";
 import { TimeEditor } from "./time-editor";
-import { NoteEditor } from "./note-editor";
+import { NoteEditor, type EditorKind } from "./note-editor";
 import { notifyScheduleChanged } from "./schedule-changes";
 import { historyQueryKey, jobsQueryKey } from "./query-keys";
 
@@ -190,7 +190,6 @@ function createStyles(theme: Theme, compact: boolean) {
 }
 
 type Styles = ReturnType<typeof createStyles>;
-type EditorKind = "time" | "note";
 
 function JobRow(props: {
   job: ScheduledJob;

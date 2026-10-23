@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { listScheduledRpc, rescheduleRpc, resumeNowRpc, setEnabledRpc, type ScheduledJob } from "../shared/rpc";
 import { clockLabel, dayLabel, delayChoices, notePreview, RESUME_NOW_UNFINISHED, refusalLabel, relativeLabel, resumeNowToast, SCHEDULE_CHANGED, waitingLabel } from "./format";
-import { NoteEditor } from "./note-editor";
+import { NoteEditor, type EditorKind } from "./note-editor";
 import { historyQueryKey, jobsQueryKey } from "./query-keys";
 import { accentText, bodyText, chipText, clockText, headingText, mutedText } from "./text-styles";
 import { filled, outlined, pressFeedback } from "./button-styles";
@@ -32,7 +32,7 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
   // One editor at a time. The time editor closes when the reservation moves or starts sending;
   // the note editor stays, so typed text is never lost, and its save is pinned instead. Both close
   // when the reservation is gone, so a later one never opens with an editor.
-  const [editing, setEditing] = useState<"time" | "note" | null>(null);
+  const [editing, setEditing] = useState<EditorKind | null>(null);
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 10_000);
     return () => clearInterval(timer);

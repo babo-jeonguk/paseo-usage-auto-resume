@@ -140,7 +140,7 @@ function PromptEditor({ settings, theme }: { settings: ReadyResumeSettings; them
           {/* A conflict needs the latest revision; the typed text is kept as the draft. */}
           {settings.saveError ? (
             <Pressable
-              accessibilityRole="button" accessibilityLabel="Reload" disabled={settings.saving}
+              accessibilityRole="button" accessibilityLabel="Reload" accessibilityState={{ disabled: settings.saving }} disabled={settings.saving}
               onPress={() => void settings.reload()} style={({ pressed }) => ({ ...outlined(colors, pressed, settings.saving), marginRight: "auto" })}
             >
               <Text style={bodyText(colors)}>Reload</Text>

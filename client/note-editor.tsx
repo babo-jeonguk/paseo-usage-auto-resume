@@ -13,6 +13,9 @@ import { accentText, bodyText, dangerText, inputText, mutedText } from "./text-s
 
 type Theme = PluginSurfaceProps["theme"];
 
+/** The two editors a reservation offers; both surfaces keep at most one open. */
+export type EditorKind = "time" | "note";
+
 /**
  * Writes the note sent after one reservation's continue. Saving never moves or switches the
  * reservation, and the typed text stays through every failure.
