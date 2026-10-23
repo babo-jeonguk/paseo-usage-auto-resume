@@ -198,6 +198,11 @@ function JobRow(props: {
   divided: boolean;
   /** The editor open on this row; one at a time across the list. */
   editing: EditorKind | null;
+  /**
+   * The editor open anywhere in the list. While a note is being written nothing else opens, so
+   * its text is never replaced; while a time is, no note opens.
+   */
+  openEditor: EditorKind | null;
   compact: boolean;
   hostId: string;
   theme: Theme;
@@ -210,6 +215,8 @@ function JobRow(props: {
   const { job, now, styles, theme, onOpen, editing } = props;
   const on = job.enabled;
   const busy = job.sending;
+  const timeLocked = busy || props.openEditor === "note";
+  const noteLocked = busy || props.openEditor !== null;
   const tone = on ? theme.colors.foreground : theme.colors.foregroundMuted;
   const title = job.title ?? "Untitled agent";
   const place = placeLabel(job);
@@ -225,11 +232,11 @@ function JobRow(props: {
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={job.note ? `Edit the note for ${title}` : `Add a note for ${title}`}
-      accessibilityState={{ disabled: busy }}
-      disabled={busy}
+      accessibilityState={{ disabled: noteLocked }}
+      disabled={noteLocked}
       hitSlop={4}
       onPress={() => props.onEdit("note")}
-      style={({ pressed }) => [props.compact ? styles.metaButton : styles.iconButton, busy ? styles.disabled : null, pressed ? styles.pressed : null]}
+      style={({ pressed }) => [props.compact ? styles.metaButton : styles.iconButton, noteLocked ? styles.disabled : null, pressed ? styles.pressed : null]}
     >
       <Icon name="NotebookPen" size={props.compact ? 16 : 18} color={job.note ? theme.colors.accent : theme.colors.foregroundMuted} />
     </Pressable>
@@ -254,12 +261,12 @@ function JobRow(props: {
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={`Change time for ${title}, now ${clockLabel(job.dueAt)}`}
-                accessibilityState={{ disabled: busy }}
-                disabled={busy}
+                accessibilityState={{ disabled: timeLocked }}
+                disabled={timeLocked}
                 hitSlop={8}
                 onPress={() => props.onEdit("time")}
               >
-                <Text style={[styles.time, { color: tone }, busy ? null : styles.timeEditable]}>{clockLabel(job.dueAt)}</Text>
+                <Text style={[styles.time, { color: tone }, timeLocked ? null : styles.timeEditable]}>{clockLabel(job.dueAt)}</Text>
               </Pressable>
               <Text style={styles.relative}>{status}</Text>
             </View>
@@ -608,6 +615,7 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
                   divided={index > 0}
                   // A note editor stays open if the continue starts, so its text is not lost.
                   editing={editing?.agentId === job.agentId && (editing.kind === "note" || !job.sending) ? editing.kind : null}
+                  openEditor={editing?.kind ?? null}
                   compact={layout.compact}
                   hostId={host.id}
                   theme={theme}

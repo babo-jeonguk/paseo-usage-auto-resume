@@ -86,8 +86,9 @@ export function NoteEditor(props: {
         placeholder="Extra instructions sent after the continue prompt"
         placeholderTextColor={colors.foregroundMuted}
         textAlignVertical="top"
+        // Escape closes only an untouched editor; typed text leaves through Cancel.
         onKeyPress={(event) => {
-          if (event.nativeEvent.key === "Escape") props.onClose();
+          if (event.nativeEvent.key === "Escape" && text === (job.note ?? "")) props.onClose();
         }}
         style={{
           ...bodyText(colors), lineHeight: 20, minHeight: 112, maxHeight: 220,

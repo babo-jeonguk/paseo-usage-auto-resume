@@ -91,6 +91,8 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
   const text = bodyText(colors);
   const busy = action.isPending || resume.isPending || !!job?.sending;
   const disabled = busy || query.isError || query.isPending;
+  // Opening the note while a time is typed would drop the time.
+  const noteLocked = disabled || editing === "time";
   const button = (label: string, onPress: () => void, icon: string, unavailable = disabled) => (
     <Pressable
       accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled: unavailable }}
@@ -157,8 +159,8 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
         ) : job.note ? (
           <Pressable
             accessibilityRole="button" accessibilityLabel="Edit the note" accessibilityHint={notePreview(job.note, 200)}
-            accessibilityState={{ disabled }} disabled={disabled} onPress={() => setEditing("note")}
-            style={({ pressed }) => ({ ...pressFeedback(colors, pressed, disabled), flexDirection: "row", alignItems: "flex-start", gap: 8, padding: 10, borderRadius: 6, borderWidth: 1, borderColor: colors.border })}
+            accessibilityState={{ disabled: noteLocked }} disabled={noteLocked} onPress={() => setEditing("note")}
+            style={({ pressed }) => ({ ...pressFeedback(colors, pressed, noteLocked), flexDirection: "row", alignItems: "flex-start", gap: 8, padding: 10, borderRadius: 6, borderWidth: 1, borderColor: colors.border })}
           >
             <Icon name="NotebookPen" size={16} color={colors.foregroundMuted} />
             <View style={{ flex: 1, gap: 2 }}>
@@ -167,7 +169,7 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
             </View>
             <Icon name="Pencil" size={16} color={colors.foregroundMuted} />
           </Pressable>
-        ) : button("Add a note for the continue", () => setEditing("note"), "NotebookPen")}
+        ) : button("Add a note for the continue", () => setEditing("note"), "NotebookPen", noteLocked)}
         {/* A sibling of the editor, so its key must not repeat the editor's. Unsaved note text
             must not be left behind by a continue sent without it. */}
         <ResumeNow key={`resume-now-${job.dueAt}`} theme={theme} disabled={disabled || editing === "note"} pending={resume.isPending}
