@@ -30,13 +30,14 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
   const job = query.data?.find((entry) => entry.agentId === agentId);
   const [now, setNow] = useState(Date.now);
   // One editor at a time. The time editor closes when the reservation moves or starts sending;
-  // the note editor stays, so typed text is never lost, and its save is pinned instead.
+  // the note editor stays, so typed text is never lost, and its save is pinned instead. Both close
+  // when the reservation is gone, so a later one never opens with an editor.
   const [editing, setEditing] = useState<"time" | "note" | null>(null);
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 10_000);
     return () => clearInterval(timer);
   }, []);
-  useEffect(() => setEditing((current) => (current === "time" ? null : current)), [job?.dueAt, job?.sending]);
+  useEffect(() => setEditing((current) => (job && current === "note" ? current : null)), [job?.dueAt, job?.sending]);
 
   const action = useMutation({
     mutationFn: async (input: { job: ScheduledJob } & ({ kind: "toggle"; enabled: boolean } | { kind: "move"; dueAt: string })) => {
@@ -91,8 +92,11 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
   const text = bodyText(colors);
   const busy = action.isPending || resume.isPending || !!job?.sending;
   const disabled = busy || query.isError || query.isPending;
-  // Opening the note while a time is typed would drop the time.
+  // Opening the note while a time is typed would drop the time. While a note is written nothing
+  // moves or sends the reservation: its save is pinned to this time, and a continue would leave it behind.
   const noteLocked = disabled || editing === "time";
+  const timeLocked = disabled || editing === "note";
+  const preview = job?.note ? notePreview(job.note, 200) : undefined;
   const button = (label: string, onPress: () => void, icon: string, unavailable = disabled) => (
     <Pressable
       accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled: unavailable }}
@@ -118,11 +122,10 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
             <Text style={muted}>{dayLabel(job.dueAt, now)}</Text>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
               <Text style={clockText(colors)}>{clockLabel(job.dueAt)}</Text>
-              {/* Opening the time editor would close the note being written. */}
               <Pressable
-                accessibilityRole="button" accessibilityLabel="Change time" accessibilityState={{ disabled: disabled || editing === "note" }}
-                disabled={disabled || editing === "note"} hitSlop={6} onPress={() => setEditing("time")}
-                style={({ pressed }) => ({ ...pressFeedback(colors, pressed, disabled || editing === "note"), width: 32, height: 32, borderRadius: 6, alignItems: "center", justifyContent: "center" })}
+                accessibilityRole="button" accessibilityLabel="Change time" accessibilityState={{ disabled: timeLocked }}
+                disabled={timeLocked} hitSlop={6} onPress={() => setEditing("time")}
+                style={({ pressed }) => ({ ...pressFeedback(colors, pressed, timeLocked), width: 32, height: 32, borderRadius: 6, alignItems: "center", justifyContent: "center" })}
               >
                 <Icon name="Pencil" size={16} color={colors.foregroundMuted} />
               </Pressable>
@@ -132,7 +135,7 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
             {job.waiting ? <Text style={muted}>Next check {relativeLabel(job.dueAt, now)}</Text> : null}
             <View style={{ flexDirection: "row", gap: 6, marginTop: 6 }}>
               {delayChoices(job, now).map((choice) => {
-                const unavailable = disabled || !!choice.problem;
+                const unavailable = timeLocked || !!choice.problem;
                 return (
                   <Pressable
                     key={choice.label} accessibilityRole="button" accessibilityLabel={choice.spoken}
@@ -156,23 +159,22 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
         </View>
         {editing === "note" ? (
           <NoteEditor job={job} hostId={host.id} theme={theme} onClose={() => setEditing(null)} />
-        ) : job.note ? (
+        ) : preview ? (
           <Pressable
-            accessibilityRole="button" accessibilityLabel="Edit extra instructions" accessibilityHint={notePreview(job.note, 200)}
+            accessibilityRole="button" accessibilityLabel="Edit extra instructions" accessibilityHint={preview}
             accessibilityState={{ disabled: noteLocked }} disabled={noteLocked} onPress={() => setEditing("note")}
             style={({ pressed }) => ({ ...pressFeedback(colors, pressed, noteLocked), flexDirection: "row", alignItems: "flex-start", gap: 8, padding: 10, borderRadius: 6, borderWidth: 1, borderColor: colors.border })}
           >
             <Icon name="NotebookPen" size={16} color={colors.foregroundMuted} />
             <View style={{ flex: 1, gap: 2 }}>
               <Text style={muted}>Extra instructions</Text>
-              <Text style={text} numberOfLines={2}>{notePreview(job.note, 200)}</Text>
+              <Text style={text} numberOfLines={2}>{preview}</Text>
             </View>
             <Icon name="Pencil" size={16} color={colors.foregroundMuted} />
           </Pressable>
         ) : button("Add extra instructions", () => setEditing("note"), "NotebookPen", noteLocked)}
-        {/* A sibling of the editor, so its key must not repeat the editor's. Unsaved note text
-            must not be left behind by a continue sent without it. */}
-        <ResumeNow key={`resume-now-${job.dueAt}`} theme={theme} disabled={disabled || editing === "note"} pending={resume.isPending}
+        {/* A sibling of the editor, so its key must not repeat the editor's. */}
+        <ResumeNow key={`resume-now-${job.dueAt}`} theme={theme} disabled={timeLocked} pending={resume.isPending}
           onSend={() => resume.mutate(job)} />
         {action.isPending ? <ActivityIndicator size="small" color={colors.foregroundMuted} /> : null}
       </>}

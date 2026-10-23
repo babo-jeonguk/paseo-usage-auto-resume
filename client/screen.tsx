@@ -540,6 +540,14 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
 
   const openAgent = navigation ? (agentId: string) => navigation.openAgent({ agentId }) : undefined;
   const jobs = query.data ?? [];
+  // The editor open in the list, if its row is still there; a time editor closes when its continue
+  // starts, while a note editor stays so its text is not lost.
+  const editingJob = editing ? jobs.find((job) => job.agentId === editing.agentId) : undefined;
+  const openEditor = editing && editingJob && (editing.kind === "note" || !editingJob.sending) ? editing.kind : null;
+  // An editor whose row has gone must neither keep the other rows locked nor open on a later reservation.
+  useEffect(() => {
+    if (editing && !openEditor) setEditing(null);
+  }, [editing, openEditor]);
   const summary = summaryLabels(jobs);
   const bulk = bulkAction(jobs);
 
@@ -613,9 +621,8 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
                   job={job}
                   now={now}
                   divided={index > 0}
-                  // A note editor stays open if the continue starts, so its text is not lost.
-                  editing={editing?.agentId === job.agentId && (editing.kind === "note" || !job.sending) ? editing.kind : null}
-                  openEditor={editing?.kind ?? null}
+                  editing={editing?.agentId === job.agentId ? openEditor : null}
+                  openEditor={openEditor}
                   compact={layout.compact}
                   hostId={host.id}
                   theme={theme}

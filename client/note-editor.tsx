@@ -29,7 +29,8 @@ export function NoteEditor(props: {
   const queryClient = useQueryClient();
   const toast = useToast();
   const queryKey = jobsQueryKey(props.hostId);
-  const [text, setText] = useState(job.note ?? "");
+  const [initial] = useState(job.note ?? "");
+  const [text, setText] = useState(initial);
   // The reservation the user saw. A refusal moves it to the latest one, which the screen then
   // shows, so a second save is a choice made with the new time in view.
   const [pin, setPin] = useState(job.dueAt);
@@ -90,7 +91,7 @@ export function NoteEditor(props: {
         textAlignVertical="top"
         // Escape closes only an untouched editor; typed text leaves through Cancel.
         onKeyPress={(event) => {
-          if (event.nativeEvent.key === "Escape" && text === (job.note ?? "")) props.onClose();
+          if (event.nativeEvent.key === "Escape" && text.trim() === initial) props.onClose();
         }}
         style={{
           ...inputText(colors), minHeight: 112, maxHeight: 220,
@@ -105,7 +106,7 @@ export function NoteEditor(props: {
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
         {job.note ? button("Remove", () => save.mutate(""), busy) : null}
         <View style={{ flex: 1 }} />
-        {button("Cancel", props.onClose, false)}
+        {button("Cancel", props.onClose, busy)}
         <Pressable
           accessibilityRole="button" accessibilityLabel="Save extra instructions" accessibilityState={{ disabled: busy || unchanged, busy }}
           disabled={busy || unchanged} onPress={() => save.mutate(text)}
