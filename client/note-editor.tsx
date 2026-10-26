@@ -14,7 +14,7 @@ import { accentText, bodyText, dangerText, inputText, mutedText } from "./text-s
 type Theme = PluginSurfaceProps["theme"];
 
 /**
- * Writes the note sent after one reservation's continue. What is typed, the time it is pinned to
+ * Writes the note sent after one reservation's continue. What is typed, the reservation it is for
  * and the save in flight live in the surface's `session`, so a row drawn again keeps them. Saving
  * never moves or switches the reservation, and the typed text stays through every failure.
  */

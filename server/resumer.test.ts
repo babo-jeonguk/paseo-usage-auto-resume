@@ -682,12 +682,39 @@ test("a limit after a continue being sent counts it as sent", async () => {
 });
 
 test("archiving or an API route leaves a continue being sent with its claim", async () => {
-  const { api, resumer } = await setup({ a1: { provider: "codex" } });
+  let route: "subscription" | "api" = "subscription";
+  const { api, resumer } = await setup({ a1: { provider: "codex" } }, {
+    readSubscription: async () => (route === "api" ? { auth: "api", status: "unknown" } : { auth: "subscription", status: "ready", identity: "account-model" }),
+  });
   await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
   await store.update("a1", (job) => job && { ...job, state: "sending" });
   await resumer.forget("a1");
-  assert.equal((await store.list())[0]?.state, "sending");
+  assert.equal((await store.list())[0]?.state, "sending", "archived");
+  route = "api";
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  assert.equal((await store.list())[0]?.state, "sending", "API route");
   assert.deepEqual(await recorded(), []);
+});
+
+test("turning a provider off cancels its reservation even if it moved meanwhile", async () => {
+  let off = false;
+  const { api, resumer } = await setup({ a1: { provider: "codex" } }, {
+    readSettings: async () => ({ ...DEFAULT_PROVIDER_SETTINGS, disabledProviders: off ? ["codex"] : [] }),
+  });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  off = true;
+  // The user moves it between the list read and the cancel.
+  const shown = await pinOf(store, "a1");
+  const list = store.list;
+  store.list = async () => {
+    const jobs = await list();
+    store.list = list;
+    await resumer.reschedule("a1", shown, "2026-10-06T05:40:00.000Z");
+    return jobs;
+  };
+  await resumer.reconcileProviders();
+  assert.deepEqual(await store.list(), []);
+  assert.deepEqual(await recorded(), ["a1 canceled/provider_off"]);
 });
 
 test("the continue is steered into a turn that starts after the last check", async () => {

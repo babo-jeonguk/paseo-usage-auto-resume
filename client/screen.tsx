@@ -211,7 +211,7 @@ function JobRow(props: {
   onOpen?: (agentId: string) => void;
 }) {
   const { job, now, styles, theme, onOpen, session, dispatch } = props;
-  const editing = session?.agentId === job.agentId ? session.kind : null;
+  const editing = session?.reservation === job.id ? session.kind : null;
   const on = job.enabled;
   const busy = job.sending;
   const locks = editorLocks(session);

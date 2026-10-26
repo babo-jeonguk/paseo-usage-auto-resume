@@ -10,7 +10,7 @@ const BASELINE = "2026-10-06T02:00:00.000Z";
 const LATER = "2026-10-06T03:00:00.000Z";
 
 const job = (fields: Partial<ResumeJob> = {}): ResumeJob => ({
-  agentId: "a1", provider: "codex", resetAt: null, dueAt: "2026-10-06T05:02:00.000Z", baseline: BASELINE,
+  id: "r1", agentId: "a1", provider: "codex", resetAt: null, dueAt: "2026-10-06T05:02:00.000Z", baseline: BASELINE,
   attempts: 0, retries: 0, state: "pending", enabled: true, ...fields,
 });
 const agent = (fields: Partial<PaseoAgent> = {}) => ({

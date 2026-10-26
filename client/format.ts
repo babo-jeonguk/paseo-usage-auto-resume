@@ -350,9 +350,12 @@ export function notePreview(note: string, maxChars: number): string {
   return line.length > maxChars ? `${line.slice(0, maxChars - 1).trimEnd()}…` : line;
 }
 
-/** Why a note was not saved; the editor stays open with the text. */
+/**
+ * Why a note was not saved; the editor stays open with the text until the list closes it. A note
+ * follows its reservation wherever it moves, so a refusal is never solved by saving again.
+ */
 export function noteRefusal(reason: Extract<SetNoteResult, { changed: false }>["reason"]): string {
   return reason === "sending"
     ? "This reservation is being sent, so its extra instructions can’t change."
-    : "This reservation changed. Review the time and save again.";
+    : "This reservation already ran or was replaced, so these extra instructions can’t be saved.";
 }

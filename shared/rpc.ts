@@ -50,7 +50,7 @@ export const RescheduleResultSchema = z.discriminatedUnion("changed", [
   z.object({
     changed: z.literal(false),
     /**
-     * `changed`: the job already ran, was canceled, or moved since it was shown.
+     * `changed`: the job already ran, was canceled or replaced, or moved since it was shown.
      * `sending`: the continue is being delivered. `too-early`: before `earliest` (the limit
      * reset plus grace, or a minute from now). `too-late`: more than a week out.
      */
@@ -70,7 +70,7 @@ export const rescheduleRpc = defineRpc({
 
 export const SetNoteResultSchema = z.discriminatedUnion("changed", [
   z.object({ changed: z.literal(true) }),
-  /** `changed`: it already ran, was canceled, or moved since it was shown. `sending`: being delivered. */
+  /** `changed`: it already ran, was canceled or replaced; a move does not refuse a note. `sending`: being delivered. */
   z.object({ changed: z.literal(false), reason: z.enum(["changed", "sending"]) }),
 ]);
 
@@ -135,7 +135,7 @@ export const ResumeNowResultSchema = z.discriminatedUnion("result", [
   z.object({ result: z.literal("busy") }),
   /** Already being sent. */
   z.object({ result: z.literal("sending") }),
-  /** Already ran, was canceled, or moved since it was shown. */
+  /** Already ran, was canceled or replaced, or moved since it was shown. */
   z.object({ result: z.literal("changed") }),
   /** Settings could not be read, so nothing was checked or sent. */
   z.object({ result: z.literal("unavailable") }),

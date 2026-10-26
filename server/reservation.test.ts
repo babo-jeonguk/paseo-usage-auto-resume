@@ -54,7 +54,7 @@ test("a pending reservation is checked against its account even when the plan is
   assert.equal(written(replan(unbound, { ...reset, identity: "account-a" })).identity, "account-a", "an unbound one is bound");
 });
 
-test("a new message since a pending reservation was made cancels it inside the plan, and the stop gets its own", () => {
+test("a pending reservation older than the stop's message, written after the event read it, is replaced", () => {
   const pending = job({ attempts: 3, retries: 2, note: "for the old request", enabled: false, userChosenTime: true, dueAt: "2026-10-06T09:00:00.000Z" });
   const result = replan(pending, { ...reset, baseline: LATER });
   assert.equal(ended(result), "new_message");

@@ -91,8 +91,8 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
   const text = bodyText(colors);
   const busy = action.isPending || resume.isPending || !!job?.sending;
   const disabled = busy || query.isError || query.isPending;
-  // While a note is written nothing moves or sends the reservation: its save is pinned to this
-  // time, and a continue would leave it behind.
+  // While a note is written nothing moves or sends the reservation here: the note is for this
+  // continue, which would leave it behind, and a move would close the time the user is reading.
   const locks = editorLocks(session);
   const noteLocked = disabled || locks.note;
   const changeLocked = disabled || locks.time;

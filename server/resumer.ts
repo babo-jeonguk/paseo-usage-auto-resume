@@ -412,13 +412,16 @@ export function createResumer(options: {
     return deliver(job, api, now(), "manual");
   }
 
-  /** Turning a provider off also retires the reservations it already has. */
+  /**
+   * Turning a provider off also retires the reservations it already has: it concerns the agent,
+   * so whatever pending reservation is stored when the write happens goes, moved or not.
+   */
   async function reconcileProviders(): Promise<void> {
     const settings = await readSettings();
     if (!settings) return;
     for (const job of await store.list()) {
       if (job.state !== "pending" || isProviderOn(job.provider, settings)) continue;
-      await retire(job.agentId, (current) => isSameJob(current, job), providerOff(job.provider));
+      await retire(job.agentId, (current) => current.state === "pending" && !isProviderOn(current.provider, settings), providerOff(job.provider));
     }
   }
 
@@ -467,7 +470,7 @@ export function createResumer(options: {
           .refresh()
           .catch(() => null);
         return {
-          id: job.id!,
+          id: job.id,
           agentId: job.agentId,
           provider: job.provider,
           workspaceId: loaded?.agent.workspaceId ?? null,

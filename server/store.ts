@@ -40,7 +40,10 @@ const JobSchema = z.object({
   userChosenTime: z.literal(true).optional().catch(undefined),
 });
 
-export type ResumeJob = z.infer<typeof JobSchema>;
+type StoredJob = z.infer<typeof JobSchema>;
+
+/** A stored reservation as read: it always has an id. */
+export type ResumeJob = StoredJob & { id: string };
 
 const FileSchema = z.object({ version: z.literal(1), jobs: z.array(JobSchema) });
 
@@ -63,7 +66,7 @@ export function createJobStore(path = defaultStorePath()) {
     try {
       const parsed = FileSchema.safeParse(JSON.parse(await readFile(path, "utf8")));
       // Stable until the first write stores it: only a write can change `dueAt`.
-      if (parsed.success) return parsed.data.jobs.map((job) => (job.id ? job : { ...job, id: `${job.agentId}@${job.dueAt}` }));
+      if (parsed.success) return parsed.data.jobs.map((job) => ({ ...job, id: job.id ?? `${job.agentId}@${job.dueAt}` }));
       console.error("[usage-auto-resume] job file failed validation; starting empty");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -82,14 +85,18 @@ export function createJobStore(path = defaultStorePath()) {
 
   return {
     list: () => serialize(read),
-    /** Applies `change` to the agent's job: a job replaces it, null removes it, undefined keeps it. */
-    update: (agentId: string, change: (current: ResumeJob | null) => ResumeJob | null | undefined) =>
-      serialize(async () => {
+    /**
+     * Applies `change` to the agent's job: a job replaces it, null removes it, undefined keeps it.
+     * A job without an id is a new reservation and gets one.
+     */
+    update: (agentId: string, change: (current: ResumeJob | null) => StoredJob | null | undefined) =>
+      serialize(async (): Promise<ResumeJob | null> => {
         const jobs = await read();
         const index = jobs.findIndex((job) => job.agentId === agentId);
         const current = index === -1 ? null : jobs[index]!;
-        const next = change(current);
-        if (next === undefined || (next === null && current === null)) return next ?? current;
+        const changed = change(current);
+        if (changed === undefined || (changed === null && current === null)) return current;
+        const next = changed && { ...changed, id: changed.id ?? randomUUID() };
         const rest = jobs.filter((job) => job.agentId !== agentId);
         await write(next ? [...rest, next] : rest);
         return next;

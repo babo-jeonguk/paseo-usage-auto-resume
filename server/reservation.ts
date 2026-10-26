@@ -71,7 +71,9 @@ export type Replan = { write?: ResumeJob; end?: Outcome } | null;
 /**
  * The table's "a turn stops at a limit", for the row the stop finds, decided inside the write.
  * - A message the user sent since a pending reservation was made cancels it, and the stop gets a
- *   reservation of its own.
+ *   reservation of its own. The turn event cancels it first; this covers a pending reservation
+ *   another stop wrote after that event read the agent. A stop concerns the agent, so it plans
+ *   against whatever row is stored when it writes.
  * - Otherwise a pending reservation is planned again. It keeps its switch, its extra instructions, its
  *   account and model, and a time the user chose that is later than the new plan. A stop under
  *   another account cancels it. Nothing is counted, since no continue was sent: a retry plan stays
