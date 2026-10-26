@@ -6,6 +6,11 @@ import { z } from "zod";
 import { NOTE_MAX_CHARS } from "../shared/prompt";
 
 const JobSchema = z.object({
+  /**
+   * Names one reservation for its whole life: kept when it is moved, switched, noted or planned
+   * again, new when a reservation replaces it. Rows saved before it existed get one on reading.
+   */
+  id: z.string().optional(),
   agentId: z.string(),
   provider: z.string(),
   /** Reset instant (minute precision) the job waits for; null while it is unknown. */
@@ -57,7 +62,8 @@ export function createJobStore(path = defaultStorePath()) {
   async function read(): Promise<ResumeJob[]> {
     try {
       const parsed = FileSchema.safeParse(JSON.parse(await readFile(path, "utf8")));
-      if (parsed.success) return parsed.data.jobs;
+      // Stable until the first write stores it: only a write can change `dueAt`.
+      if (parsed.success) return parsed.data.jobs.map((job) => (job.id ? job : { ...job, id: `${job.agentId}@${job.dueAt}` }));
       console.error("[usage-auto-resume] job file failed validation; starting empty");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {

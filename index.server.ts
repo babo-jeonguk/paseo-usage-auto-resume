@@ -73,25 +73,25 @@ export default function contribute(server: PluginServerContext) {
     void resumer.attach(paseo);
     return { providers: await discoverProviders(paseo) };
   });
-  server.handle(setEnabledRpc, async ({ agentId, dueAt, enabled }, { paseo }) => {
+  server.handle(setEnabledRpc, async ({ agentId, id, dueAt, enabled }, { paseo }) => {
     void resumer.attach(paseo);
-    return { changed: await resumer.setEnabled(agentId, dueAt, enabled) };
+    return { changed: await resumer.setEnabled(agentId, { id, dueAt }, enabled) };
   });
   server.handle(setAllEnabledRpc, async ({ enabled, jobs }, { paseo }) => {
     void resumer.attach(paseo);
     return { changed: await resumer.setAllEnabled(enabled, jobs) };
   });
-  server.handle(rescheduleRpc, async ({ agentId, dueAt, newDueAt }, { paseo }) => {
+  server.handle(rescheduleRpc, async ({ agentId, id, dueAt, newDueAt }, { paseo }) => {
     void resumer.attach(paseo);
-    return resumer.reschedule(agentId, dueAt, newDueAt);
+    return resumer.reschedule(agentId, { id, dueAt }, newDueAt);
   });
-  server.handle(setNoteRpc, async ({ agentId, dueAt, note }, { paseo }) => {
+  server.handle(setNoteRpc, async ({ agentId, id, note }, { paseo }) => {
     void resumer.attach(paseo);
-    return resumer.setNote(agentId, dueAt, note);
+    return resumer.setNote(agentId, { id }, note);
   });
-  server.handle(resumeNowRpc, async ({ agentId, dueAt }, { paseo }) => {
+  server.handle(resumeNowRpc, async ({ agentId, id, dueAt }, { paseo }) => {
     void resumer.attach(paseo);
-    return resumer.resumeNow(paseo, agentId, dueAt);
+    return resumer.resumeNow(paseo, agentId, { id, dueAt });
   });
   const timer = setInterval(() => void resumer.tick().catch(report), TICK_MS);
 

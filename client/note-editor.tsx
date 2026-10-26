@@ -37,21 +37,16 @@ export function NoteEditor(props: {
 
   // The results are handled here, not per call, so they still arrive if the row is drawn again.
   const save = useMutation({
-    mutationFn: async ({ note, pin }: { note: string; pin: string; opened: object }) => {
+    mutationFn: async ({ note, reservation }: { note: string; reservation: string; opened: object }) => {
       await queryClient.cancelQueries({ queryKey });
-      const result = await setNote({ agentId, dueAt: pin, note });
-      if (result.changed) return { result, latest: pin };
-      await queryClient.refetchQueries({ queryKey });
-      const latest = queryClient.getQueryData<ScheduledJob[]>(queryKey)?.find((entry) => entry.agentId === agentId)?.dueAt;
-      return { result, latest: latest ?? pin };
+      return setNote({ agentId, id: reservation, note });
     },
-    onSuccess: ({ result, latest }, { note, pin, opened }) => {
-      // A refusal moves the pin to the latest reservation, which the screen then shows, so a
-      // second save is a choice made with the new time in view.
-      if (!result.changed) return dispatch({ type: "refused", opened, latest, problem: noteRefusal(result.reason) });
+    onSuccess: (result, { note, reservation, opened }) => {
+      // Refused only once the reservation is gone, replaced or being sent: the list then closes the editor.
+      if (!result.changed) return dispatch({ type: "refused", opened, problem: noteRefusal(result.reason) });
       const saved = note.trim() || undefined;
       queryClient.setQueryData<ScheduledJob[]>(queryKey, (jobs) => jobs?.map((entry) =>
-        entry.agentId === agentId && entry.dueAt === pin ? { ...entry, note: saved } : entry));
+        entry.id === reservation ? { ...entry, note: saved } : entry));
       toast.show(saved ? "Extra instructions saved" : "Extra instructions removed", { variant: "success" });
       dispatch({ type: "saved", opened });
     },
@@ -63,14 +58,14 @@ export function NoteEditor(props: {
   });
   const submit = (note: string) => {
     dispatch({ type: "save" });
-    save.mutate({ note, pin: session.pin, opened: session.opened });
+    save.mutate({ note, reservation: session.reservation, opened: session.opened });
   };
 
   const { draft: text, problem } = session;
   const busy = session.saving;
   const blocked = busy || !!props.locked;
   // Save compares with the saved note, which another surface may have changed meanwhile.
-  const unchanged = text.trim() === (job.note ?? "") && session.pin === job.dueAt;
+  const unchanged = text.trim() === (job.note ?? "");
   const left = charactersLeft(text.length, NOTE_MAX_CHARS);
   const button = (label: string, onPress: () => void, unavailable: boolean) => (
     <Pressable

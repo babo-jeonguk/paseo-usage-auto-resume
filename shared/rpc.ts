@@ -8,6 +8,8 @@ export const WaitingSchema = z.enum(["auth", "usage"]);
 export type Waiting = z.infer<typeof WaitingSchema>;
 
 export const ScheduledJobSchema = z.object({
+  /** The reservation, kept while it is moved, switched or planned again; a replacement has another. */
+  id: z.string(),
   agentId: z.string(),
   provider: z.string(),
   /** Composer placement; optional for older server responses, null when unavailable. */
@@ -37,7 +39,8 @@ export const listScheduledRpc = defineRpc({
 
 export const setEnabledRpc = defineRpc({
   name: "auto-resume.set-enabled",
-  input: z.object({ agentId: z.string(), dueAt: z.string(), enabled: z.boolean() }),
+  /** `id` and `dueAt` are the reservation and time the screen showed. */
+  input: z.object({ agentId: z.string(), id: z.string(), dueAt: z.string(), enabled: z.boolean() }),
   /** False when the job already ran, was canceled, or was rescheduled since it was shown. */
   output: z.object({ changed: z.boolean() }),
 });
@@ -60,8 +63,8 @@ export type RescheduleResult = z.infer<typeof RescheduleResultSchema>;
 
 export const rescheduleRpc = defineRpc({
   name: "auto-resume.reschedule",
-  /** `dueAt` is the time the screen showed; `newDueAt` replaces it. */
-  input: z.object({ agentId: z.string(), dueAt: z.string(), newDueAt: z.iso.datetime() }),
+  /** `id` and `dueAt` are the reservation and time the screen showed; `newDueAt` replaces the time. */
+  input: z.object({ agentId: z.string(), id: z.string(), dueAt: z.string(), newDueAt: z.iso.datetime() }),
   output: RescheduleResultSchema,
 });
 
@@ -75,15 +78,15 @@ export type SetNoteResult = z.infer<typeof SetNoteResultSchema>;
 
 export const setNoteRpc = defineRpc({
   name: "auto-resume.set-note",
-  /** An empty or blank note removes it. `dueAt` pins the reservation the screen showed. */
-  input: z.object({ agentId: z.string(), dueAt: z.string(), note: z.string().max(NOTE_MAX_CHARS) }),
+  /** An empty or blank note removes it. `id` is the reservation the screen showed, wherever it has moved. */
+  input: z.object({ agentId: z.string(), id: z.string(), note: z.string().max(NOTE_MAX_CHARS) }),
   output: SetNoteResultSchema,
 });
 
 export const setAllEnabledRpc = defineRpc({
   name: "auto-resume.set-all-enabled",
   /** The rows the screen showed; jobs scheduled since, or being sent, are left alone. */
-  input: z.object({ enabled: z.boolean(), jobs: z.array(z.object({ agentId: z.string(), dueAt: z.string() })) }),
+  input: z.object({ enabled: z.boolean(), jobs: z.array(z.object({ agentId: z.string(), id: z.string(), dueAt: z.string() })) }),
   /** How many jobs flipped. */
   output: z.object({ changed: z.number().int().nonnegative() }),
 });
@@ -142,8 +145,8 @@ export type ResumeNowResult = z.infer<typeof ResumeNowResultSchema>;
 
 export const resumeNowRpc = defineRpc({
   name: "auto-resume.resume-now",
-  /** `dueAt` is the time the screen showed. */
-  input: z.object({ agentId: z.string(), dueAt: z.string() }),
+  /** `id` and `dueAt` are the reservation and time the screen showed. */
+  input: z.object({ agentId: z.string(), id: z.string(), dueAt: z.string() }),
   output: ResumeNowResultSchema,
 });
 

@@ -5,7 +5,7 @@ import { editorLocks, editSession, type EditEvent, type EditSession } from "./ed
 
 const DUE = "2026-10-06T05:02:00.000Z";
 const job = (fields: Partial<ScheduledJob> = {}): ScheduledJob => ({
-  agentId: "a", provider: "codex", title: "Task", projectName: null, workspaceName: null,
+  id: `${fields.agentId ?? "a"}-1`, agentId: "a", provider: "codex", title: "Task", projectName: null, workspaceName: null,
   resetAt: null, dueAt: DUE, enabled: true, sending: false, ...fields,
 });
 const run = (...events: EditEvent[]) => events.reduce<EditSession | null>(editSession, null);
@@ -16,7 +16,7 @@ test("extra instructions open with the saved note and the reservation's time", (
   const { opened, ...rest } = run(open("note", { note: "Rerun the tests" }))!;
   assert.equal(typeof opened, "object");
   assert.deepEqual(rest, {
-    agentId: "a", kind: "note", pin: DUE, draft: "Rerun the tests", initial: "Rerun the tests", saving: false, problem: null,
+    agentId: "a", reservation: "a-1", kind: "note", pin: DUE, draft: "Rerun the tests", initial: "Rerun the tests", saving: false, problem: null,
   });
 });
 
@@ -48,12 +48,18 @@ test("an editor whose reservation is gone closes, so a later one opens without i
   }
 });
 
-test("a time editor closes when its reservation moves or starts sending; extra instructions stay pinned", () => {
+test("an editor closes when another reservation for the same agent replaces its own", () => {
+  for (const editor of ["time", "note"] as const) {
+    assert.equal(run(open(editor), { type: "sync", jobs: [job({ id: "a-2" })] }), null, editor);
+  }
+});
+
+test("a time editor closes when its reservation moves or starts sending; extra instructions stay with the reservation", () => {
   const moved = [job({ dueAt: "2026-10-07T00:10:00.000Z" })];
   assert.equal(run(open("time"), { type: "sync", jobs: moved }), null);
   assert.equal(run(open("time"), { type: "sync", jobs: [job({ sending: true })] }), null);
   const note = run(open("note"), { type: "type", text: "keep me" }, { type: "sync", jobs: moved });
-  assert.deepEqual([note?.draft, note?.pin], ["keep me", DUE], "the save stays pinned to the time shown when it opened");
+  assert.deepEqual([note?.draft, note?.reservation], ["keep me", "a-1"], "the save goes to the same reservation at its new time");
   assert.equal(kind(run(open("note"), { type: "sync", jobs: [job({ sending: true })] })), "a:note");
 });
 
@@ -76,10 +82,10 @@ test("a save's result reaches only the editor that made it", () => {
   assert.equal(editSession(first, { type: "saved", opened: first.opened }), null);
   // The reservation was sent while saving, and the editor opened again on the agent's next one.
   const gone = editSession(first, { type: "sync", jobs: [] });
-  const again = editSession(editSession(gone, open("note", { dueAt: "2026-10-06T10:02:00.000Z" })), { type: "save" });
+  const again = editSession(editSession(gone, open("note", { id: "a-2", dueAt: "2026-10-06T10:02:00.000Z" })), { type: "save" });
   for (const late of [
     { type: "saved", opened: first.opened },
-    { type: "refused", opened: first.opened, latest: DUE, problem: "x" },
+    { type: "refused", opened: first.opened, problem: "x" },
     { type: "failed", opened: first.opened, problem: "x" },
   ] as EditEvent[]) {
     assert.equal(editSession(again, late), again, late.type);
@@ -88,19 +94,19 @@ test("a save's result reaches only the editor that made it", () => {
   assert.equal(editSession(idle, { type: "saved", opened: idle.opened }), idle, "no save was in flight");
 });
 
-test("a refused save keeps the text and moves the pin to the latest reservation", () => {
+test("a refused or failed save keeps the text and says why", () => {
   const saving = run(open("note"), { type: "type", text: "draft" }, { type: "save" })!;
-  const refused = editSession(saving, { type: "refused", opened: saving.opened, latest: "2026-10-06T05:12:00.000Z", problem: "changed" });
-  assert.deepEqual([refused?.draft, refused?.pin, refused?.saving, refused?.problem], ["draft", "2026-10-06T05:12:00.000Z", false, "changed"]);
+  const refused = editSession(saving, { type: "refused", opened: saving.opened, problem: "sending" });
+  assert.deepEqual([refused?.draft, refused?.saving, refused?.problem], ["draft", false, "sending"]);
   const failed = editSession(saving, { type: "failed", opened: saving.opened, problem: "retry" });
   assert.deepEqual([failed?.draft, failed?.pin, failed?.saving, failed?.problem], ["draft", DUE, false, "retry"]);
   assert.equal(editSession(failed, { type: "save" })?.problem, null, "a new save clears the last problem");
 });
 
 test("a time saved for a reservation closes only that reservation's time editor", () => {
-  assert.equal(run(open("time"), { type: "moved", agentId: "a" }), null);
-  assert.equal(kind(run(open("time"), { type: "moved", agentId: "b" })), "a:time", "another row's +10m leaves it open");
-  assert.equal(kind(run(open("note"), { type: "moved", agentId: "a" })), "a:note");
+  assert.equal(run(open("time"), { type: "moved", reservation: "a-1" }), null);
+  assert.equal(kind(run(open("time"), { type: "moved", reservation: "b-1" })), "a:time", "another row's +10m leaves it open");
+  assert.equal(kind(run(open("note"), { type: "moved", reservation: "a-1" })), "a:note");
 });
 
 test("an open editor's locks", () => {

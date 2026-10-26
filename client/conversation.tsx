@@ -41,7 +41,7 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
   const action = useMutation({
     mutationFn: async (input: { job: ScheduledJob } & ({ kind: "toggle"; enabled: boolean } | { kind: "move"; dueAt: string })) => {
       await queryClient.cancelQueries({ queryKey });
-      const pin = { agentId, dueAt: input.job.dueAt };
+      const pin = { agentId, id: input.job.id, dueAt: input.job.dueAt };
       if (input.kind === "toggle") {
         const result = await setEnabled({ ...pin, enabled: input.enabled });
         if (!result.changed) throw new Error(SCHEDULE_CHANGED);
@@ -51,10 +51,10 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
       }
     },
     onSuccess: (_result, input) => {
-      if (input.kind === "move") dispatch({ type: "moved", agentId });
+      if (input.kind === "move") dispatch({ type: "moved", reservation: input.job.id });
       // Reflect only an acknowledged mutation, in the sidebar's shared cache too.
       queryClient.setQueryData<ScheduledJob[]>(queryKey, (jobs) => jobs?.map((entry) =>
-        entry.agentId !== agentId || entry.dueAt !== input.job.dueAt ? entry : input.kind === "toggle"
+        entry.id !== input.job.id || entry.dueAt !== input.job.dueAt ? entry : input.kind === "toggle"
           ? { ...entry, enabled: input.enabled }
           : { ...entry, dueAt: input.dueAt, enabled: true }));
       toast.show(input.kind === "toggle" ? `Auto Resume turned ${input.enabled ? "on" : "off"}` : "Resume time updated");
@@ -69,14 +69,14 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
   const resume = useMutation({
     mutationFn: async (shown: ScheduledJob) => {
       await queryClient.cancelQueries({ queryKey });
-      return resumeNow({ agentId, dueAt: shown.dueAt });
+      return resumeNow({ agentId, id: shown.id, dueAt: shown.dueAt });
     },
     onSuccess: (result, shown) => {
       const { message, tone } = resumeNowToast(result, Date.now());
       toast.show(message, { variant: tone });
       if (result.result !== "sent") return;
       queryClient.setQueryData<ScheduledJob[]>(queryKey, (jobs) =>
-        jobs?.filter((entry) => entry.agentId !== agentId || entry.dueAt !== shown.dueAt));
+        jobs?.filter((entry) => entry.id !== shown.id));
       close();
     },
     // A timeout, a lost connection or a server error: the daemon may still have finished, and sent.

@@ -10,6 +10,7 @@ import { createSubscriptionReader } from "./subscription";
 import { createClaudeCredentialReader } from "./claude-credentials";
 import { createHash } from "node:crypto";
 import { createJobStore } from "./store";
+import { pinOf } from "./test-pins";
 import type { ProviderSettings, UsageSource } from "../shared/settings";
 import { summaryLabels, waitingLabel } from "../client/format";
 
@@ -335,7 +336,7 @@ for (const profile of profiles) {
       if (action === "provider") h.agent.provider = "different-provider";
       if (action === "model") h.agent.model = "different-model";
       if (action === "provider-off") h.settings.disabledProviders.push(h.agent.provider);
-      if (action === "resume-off") assert.equal(await h.resumer.setEnabled(h.agent.id, job.dueAt, false), true);
+      if (action === "resume-off") assert.equal(await h.resumer.setEnabled(h.agent.id, await pinOf(h.store, h.agent.id, job.dueAt), false), true);
       h.state.available = true;
       h.setTime(h.reset + 2 * MINUTE);
       await h.resumer.tick();
@@ -354,10 +355,10 @@ for (const profile of profiles) {
     assert.equal(await h.resumer.setAllEnabled(false, shown), 1);
     assert.equal((await h.store.list())[0]?.enabled, false);
     assert.equal(await h.resumer.setAllEnabled(true, shown), 1);
-    assert.equal(await h.resumer.setEnabled(h.agent.id, shown[0]!.dueAt, false), true);
-    assert.equal((await h.resumer.reschedule(h.agent.id, shown[0]!.dueAt, iso(h.reset + MINUTE))).changed, false);
+    assert.equal(await h.resumer.setEnabled(h.agent.id, await pinOf(h.store, h.agent.id, shown[0]!.dueAt), false), true);
+    assert.equal((await h.resumer.reschedule(h.agent.id, await pinOf(h.store, h.agent.id, shown[0]!.dueAt), iso(h.reset + MINUTE))).changed, false);
     const delayed = iso(h.reset + 12 * MINUTE);
-    assert.equal((await h.resumer.reschedule(h.agent.id, shown[0]!.dueAt, delayed)).changed, true);
+    assert.equal((await h.resumer.reschedule(h.agent.id, await pinOf(h.store, h.agent.id, shown[0]!.dueAt), delayed)).changed, true);
     assert.equal((await h.store.list())[0]?.enabled, true, "editing re-enables the reservation");
     const restarted = h.make();
     h.state.available = true;

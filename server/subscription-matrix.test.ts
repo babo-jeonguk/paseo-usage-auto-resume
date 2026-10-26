@@ -7,6 +7,7 @@ import type { PluginLifecycleEvents } from "@getpaseo/plugin/server";
 import type { PaseoAgent } from "./paseo-types";
 import { CONTINUE_PROMPT, createResumer, type ResumerApi } from "./resumer";
 import { createJobStore } from "./store";
+import { pinOf } from "./test-pins";
 import { captureLaunch, createSubscriptionReader } from "./subscription";
 import { createClaudeCredentialReader } from "./claude-credentials";
 import type { UsageSource } from "../shared/settings";
@@ -225,8 +226,8 @@ for (const source of ["codex", "claude", "antigravity"] as const) {
       if (guard === "running") h.agent.status = "running";
       if (guard === "archive") h.agent.archivedAt = START;
       if (guard === "provider-change") h.agent.provider = "different-provider";
-      if (guard === "switch-off") assert.equal(await h.resumer.setEnabled(h.agent.id, job.dueAt, false), true);
-      if (guard === "delay") assert.equal((await h.resumer.reschedule(h.agent.id, job.dueAt, "2026-10-23T01:02:00.000Z")).changed, true);
+      if (guard === "switch-off") assert.equal(await h.resumer.setEnabled(h.agent.id, await pinOf(h.store, h.agent.id, job.dueAt), false), true);
+      if (guard === "delay") assert.equal((await h.resumer.reschedule(h.agent.id, await pinOf(h.store, h.agent.id, job.dueAt), "2026-10-23T01:02:00.000Z")).changed, true);
       h.setTime(job.dueAt);
       await h.resumer.tick();
       assert.deepEqual(h.sent, []);

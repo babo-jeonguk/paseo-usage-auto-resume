@@ -30,6 +30,7 @@ import {
 } from "./format";
 
 const job = (overrides: Partial<ScheduledJob>): ScheduledJob => ({
+  id: "a-1",
   agentId: "a",
   provider: "codex",
   title: "Task",

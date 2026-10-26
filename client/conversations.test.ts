@@ -7,7 +7,7 @@ import { installConversationControls } from "./conversations";
 import { notifyScheduleChanged } from "./schedule-changes";
 
 const job = (agentId: string, workspaceId: string | null = "workspace"): ScheduledJob => ({
-  agentId, workspaceId, provider: "codex", title: null, projectName: null, workspaceName: null,
+  id: `${agentId}-1`, agentId, workspaceId, provider: "codex", title: null, projectName: null, workspaceName: null,
   resetAt: null, dueAt: new Date(Date.now() + 3_600_000).toISOString(), enabled: true, sending: false,
 });
 

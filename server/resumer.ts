@@ -1,6 +1,8 @@
 import type { AgentTimelineItem, PaseoAgent, PaseoApi } from "./paseo-types";
 import type { PluginLifecycleEvents, PluginSessionOpenRequest } from "@getpaseo/plugin/server";
-import { agentGate, canceled, dueFor, replan, turnAction, type Cancellation, type Gate, type Outcome, type Plan, type TurnEvent } from "./decisions";
+import { randomUUID } from "node:crypto";
+import { ACCOUNT_CHANGED, agentGate, API_ROUTE, canceled, turnAction, turnEventOf, type Cancellation, type Gate, type Outcome, type TurnEvent } from "./decisions";
+import { claimed, isSameJob, noted, pinned, postponed, replan, rescheduled, sent, switched, type Pin, type Plan } from "./reservation";
 import { detectLimitStop } from "./limit";
 import type { HistoryRow, RescheduleResult, ResumeNowResult, ScheduledJob, SetNoteResult, Waiting } from "../shared/rpc";
 import type { HistoryStore } from "./history";
@@ -141,7 +143,7 @@ export function createResumer(options: {
     const { outcome } = event;
     const observedAt = now();
     const stop = outcome.kind === "canceled" ? null : detectLimitStop(outcome, event.timeline, observedAt);
-    const kind: TurnEvent = outcome.kind === "canceled" ? "stopped" : stop ? "limit" : outcome.kind === "completed" ? "finished" : "failed";
+    const kind = turnEventOf(outcome.kind, !!stop);
     await onTurn(api, event.agent.id, kind, stop ? { resetAt: stop.resetAt, observedAt } : undefined);
   }
 
@@ -151,19 +153,19 @@ export function createResumer(options: {
 
   /**
    * Applies the table's turn events. The agent is read only when a new message could matter. A
-   * cancel or a clear is pinned to the row the decision read; a stop at a limit is decided by
-   * `replan` inside its own write, against the row stored then, new message included.
+   * cancel or a clear acts on the reservation the event read, by its id, wherever it has moved
+   * meanwhile; a stop at a limit is planned by `replan` inside its own write.
    */
   async function onTurn(api: ResumerApi, agentId: string, event: TurnEvent, stop?: { resetAt: Date | null; observedAt: Date }): Promise<void> {
     const row = (await store.list()).find((job) => job.agentId === agentId) ?? null;
     // An agent that cannot be read only loses the message check; a finished turn still clears.
     const agent = row?.state === "pending" || event === "limit" ? await loadAgent(api, agentId).catch(() => null) : null;
     const action = turnAction(row, agent, event);
-    // Pinned to the row the decision read: a newer reservation written meanwhile is not this event's.
-    const read = (current: ResumeJob | null) => !!row && isSameJob(current, row);
-    if (action.cancel && !action.schedules) await retire(agentId, read, action.cancel);
+    // A reservation that replaced the one read is not this event's.
+    const read = (current: ResumeJob | null, state: ResumeJob["state"]) => !!current && !!row && current.id === row.id && current.state === state;
+    if (action.cancel) await retire(agentId, (current) => read(current, "pending"), action.cancel);
     // A continue already sent was reported when it went, so it is cleared quietly.
-    if (action.clearSent) await store.update(agentId, (current) => (read(current) ? null : undefined));
+    if (action.clearSent) await store.update(agentId, (current) => (read(current, "sent") ? null : undefined));
     if (!action.schedules || !agent || !stop) return;
     const settings = await readSettings();
     const source = settings && (await resumableSource(api, agent.provider, settings));
@@ -191,13 +193,14 @@ export function createResumer(options: {
       // Only a reservation still waiting is canceled; a continue already sent was reported.
       launches.delete(agent.id);
       await retire(agent.id, (current) => current.state === "pending",
-        { ...canceled("api_route", "authentication uses API billing"), title: titleOf(agent) }, { clearOthers: true });
+        { ...API_ROUTE, title: titleOf(agent) }, { clearOthers: true });
       return;
     }
     const plan: Plan = stated ? { kind: "reset", resetAt: stated } : planFor(check, at);
     const settings = await readSettings();
     if (!settings || !isProviderOn(agent.provider, settings)) return;
     const stop = {
+      id: randomUUID(),
       agentId: agent.id, provider: agent.provider, plan, at, baseline: agent.lastUserMessageAt ?? null,
       identity: check.identity, model: subscriptionModel(agent), launch,
     };
@@ -297,10 +300,6 @@ export function createResumer(options: {
     await retire(agentId, (job) => job.state === "pending", canceled("archived", "agent was archived"), { clearOthers: true });
   }
 
-  const isSameJob = (left: ResumeJob | null, right: ResumeJob) =>
-    left !== null && left.state === right.state && left.dueAt === right.dueAt && left.resetAt === right.resetAt &&
-    left.identity === right.identity && left.model === right.model && left.retries === right.retries && left.waiting === right.waiting && left.baseline === right.baseline;
-
   /**
    * A used-up window, or a stated reset still ahead, moves a due job to when it renews; unverified
    * auth or usage moves it to the next check. False when nothing holds it.
@@ -310,13 +309,9 @@ export function createResumer(options: {
     const stated = job.resetAt && Date.parse(job.resetAt) > at.getTime() ? new Date(job.resetAt) : null;
     const renewsAt = renewalFor(hold, stated);
     if (hold.kind === "ready" && !renewsAt) return false;
-    await store.update(job.agentId, (current) => current && isSameJob(current, job) && current.enabled ? {
-      ...current, resetAt: renewsAt ? renewsAt.toISOString() : current.resetAt, dueAt: dueFor(renewsAt, at),
-      waiting: renewsAt ? undefined : hold.kind === "unverified" ? hold.waiting : "usage",
-      identity: current.identity ?? check.identity,
-      retries: renewsAt ? 0 : current.retries,
-      userChosenTime: undefined,
-    } : undefined);
+    const waiting = hold.kind === "unverified" ? hold.waiting : "usage";
+    await store.update(job.agentId, (current) => current && isSameJob(current, job) && current.enabled
+      ? postponed(current, { renewsAt, waiting, identity: check.identity, at }) : undefined);
     return true;
   }
 
@@ -352,9 +347,9 @@ export function createResumer(options: {
     const gate = agentGate(job, agent, mode);
     if (gate) return gated(gate, title);
     const check = await inspect(api, agent!, source, at, launches.get(job.agentId) ?? job.launch);
-    if (check.auth === "api") return cancel({ ...canceled("api_route", "authentication uses API billing"), title });
+    if (check.auth === "api") return cancel({ ...API_ROUTE, title });
     if (job.identity && check.identity && job.identity !== check.identity) {
-      return cancel({ ...canceled("account_changed", "account or model changed"), title });
+      return cancel({ ...ACCOUNT_CHANGED, title });
     }
     if (manual) {
       // Only the account's own usage holds a continue the user asked for; the notice may be outdated.
@@ -379,15 +374,15 @@ export function createResumer(options: {
     // tell: a row another attempt already claimed comes back unchanged, also as `sending`.
     // The note is taken from the claimed row, not `job`: one saved while the agent was being
     // checked must go with it, and `isSameJob` ignores notes so that saving one never fails a claim.
-    let claimed = false as boolean;
+    let won = false as boolean;
     let note: string | undefined;
     const latest = await store.update(job.agentId, (current) => {
       if (!current || !isSameJob(current, job) || (!manual && !current.enabled)) return undefined;
-      claimed = true;
+      won = true;
       note = current.note;
-      return { ...current, identity: check.identity, waiting: undefined, state: "sending" };
+      return claimed(current, check.identity);
     });
-    if (!claimed) return staleResult(latest);
+    if (!won) return staleResult(latest);
     // Read once claimed, so a prompt saved while the agent was being checked is the one sent. A
     // failure here must not leave the claim behind, so it falls back to the built-in prompt.
     const { continuePrompt: custom } = await readResumeSettings().catch(() => DEFAULT_RESUME_SETTINGS);
@@ -395,23 +390,24 @@ export function createResumer(options: {
       // A turn that starts after the last check is steered, not replaced, where the provider can.
       await api.agents.ref(job.agentId).send(continuePrompt({ custom, note }), { activeTurnBehavior: "steer" });
     } catch (error) {
-      await store.update(job.agentId, (current) => (current?.state === "sending" ? null : undefined));
+      await store.update(job.agentId, (current) => (current?.state === "sending" && current.id === job.id ? null : undefined));
       console.error(`[usage-auto-resume] could not continue ${job.agentId}`, String(error));
       await record(job.agentId, job.provider, { outcome: "send_failed", title, trigger });
       return { result: "send_failed" };
     }
     // The sent row stays until the agent's next turn ends, which clears it without a report. The
     // note went with the continue, so the user's text is not kept any longer.
-    await store.update(job.agentId, (current) => (current?.state === "sending" ? { ...current, state: "sent", note: undefined, userChosenTime: undefined } : undefined));
+    await store.update(job.agentId, (current) => (current?.state === "sending" && current.id === job.id ? sent(current) : undefined));
     log(`continued ${job.agentId}${manual ? " on request" : ""}`);
     await record(job.agentId, job.provider, { outcome: "continued", title, trigger });
     return { result: "sent" };
   }
 
-  /** Sends the continue now if the agent and its usage allow it; `dueAt` pins the job the screen showed. */
-  async function resumeNow(api: ResumerApi, agentId: string, dueAt: string): Promise<ResumeNowResult> {
-    const job = (await store.list()).find((entry) => entry.agentId === agentId);
-    if (job?.state !== "pending" || job.dueAt !== dueAt) return staleResult(job?.dueAt === dueAt ? job : null);
+  /** Sends the continue now if the agent and its usage allow it, for the reservation and time the screen showed. */
+  async function resumeNow(api: ResumerApi, agentId: string, pin: Required<Pin>): Promise<ResumeNowResult> {
+    const job = (await store.list()).find((entry) => entry.agentId === agentId) ?? null;
+    const state = pinned(job, pin);
+    if (!job || state !== "pending") return { result: state === "pending" ? "changed" : state };
     log(`resume now requested for ${agentId}`);
     return deliver(job, api, now(), "manual");
   }
@@ -471,6 +467,7 @@ export function createResumer(options: {
           .refresh()
           .catch(() => null);
         return {
+          id: job.id!,
           agentId: job.agentId,
           provider: job.provider,
           workspaceId: loaded?.agent.workspaceId ?? null,
@@ -508,14 +505,14 @@ export function createResumer(options: {
     });
   }
 
-  /** Turns one pending job on or off; `dueAt` pins the job the screen showed. */
-  async function setEnabled(agentId: string, dueAt: string, enabled: boolean): Promise<boolean> {
+  /** Turns one pending job on or off, for the reservation and time the screen showed. */
+  async function setEnabled(agentId: string, pin: Required<Pin>, enabled: boolean): Promise<boolean> {
     let changed = false;
     await store.update(agentId, (current) => {
-      if (current?.state !== "pending" || current.dueAt !== dueAt) return undefined;
+      if (pinned(current, pin) !== "pending") return undefined;
       changed = true;
       log(`${enabled ? "turned on" : "turned off"} ${agentId}`);
-      return { ...current, enabled };
+      return switched(current!, enabled);
     });
     return changed;
   }
@@ -524,14 +521,14 @@ export function createResumer(options: {
    * Turns the jobs the screen showed on or off and counts the ones that flipped. Jobs scheduled
    * after the screen loaded are not in `jobs`, and one being sent is no longer pending.
    */
-  async function setAllEnabled(enabled: boolean, jobs: ReadonlyArray<{ agentId: string; dueAt: string }>): Promise<number> {
+  async function setAllEnabled(enabled: boolean, jobs: ReadonlyArray<{ agentId: string } & Required<Pin>>): Promise<number> {
     let changed = 0;
-    for (const { agentId, dueAt } of jobs) {
+    for (const { agentId, ...pin } of jobs) {
       await store.update(agentId, (current) => {
-        if (current?.state !== "pending" || current.dueAt !== dueAt || current.enabled === enabled) return undefined;
+        if (pinned(current, pin) !== "pending" || current!.enabled === enabled) return undefined;
         changed += 1;
         log(`${enabled ? "turned on" : "turned off"} ${agentId}`);
-        return { ...current, enabled };
+        return switched(current!, enabled);
       });
     }
     return changed;
@@ -539,32 +536,40 @@ export function createResumer(options: {
 
   /**
    * Saves or, when blank, removes the note sent with one pending job's continue. Its time and
-   * switch stay as they are; `dueAt` pins the job the screen showed. The log never has the text.
+   * switch stay as they are. The note is for the reservation, not its time, so the pin is the
+   * reservation alone: one moved since the screen showed it still takes it. The log never has the text.
    */
-  async function setNote(agentId: string, dueAt: string, note: string): Promise<SetNoteResult> {
+  async function setNote(agentId: string, pin: { id: string }, note: string): Promise<SetNoteResult> {
     const text = note.trim();
     let result: SetNoteResult = { changed: false, reason: "changed" };
     await store.update(agentId, (current) => {
-      if (current?.state === "sending" && current.dueAt === dueAt) result = { changed: false, reason: "sending" };
-      if (current?.state !== "pending" || current.dueAt !== dueAt) return undefined;
+      const state = pinned(current, { id: pin.id });
+      if (state !== "pending") {
+        result = { changed: false, reason: state };
+        return undefined;
+      }
       result = { changed: true };
       log(`note ${text ? "updated" : "removed"} for ${agentId}`);
-      return { ...current, note: text || undefined };
+      return noted(current!, text);
     });
     return result;
   }
 
   /**
-   * Moves one pending job to `newDueAt` and turns it on, like changing an alarm's time;
-   * `dueAt` pins the job the screen showed.
+   * Moves one pending job to `newDueAt` and turns it on, like changing an alarm's time, for the
+   * reservation and time the screen showed.
    */
-  async function reschedule(agentId: string, dueAt: string, newDueAt: string): Promise<RescheduleResult> {
+  async function reschedule(agentId: string, pin: Required<Pin>, newDueAt: string): Promise<RescheduleResult> {
     let result: RescheduleResult = { changed: false, reason: "changed" };
     const at = now();
     const target = new Date(newDueAt);
     await store.update(agentId, (current) => {
-      if (current?.state === "sending" && current.dueAt === dueAt) result = { changed: false, reason: "sending" };
-      if (current?.state !== "pending" || current.dueAt !== dueAt) return undefined;
+      const state = pinned(current, pin);
+      if (state !== "pending") {
+        result = { changed: false, reason: state };
+        return undefined;
+      }
+      if (!current) return undefined;
       const { earliest, latest } = rescheduleWindow(current.resetAt, at.getTime());
       if (target.getTime() < earliest) {
         result = { changed: false, reason: "too-early", earliest: new Date(earliest).toISOString() };
@@ -577,7 +582,7 @@ export function createResumer(options: {
       const next = target.toISOString();
       result = { changed: true, dueAt: next };
       log(`rescheduled ${agentId} for ${next} (was ${current.dueAt}${current.enabled ? "" : "; turned on"})`);
-      return { ...current, dueAt: next, enabled: true, userChosenTime: true };
+      return rescheduled(current, next);
     });
     return result;
   }

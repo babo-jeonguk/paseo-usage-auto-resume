@@ -1,5 +1,4 @@
-import type { HistoryEntry, HistoryOutcome, HistoryReason, Waiting } from "../shared/rpc";
-import { GRACE_MS, MAX_ATTEMPTS, MIN_DELAY_MS, RETRY_DELAYS_MS } from "../shared/schedule";
+import type { HistoryEntry, HistoryOutcome, HistoryReason } from "../shared/rpc";
 import type { PaseoAgent } from "./paseo-types";
 import type { ResumeJob } from "./store";
 import { subscriptionModel } from "./subscription";
@@ -22,6 +21,8 @@ export type Cancellation = Outcome & { outcome: "canceled"; reason: HistoryReaso
 
 export const canceled = (reason: HistoryReason, detail: string): Cancellation => ({ outcome: "canceled", reason, detail });
 export const NEW_MESSAGE = canceled("new_message", "a newer message reached the agent");
+export const ACCOUNT_CHANGED = canceled("account_changed", "account or model changed");
+export const API_ROUTE = canceled("api_route", "authentication uses API billing");
 const TURN_FINISHED = canceled("turn_finished", "a turn finished before the scheduled continue");
 
 /** A turn is in progress. */
@@ -33,11 +34,15 @@ export const inTurn = (agent: PaseoAgent) => !!agent.activeTurn || agent.status 
  */
 export const hasNewMessage = (agent: PaseoAgent, job: ResumeJob) => isLater(agent.lastUserMessageAt, job.baseline);
 
-const isLater = (message: string | null | undefined, baseline: string | null) =>
+export const isLater = (message: string | null | undefined, baseline: string | null) =>
   message != null && (baseline === null || Date.parse(message) > Date.parse(baseline));
 
 /** How a turn event reads in the table: a stop is `limit` only when a limit notice ended it. */
 export type TurnEvent = "started" | "finished" | "failed" | "stopped" | "limit";
+
+/** A turn's end, as the table reads it. */
+export const turnEventOf = (outcome: "completed" | "failed" | "canceled", limited: boolean): TurnEvent =>
+  outcome === "canceled" ? "stopped" : limited ? "limit" : outcome === "completed" ? "finished" : "failed";
 
 export interface TurnAction {
   /** Cancels the pending reservation with this reason. */
@@ -87,95 +92,3 @@ export function agentGate(job: ResumeJob, agent: PaseoAgent | null, mode: "auto"
   if (!job.enabled && mode === "auto") return "skip";
   return null;
 }
-
-const UNKNOWN_RECHECK_MS = 15 * 60_000;
-
-/** When to act on a reset: two minutes after it, never sooner than a minute from now. Without one, check again. */
-export function dueFor(resetAt: Date | null, now: Date): string {
-  if (!resetAt) return new Date(now.getTime() + UNKNOWN_RECHECK_MS).toISOString();
-  return new Date(Math.max(resetAt.getTime() + GRACE_MS, now.getTime() + MIN_DELAY_MS)).toISOString();
-}
-
-/**
- * When a stop's continue should go: a known reset, a retry while usage reads ready, or a check
- * when it cannot be verified.
- */
-export type Plan =
-  | { kind: "reset"; resetAt: Date }
-  | { kind: "retry" }
-  | { kind: "check"; waiting: Waiting };
-
-/** A limit stop to plan a reservation for, with what was read about the agent and its account. */
-export interface Stop {
-  agentId: string;
-  provider: string;
-  plan: Plan;
-  at: Date;
-  baseline: string | null;
-  identity?: string;
-  model?: string;
-  launch?: ResumeJob["launch"];
-}
-
-/**
- * What a stop does to the stored row: `end` records how the reservation there ended, and `write`
- * is the row to store. With neither, the row is removed; null leaves it as it is.
- */
-export type Replan = { write?: ResumeJob; end?: Outcome } | null;
-
-/**
- * The table's "a turn stops at a limit", for the row the stop finds, decided inside the write.
- * - A message the user sent since a pending reservation was made cancels it, and the stop gets a
- *   reservation of its own.
- * - Otherwise a pending reservation is planned again. It keeps its switch, its extra instructions, its
- *   account and model, and a time the user chose that is later than the new plan. A stop under
- *   another account cancels it. Nothing is counted, since no continue was sent: a retry plan stays
- *   on its step of the retry sequence, and any other plan leaves the sequence.
- * - After a sent continue, or one being sent, the stop counts toward giving up.
- */
-export function replan(current: ResumeJob | null, stop: Stop): Replan {
-  const { plan, at } = stop;
-  const retry = plan.kind === "retry";
-  const pending = current?.state === "pending" ? current : null;
-  const superseded = !!pending && isLater(stop.baseline, pending.baseline);
-  const kept = superseded ? null : pending;
-  const previous = superseded ? null : current;
-  let attempts: number, retries: number;
-  if (kept) {
-    if (kept.identity && stop.identity && kept.identity !== stop.identity) return { end: canceled("account_changed", "account or model changed") };
-    attempts = kept.attempts;
-    retries = retry ? Math.max(kept.retries, 1) : 0;
-  } else {
-    attempts = previous ? previous.attempts + 1 : 0;
-    if (attempts >= MAX_ATTEMPTS) return { end: { outcome: "gave_up", reason: "attempts", detail: `${attempts} automatic continues hit a limit again` } };
-    const done = retry ? (previous?.retries ?? 0) : 0;
-    if (done >= RETRY_DELAYS_MS.length) return { end: { outcome: "gave_up", reason: "retries", detail: `${done} continues stopped again while its usage windows were not used up` } };
-    retries = retry ? done + 1 : 0;
-  }
-  const planned = retry ? new Date(at.getTime() + RETRY_DELAYS_MS[retries - 1]!).toISOString()
-    : dueFor(plan.kind === "reset" ? plan.resetAt : null, at);
-  const keepTime = !!kept?.userChosenTime && Date.parse(kept.dueAt) > Date.parse(planned);
-  const job: ResumeJob = {
-    agentId: stop.agentId,
-    provider: stop.provider,
-    resetAt: plan.kind === "reset" ? plan.resetAt.toISOString() : null,
-    dueAt: keepTime ? kept!.dueAt : planned,
-    baseline: stop.baseline,
-    attempts,
-    retries,
-    state: "pending",
-    enabled: kept?.enabled ?? true,
-    waiting: plan.kind === "check" ? plan.waiting : undefined,
-    identity: kept?.identity ?? stop.identity,
-    model: kept ? kept.model ?? stop.model : stop.model,
-    launch: stop.launch,
-    note: kept?.note,
-    userChosenTime: keepTime || undefined,
-  };
-  if (kept && unchanged(kept, job)) return null;
-  return { write: job, end: superseded ? NEW_MESSAGE : undefined };
-}
-
-/** Every field the plan sets is what is stored already. */
-const unchanged = (stored: ResumeJob, job: ResumeJob) =>
-  (Object.keys(job) as Array<keyof ResumeJob>).every((field) => JSON.stringify(stored[field]) === JSON.stringify(job[field]));

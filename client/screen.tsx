@@ -491,13 +491,14 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
     mutationFn: async (input: { job: ScheduledJob; enabled: boolean }) => {
       const { changed } = await setEnabled({
         agentId: input.job.agentId,
+        id: input.job.id,
         dueAt: input.job.dueAt,
         enabled: input.enabled,
       });
       if (!changed) throw new Error(SCHEDULE_CHANGED);
     },
     onMutate: ({ job, enabled }) =>
-      optimistic((jobs) => jobs.map((entry) => (entry.agentId === job.agentId ? { ...entry, enabled } : entry))),
+      optimistic((jobs) => jobs.map((entry) => (entry.id === job.id ? { ...entry, enabled } : entry))),
     onError: (error, _input, context) => rollback(error, context),
     onSettled: settled,
   });
@@ -505,14 +506,14 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
   // Moving a job turns it on, like changing an alarm's time; it may also change its day group.
   const move = useMutation({
     mutationFn: async (input: { job: ScheduledJob; dueAt: string }) => {
-      const result = await reschedule({ agentId: input.job.agentId, dueAt: input.job.dueAt, newDueAt: input.dueAt });
+      const result = await reschedule({ agentId: input.job.agentId, id: input.job.id, dueAt: input.job.dueAt, newDueAt: input.dueAt });
       if (!result.changed) throw new Error(refusalLabel(input.job, result));
     },
     onMutate: ({ job, dueAt }) => {
       // Only this row's time editor closes; one open on another row, or a note, stays.
-      dispatch({ type: "moved", agentId: job.agentId });
+      dispatch({ type: "moved", reservation: job.id });
       return optimistic((jobs) =>
-        byDueAt(jobs.map((entry) => (entry.agentId === job.agentId ? { ...entry, dueAt, enabled: true } : entry))),
+        byDueAt(jobs.map((entry) => (entry.id === job.id ? { ...entry, dueAt, enabled: true } : entry))),
       );
     },
     onError: (error, _input, context) => rollback(error, context),
@@ -525,12 +526,12 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
       (
         await setAllEnabled({
           enabled: input.enabled,
-          jobs: input.jobs.map(({ agentId, dueAt }) => ({ agentId, dueAt })),
+          jobs: input.jobs.map(({ agentId, id, dueAt }) => ({ agentId, id, dueAt })),
         })
       ).changed,
     onMutate: ({ enabled, jobs: shown }) => {
-      const ids = new Set(shown.map((job) => job.agentId));
-      return optimistic((jobs) => jobs.map((entry) => (ids.has(entry.agentId) ? { ...entry, enabled } : entry)));
+      const ids = new Set(shown.map((job) => job.id));
+      return optimistic((jobs) => jobs.map((entry) => (ids.has(entry.id) ? { ...entry, enabled } : entry)));
     },
     onSuccess: (changed, { enabled }) =>
       toast.show(`${changed} ${changed === 1 ? "schedule" : "schedules"} turned ${enabled ? "on" : "off"}`),

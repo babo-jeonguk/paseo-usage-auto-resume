@@ -11,8 +11,10 @@ export interface EditSession {
   /** This opening of the editor, so a save made in an earlier one never lands in it. */
   opened: object;
   agentId: string;
+  /** The reservation the editor is for; another one for the same agent closes it. */
+  reservation: string;
   kind: EditorKind;
-  /** The reservation time the editor opened on. A note's save is pinned to it; a refusal moves it. */
+  /** The reservation time the editor opened on. A time editor closes when it moves; extra instructions don't. */
   pin: string;
   /** The extra instructions as typed, and what the editor opened with. */
   draft: string;
@@ -27,11 +29,11 @@ export type EditEvent =
   | { type: "type"; text: string }
   | { type: "save" }
   | { type: "saved"; opened: object }
-  | { type: "refused"; opened: object; latest: string; problem: string }
+  | { type: "refused"; opened: object; problem: string }
   | { type: "failed"; opened: object; problem: string }
   | { type: "cancel" }
   | { type: "escape" }
-  | { type: "moved"; agentId: string }
+  | { type: "moved"; reservation: string }
   | { type: "sync"; jobs: readonly ScheduledJob[] };
 
 /**
@@ -45,7 +47,7 @@ export function editSession(state: EditSession | null, event: EditEvent): EditSe
       const { kind, job } = event;
       if (job.sending || (state && (kind === "note" || state.kind === "note"))) return state;
       const note = kind === "note" ? job.note ?? "" : "";
-      return { opened: {}, agentId: job.agentId, kind, pin: job.dueAt, draft: note, initial: note, saving: false, problem: null };
+      return { opened: {}, agentId: job.agentId, reservation: job.id, kind, pin: job.dueAt, draft: note, initial: note, saving: false, problem: null };
     }
     case "type":
       return state?.kind === "note" && !state.saving ? { ...state, draft: event.text } : state;
@@ -54,14 +56,14 @@ export function editSession(state: EditSession | null, event: EditEvent): EditSe
     case "saved":
       return ownSave(state, event.opened) ? null : state;
     case "refused":
-      return ownSave(state, event.opened) ? { ...state!, saving: false, pin: event.latest, problem: event.problem } : state;
+      return ownSave(state, event.opened) ? { ...state!, saving: false, problem: event.problem } : state;
     case "failed":
       return ownSave(state, event.opened) ? { ...state!, saving: false, problem: event.problem } : state;
     case "cancel":
       return state?.saving ? state : null;
     case "moved":
       // A time saved for this reservation closes its time editor, even when the time is the same.
-      return state?.kind === "time" && state.agentId === event.agentId ? null : state;
+      return state?.kind === "time" && state.reservation === event.reservation ? null : state;
     case "escape":
       // Only an untouched editor closes; typed text leaves through Cancel.
       return state?.kind === "note" && !state.saving && state.draft.trim() === state.initial ? null : state;
@@ -73,14 +75,14 @@ export function editSession(state: EditSession | null, event: EditEvent): EditSe
 const ownSave = (state: EditSession | null, opened: object) => state?.kind === "note" && state.saving && state.opened === opened;
 
 /**
- * The session as the latest list allows it. An editor whose reservation is gone closes, so a
- * later reservation never opens with one. A time editor also closes when its reservation moves
- * or starts sending; extra instructions stay, pinned to the time they opened on.
+ * The session as the latest list allows it. An editor whose reservation is gone, or replaced by
+ * another for the same agent, closes. A time editor also closes when its reservation moves or
+ * starts sending; extra instructions stay, since they are for the reservation, not its time.
  */
 export function synced(state: EditSession | null, jobs: readonly ScheduledJob[]): EditSession | null {
   if (!state) return state;
   const job = jobs.find((entry) => entry.agentId === state.agentId);
-  if (!job) return null;
+  if (!job || job.id !== state.reservation) return null;
   if (state.kind === "time" && (job.dueAt !== state.pin || job.sending)) return null;
   return state;
 }
