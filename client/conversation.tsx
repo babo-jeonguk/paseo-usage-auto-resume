@@ -95,7 +95,7 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
   // time, and a continue would leave it behind.
   const locks = editorLocks(session);
   const noteLocked = disabled || locks.note;
-  const moveLocked = disabled || locks.time;
+  const changeLocked = disabled || locks.time;
   const preview = job?.note ? notePreview(job.note, 200) : undefined;
   const button = (label: string, onPress: () => void, icon: string, unavailable = disabled) => (
     <Pressable
@@ -128,9 +128,9 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
               <Text style={clockText(colors)}>{clockLabel(job.dueAt)}</Text>
               <Pressable
-                accessibilityRole="button" accessibilityLabel="Change time" accessibilityState={{ disabled: moveLocked }}
-                disabled={moveLocked} hitSlop={6} onPress={() => dispatch({ type: "open", kind: "time", job })}
-                style={({ pressed }) => ({ ...pressFeedback(colors, pressed, moveLocked), width: 32, height: 32, borderRadius: 6, alignItems: "center", justifyContent: "center" })}
+                accessibilityRole="button" accessibilityLabel="Change time" accessibilityState={{ disabled: changeLocked }}
+                disabled={changeLocked} hitSlop={6} onPress={() => dispatch({ type: "open", kind: "time", job })}
+                style={({ pressed }) => ({ ...pressFeedback(colors, pressed, changeLocked), width: 32, height: 32, borderRadius: 6, alignItems: "center", justifyContent: "center" })}
               >
                 <Icon name="Pencil" size={16} color={colors.foregroundMuted} />
               </Pressable>
@@ -140,7 +140,7 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
             {job.waiting ? <Text style={muted}>Next check {relativeLabel(job.dueAt, now)}</Text> : null}
             <View style={{ flexDirection: "row", gap: 6, marginTop: 6 }}>
               {delayChoices(job, now).map((choice) => {
-                const unavailable = moveLocked || !!choice.problem;
+                const unavailable = changeLocked || !!choice.problem;
                 return (
                   <Pressable
                     key={choice.label} accessibilityRole="button" accessibilityLabel={choice.spoken}
@@ -179,7 +179,7 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
           </Pressable>
         ) : button("Add extra instructions", () => dispatch({ type: "open", kind: "note", job }), "NotebookPen", noteLocked)}
         {/* A sibling of the editor, so its key must not repeat the editor's. */}
-        <ResumeNow key={`resume-now-${job.dueAt}`} theme={theme} disabled={moveLocked} pending={resume.isPending}
+        <ResumeNow key={`resume-now-${job.dueAt}`} theme={theme} disabled={changeLocked} pending={resume.isPending}
           onSend={() => resume.mutate(job)} />
         {action.isPending ? <ActivityIndicator size="small" color={colors.foregroundMuted} /> : null}
       </>}

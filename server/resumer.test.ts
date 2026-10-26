@@ -621,6 +621,38 @@ test("a turn event acts only on the reservation it read", async () => {
   assert.deepEqual(await recorded(), []);
 });
 
+test("a new message still cancels at a limit when the reservation changed while the agent was read", async () => {
+  const { api, resumer, agents } = await setup({ a1: { provider: "codex" } });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  await resumer.setNote("a1", "2026-10-06T05:02:00.000Z", "For the earlier request.");
+  agents.set("a1", { provider: "codex", lastUserMessageAt: "2026-10-06T03:30:00.000Z" });
+  const ref = api.agents.ref;
+  api.agents.ref = (id) => {
+    const handle = ref(id);
+    const refresh = handle.refresh;
+    return Object.assign(handle, {
+      refresh: async () => {
+        await resumer.reschedule("a1", "2026-10-06T05:02:00.000Z", "2026-10-06T05:20:00.000Z");
+        return refresh();
+      },
+    });
+  };
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  api.agents.ref = ref;
+  const [job] = await store.list();
+  assert.deepEqual([job?.baseline, job?.note, job?.userChosenTime], ["2026-10-06T03:30:00.000Z", undefined, undefined]);
+  assert.deepEqual(await recorded(), ["a1 canceled/new_message"]);
+});
+
+test("a limit after a continue being sent counts it as sent", async () => {
+  const { api, resumer } = await setup({ a1: { provider: "codex" } });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  await store.update("a1", (job) => job && { ...job, state: "sending" });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  const [job] = await store.list();
+  assert.deepEqual([job?.state, job?.attempts], ["pending", 1]);
+});
+
 test("archiving or an API route leaves a continue being sent with its claim", async () => {
   const { api, resumer } = await setup({ a1: { provider: "codex" } });
   await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);

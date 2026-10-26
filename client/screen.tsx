@@ -335,7 +335,7 @@ function JobRow(props: {
       {/* Below the time and title, which stay in view so a refused save can be checked against them. */}
       {session && editing === "note" ? (
         <View style={styles.noteEditor}>
-          <NoteEditor job={job} session={session} dispatch={dispatch} hostId={props.hostId} theme={theme} />
+          <NoteEditor job={job} session={session} dispatch={dispatch} hostId={props.hostId} theme={theme} locked={busy} />
         </View>
       ) : null}
     </View>
@@ -456,6 +456,7 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
     queryFn: async () => (await listScheduled({})).jobs,
     refetchInterval: 30_000,
   });
+  const [session, dispatch] = useEditSession(query.data);
   const history = useQuery({
     queryKey: historyKey,
     queryFn: async () => (await listHistory({})).entries,
@@ -539,7 +540,6 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
 
   const openAgent = navigation ? (agentId: string) => navigation.openAgent({ agentId }) : undefined;
   const jobs = query.data ?? [];
-  const [session, dispatch] = useEditSession(query.data);
   const summary = summaryLabels(jobs);
   const bulk = bulkAction(jobs);
 
@@ -651,7 +651,10 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
         <View style={styles.stale}>
           <Icon name="TriangleAlert" size={16} color={theme.colors.statusDanger} />
           <Text accessibilityRole="alert" style={styles.staleText}>Couldn’t refresh schedules. This list may be out of date.</Text>
-          <Pressable accessibilityRole="button" onPress={refresh} style={styles.retry}>
+          <Pressable
+            accessibilityRole="button" accessibilityState={{ disabled: query.isFetching }} disabled={query.isFetching}
+            onPress={refresh} style={[styles.retry, query.isFetching ? styles.disabled : null]}
+          >
             <Text style={styles.retryText}>Try again</Text>
           </Pressable>
         </View>

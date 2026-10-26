@@ -31,8 +31,10 @@ export const inTurn = (agent: PaseoAgent) => !!agent.activeTurn || agent.status 
  * A message the user sent after the reservation was made. Only a later message counts: a snapshot
  * read before a message was recorded must not cancel the reservation that message's stop made.
  */
-export const hasNewMessage = (agent: PaseoAgent, job: ResumeJob) =>
-  agent.lastUserMessageAt != null && (job.baseline === null || Date.parse(agent.lastUserMessageAt) > Date.parse(job.baseline));
+export const hasNewMessage = (agent: PaseoAgent, job: ResumeJob) => isLater(agent.lastUserMessageAt, job.baseline);
+
+const isLater = (message: string | null | undefined, baseline: string | null) =>
+  message != null && (baseline === null || Date.parse(message) > Date.parse(baseline));
 
 /** How a turn event reads in the table: a stop is `limit` only when a limit notice ended it. */
 export type TurnEvent = "started" | "finished" | "failed" | "stopped" | "limit";
@@ -43,7 +45,7 @@ export interface TurnAction {
   /** Removes a sent record without a report. */
   clearSent?: boolean;
   /** Plans a reservation for the stop just seen. */
-  plan?: boolean;
+  schedules?: boolean;
 }
 
 /**
@@ -51,15 +53,15 @@ export interface TurnAction {
  * a turn the agent started on its own, failed or was stopped leaves it to the due time.
  */
 export function turnAction(row: ResumeJob | null, agent: PaseoAgent | null, event: TurnEvent): TurnAction {
-  const plan = event === "limit";
+  const schedules = event === "limit";
   if (row?.state === "pending") {
-    if (agent && hasNewMessage(agent, row)) return { cancel: NEW_MESSAGE, plan };
+    if (agent && hasNewMessage(agent, row)) return { cancel: NEW_MESSAGE, schedules };
     if (event === "finished") return { cancel: TURN_FINISHED };
-    return { plan };
+    return { schedules };
   }
   // A continue still being sent keeps its claim, which guards against sending it twice.
   if (row?.state === "sent" && event === "finished") return { clearSent: true };
-  return { plan };
+  return { schedules };
 }
 
 /** What the agent checks at the due time decide: cancel, wait for its turn, skip, or go on. */
@@ -115,12 +117,17 @@ export interface Stop {
   launch?: ResumeJob["launch"];
 }
 
-/** A row to write, a reservation that ends with an outcome, or nothing to change. */
-export type Replan = { write: ResumeJob } | { end: Outcome } | null;
+/**
+ * What a stop does to the stored row: `end` records how the reservation there ended, and `write`
+ * is the row to store. With neither, the row is removed; null leaves it as it is.
+ */
+export type Replan = { write?: ResumeJob; end?: Outcome } | null;
 
 /**
- * The table's "a turn stops at a limit", for the row the stop finds.
- * - A pending reservation is planned again. It keeps its switch, its extra instructions, its
+ * The table's "a turn stops at a limit", for the row the stop finds, decided inside the write.
+ * - A message the user sent since a pending reservation was made cancels it, and the stop gets a
+ *   reservation of its own.
+ * - Otherwise a pending reservation is planned again. It keeps its switch, its extra instructions, its
  *   account and model, and a time the user chose that is later than the new plan. A stop under
  *   another account cancels it. Nothing is counted, since no continue was sent: a retry plan stays
  *   on its step of the retry sequence, and any other plan leaves the sequence.
@@ -129,16 +136,19 @@ export type Replan = { write: ResumeJob } | { end: Outcome } | null;
 export function replan(current: ResumeJob | null, stop: Stop): Replan {
   const { plan, at } = stop;
   const retry = plan.kind === "retry";
-  const kept = current?.state === "pending" ? current : null;
+  const pending = current?.state === "pending" ? current : null;
+  const superseded = !!pending && isLater(stop.baseline, pending.baseline);
+  const kept = superseded ? null : pending;
+  const previous = superseded ? null : current;
   let attempts: number, retries: number;
   if (kept) {
-    if (kept.identity && stop.identity && kept.identity !== stop.identity) return { end: canceled("account_changed", "account changed") };
+    if (kept.identity && stop.identity && kept.identity !== stop.identity) return { end: canceled("account_changed", "account or model changed") };
     attempts = kept.attempts;
     retries = retry ? Math.max(kept.retries, 1) : 0;
   } else {
-    attempts = current ? current.attempts + 1 : 0;
+    attempts = previous ? previous.attempts + 1 : 0;
     if (attempts >= MAX_ATTEMPTS) return { end: { outcome: "gave_up", reason: "attempts", detail: `${attempts} automatic continues hit a limit again` } };
-    const done = retry ? (current?.retries ?? 0) : 0;
+    const done = retry ? (previous?.retries ?? 0) : 0;
     if (done >= RETRY_DELAYS_MS.length) return { end: { outcome: "gave_up", reason: "retries", detail: `${done} continues stopped again while its usage windows were not used up` } };
     retries = retry ? done + 1 : 0;
   }
@@ -162,9 +172,10 @@ export function replan(current: ResumeJob | null, stop: Stop): Replan {
     note: kept?.note,
     userChosenTime: keepTime || undefined,
   };
-  return kept && sameRow(kept, job) ? null : { write: job };
+  if (kept && unchanged(kept, job)) return null;
+  return { write: job, end: superseded ? NEW_MESSAGE : undefined };
 }
 
-const ROW_FIELDS = ["resetAt", "dueAt", "baseline", "retries", "waiting", "identity", "model", "launch", "userChosenTime"] as const;
-const sameRow = (left: ResumeJob, right: ResumeJob) =>
-  ROW_FIELDS.every((field) => JSON.stringify(left[field]) === JSON.stringify(right[field]));
+/** Every field the plan sets is what is stored already. */
+const unchanged = (stored: ResumeJob, job: ResumeJob) =>
+  (Object.keys(job) as Array<keyof ResumeJob>).every((field) => JSON.stringify(stored[field]) === JSON.stringify(job[field]));

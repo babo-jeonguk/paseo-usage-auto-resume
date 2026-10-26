@@ -27,10 +27,6 @@ function log(message: string): void {
 
 const titleOf = (agent: Pick<PaseoAgent, "title">): string | null => agent.title?.trim() || null;
 
-function minuteIso(date: Date): string {
-  return date.toISOString();
-}
-
 function exhaustedReset(check: SubscriptionCheck, at: Date): Date | null {
   const times = (check.windows ?? []).filter((w) => w.usedPct >= 100).map((w) => w.resetAt ? Date.parse(w.resetAt) : NaN);
   // Every applicable exhausted window must have a known future reset.
@@ -154,8 +150,9 @@ export function createResumer(options: {
   }
 
   /**
-   * Applies the table's turn events. The agent is read only when a new message could matter, and
-   * the decision is made again against the stored row inside each write, which may have changed.
+   * Applies the table's turn events. The agent is read only when a new message could matter. A
+   * cancel or a clear is pinned to the row the decision read; a stop at a limit is decided by
+   * `replan` inside its own write, against the row stored then, new message included.
    */
   async function onTurn(api: ResumerApi, agentId: string, event: TurnEvent, stop?: { resetAt: Date | null; observedAt: Date }): Promise<void> {
     const row = (await store.list()).find((job) => job.agentId === agentId) ?? null;
@@ -164,10 +161,10 @@ export function createResumer(options: {
     const action = turnAction(row, agent, event);
     // Pinned to the row the decision read: a newer reservation written meanwhile is not this event's.
     const read = (current: ResumeJob | null) => !!row && isSameJob(current, row);
-    if (action.cancel) await retire(agentId, read, action.cancel);
+    if (action.cancel && !action.schedules) await retire(agentId, read, action.cancel);
     // A continue already sent was reported when it went, so it is cleared quietly.
     if (action.clearSent) await store.update(agentId, (current) => (read(current) ? null : undefined));
-    if (!action.plan || !agent || !stop) return;
+    if (!action.schedules || !agent || !stop) return;
     const settings = await readSettings();
     const source = settings && (await resumableSource(api, agent.provider, settings));
     if (source) await schedule(api, agent, source, stop.resetAt, stop.observedAt, { onlyIfNone: false });
@@ -209,12 +206,12 @@ export function createResumer(options: {
       if (options.onlyIfNone && waits(current)) return undefined;
       const next = replan(current, stop);
       if (!next) return undefined;
-      if ("end" in next) {
+      if (next.end) {
         log(`${next.end.outcome} ${agent.id}: ${next.end.detail}`);
         ended = next.end;
-        return null;
       }
       const job = next.write;
+      if (!job) return null;
       log(`scheduled ${agent.id} (${agent.provider}) for ${job.dueAt}; ${plan.kind === "retry" ? `retry ${job.retries} of ${RETRY_DELAYS_MS.length}` : `reset ${job.resetAt ?? "unknown"}`}`);
       return job;
     });
@@ -314,7 +311,7 @@ export function createResumer(options: {
     const renewsAt = renewalFor(hold, stated);
     if (hold.kind === "ready" && !renewsAt) return false;
     await store.update(job.agentId, (current) => current && isSameJob(current, job) && current.enabled ? {
-      ...current, resetAt: renewsAt ? minuteIso(renewsAt) : current.resetAt, dueAt: dueFor(renewsAt, at),
+      ...current, resetAt: renewsAt ? renewsAt.toISOString() : current.resetAt, dueAt: dueFor(renewsAt, at),
       waiting: renewsAt ? undefined : hold.kind === "unverified" ? hold.waiting : "usage",
       identity: current.identity ?? check.identity,
       retries: renewsAt ? 0 : current.retries,

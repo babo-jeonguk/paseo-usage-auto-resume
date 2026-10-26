@@ -52,7 +52,7 @@ The header switch turns every shown resume off or on together. **Recent activity
 
 A conversation with a resume also shows an **Auto Resume** button next to the message box. Use it to manage that resume without leaving the conversation, or select **Resume now** if the limit lifted early.
 
-A **Check** time instead of a resume time means the plugin couldn't confirm your usage yet and will look again then.
+A resume waiting for verification means the plugin couldn't confirm your account or usage yet; it checks again at the time shown.
 
 ## Settings
 

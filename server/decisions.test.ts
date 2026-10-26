@@ -23,39 +23,39 @@ test("turn events: a new message cancels a pending reservation first, and a limi
   const message = agent({ lastUserMessageAt: LATER });
   for (const event of ["started", "finished", "failed", "stopped"] as TurnEvent[]) {
     const action = turnAction(job(), message, event);
-    assert.deepEqual([reason(action), action.plan], ["new_message", false], event);
+    assert.deepEqual([reason(action), action.schedules], ["new_message", false], event);
   }
   assert.equal(reason(turnAction(job(), message, "limit")), "new_message");
-  assert.equal(turnAction(job(), message, "limit").plan, true);
+  assert.equal(turnAction(job(), message, "limit").schedules, true);
 });
 
 test("turn events without a new message: only a finished turn ends a pending reservation", () => {
   const idle = agent();
-  assert.deepEqual(turnAction(job(), idle, "started"), { plan: false });
+  assert.deepEqual(turnAction(job(), idle, "started"), { schedules: false });
   assert.equal(reason(turnAction(job(), idle, "finished")), "turn_finished");
-  assert.deepEqual(turnAction(job(), idle, "failed"), { plan: false }, "a failure without a limit is not progress");
-  assert.deepEqual(turnAction(job(), idle, "stopped"), { plan: false });
-  assert.deepEqual(turnAction(job(), idle, "limit"), { plan: true });
+  assert.deepEqual(turnAction(job(), idle, "failed"), { schedules: false }, "a failure without a limit is not progress");
+  assert.deepEqual(turnAction(job(), idle, "stopped"), { schedules: false });
+  assert.deepEqual(turnAction(job(), idle, "limit"), { schedules: true });
 });
 
 test("turn events: an agent that could not be read never cancels for a message", () => {
-  assert.deepEqual(turnAction(job(), null, "started"), { plan: false });
+  assert.deepEqual(turnAction(job(), null, "started"), { schedules: false });
   assert.equal(reason(turnAction(job(), null, "finished")), "turn_finished");
 });
 
 test("turn events: a sent record is cleared only by a finished turn, and a limit plans anew", () => {
-  assert.deepEqual(turnAction(job({ state: "sending" }), null, "finished"), { plan: false }, "a continue being sent keeps its claim");
+  assert.deepEqual(turnAction(job({ state: "sending" }), null, "finished"), { schedules: false }, "a continue being sent keeps its claim");
   for (const state of ["sent", "sending"] as const) {
     const row = job({ state });
     if (state === "sent") assert.deepEqual(turnAction(row, null, "finished"), { clearSent: true });
-    for (const event of ["started", "failed", "stopped"] as TurnEvent[]) assert.deepEqual(turnAction(row, null, event), { plan: false });
-    assert.deepEqual(turnAction(row, agent({ lastUserMessageAt: LATER }), "limit"), { plan: true }, "only a pending reservation is canceled");
+    for (const event of ["started", "failed", "stopped"] as TurnEvent[]) assert.deepEqual(turnAction(row, null, event), { schedules: false });
+    assert.deepEqual(turnAction(row, agent({ lastUserMessageAt: LATER }), "limit"), { schedules: true }, "only a pending reservation is canceled");
   }
 });
 
 test("turn events: with no reservation, only a limit plans one", () => {
-  for (const event of ["started", "finished", "failed", "stopped"] as TurnEvent[]) assert.deepEqual(turnAction(null, agent(), event), { plan: false });
-  assert.deepEqual(turnAction(null, agent(), "limit"), { plan: true });
+  for (const event of ["started", "finished", "failed", "stopped"] as TurnEvent[]) assert.deepEqual(turnAction(null, agent(), event), { schedules: false });
+  assert.deepEqual(turnAction(null, agent(), "limit"), { schedules: true });
 });
 
 test("a message counts only when it is later than the baseline", () => {
@@ -99,10 +99,10 @@ const stop = (plan: Plan, fields: Partial<Stop> = {}): Stop => ({ agentId: "a1",
 const reset = stop({ kind: "reset", resetAt: RESET });
 const retry = stop({ kind: "retry" });
 const written = (result: ReturnType<typeof replan>) => {
-  assert.ok(result && "write" in result, JSON.stringify(result));
+  assert.ok(result?.write, JSON.stringify(result));
   return result.write;
 };
-const ended = (result: ReturnType<typeof replan>) => (result && "end" in result ? result.end.reason : null);
+const ended = (result: ReturnType<typeof replan>) => result?.end?.reason ?? null;
 
 test("a pending reservation planned again keeps the user's settings, its account and model, and counts nothing", () => {
   const pending = job({ attempts: 23, retries: 2, identity: "account-a", model: "gpt-a", enabled: false, note: "x", resetAt: "2026-10-06T04:00:00.000Z" });
@@ -133,6 +133,22 @@ test("a pending reservation is checked against its account even when the plan is
   assert.equal(ended(replan(bound, { ...reset, identity: "account-b" })), "account_changed");
   const unbound = job({ resetAt: RESET.toISOString(), dueAt: "2026-10-06T05:02:00.000Z" });
   assert.equal(written(replan(unbound, { ...reset, identity: "account-a" })).identity, "account-a", "an unbound one is bound");
+});
+
+test("a new message since a pending reservation was made cancels it inside the plan, and the stop gets its own", () => {
+  const pending = job({ attempts: 3, retries: 2, note: "for the old request", enabled: false, userChosenTime: true, dueAt: "2026-10-06T09:00:00.000Z" });
+  const result = replan(pending, { ...reset, baseline: LATER });
+  assert.equal(ended(result), "new_message");
+  const next = written(result);
+  assert.deepEqual([next.attempts, next.retries, next.note, next.enabled, next.userChosenTime, next.dueAt, next.baseline],
+    [0, 0, undefined, true, undefined, "2026-10-06T05:02:00.000Z", LATER]);
+  assert.equal(ended(replan(pending, { ...reset, baseline: "2026-10-06T01:00:00.000Z" })), null, "an older snapshot is no new message");
+});
+
+test("a plan that changes any field is written, and one that changes none is not", () => {
+  const stored = written(replan(null, reset));
+  assert.equal(replan(stored, reset), null);
+  assert.ok(replan(stored, { ...reset, provider: "codex-sub" })?.write, "even only the provider");
 });
 
 test("after a sent continue, or one being sent, a stop counts once, takes the new account, and gives up at the limits", () => {
