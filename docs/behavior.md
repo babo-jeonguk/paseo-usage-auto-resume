@@ -22,7 +22,7 @@ Unknown authentication, unavailable usage or a stale exhausted window schedules 
 
 ## Checks before sending
 
-Every hook, tick and **Resume now** follows the table below. A *pending* reservation has not been sent yet; a *sent* one is the record kept after its continue until a turn finishes; a continue still being sent counts as sent. A *new message* is one the user sent after the reservation was made, by Paseo's `lastUserMessageAt`. A Claude subagent's notification starts a turn without one.
+Every hook, tick and **Resume now** follows the table below. A *pending* reservation has not been sent yet; a *sent* one is the record kept after its continue until a turn finishes; a continue still being sent counts as sent, and keeps its claim until it is marked sent. A *new message* is one the user sent after the reservation was made, by Paseo's `lastUserMessageAt`. A Claude subagent's notification starts a turn without one.
 
 **Turn events.** A new message cancels a pending reservation first, whatever the event; a turn that stops at a limit then gets a reservation of its own. Without one:
 
@@ -47,7 +47,7 @@ A stop at a limit makes no reservation while provider settings cannot be read or
 7. The agent is in a turn: wait for it to end, without a usage lookup. A reservation that is turned off waits too, so the turn's end decides it.
 8. The reservation is turned off: skip it.
 9. The account uses API billing, or changed: cancel.
-10. Usage is used up or cannot be verified: move the reservation to when it renews or can be checked again. A time the user chose no longer counts as theirs.
+10. Usage is used up or cannot be verified, or the reset stated in the notice is still ahead: move the reservation to when it renews or can be checked again. A time the user chose no longer counts as theirs.
 11. The usage lookup takes a few seconds, so read the agent again and repeat checks 3 to 7, then read the provider settings again: unreadable waits, and a provider turned off cancels.
 12. Claim the reservation and send the continue, steering it into a turn that started in between, where the provider supports that. The extra instructions are then removed.
 
@@ -106,7 +106,7 @@ Continue prompts are sent through Paseo to the existing agent and its provider; 
 | Provider switches | `$PASEO_HOME/plugin-settings/usage-auto-resume/providers.json` |
 | Continue prompt, when changed from the default | `$PASEO_HOME/plugin-settings/usage-auto-resume/resume.json` |
 
-The default Paseo home is `~/.paseo`. Settings and jobs are separate from plugin source code.
+The default Paseo home is `~/.paseo`. Settings and jobs are separate from plugin source code. `paseo plugin remove` deletes the plugin's `plugin-settings` folder and leaves `plugin-data`, so reservations and recent activity stay until that folder is deleted.
 
 ## Troubleshooting
 

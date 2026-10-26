@@ -8,7 +8,7 @@ In the plugin's settings you can choose which providers are resumed and change t
 
 Requires Paseo daemon and app 0.11.0 or later, plugins enabled, the provider CLI signed in on the daemon host, and the host kept awake. Agents billed through an API key or another billing route are not resumed.
 
-Sending your own message to an agent, or closing or archiving it, cancels its resume.
+Sending your own message to an agent, or archiving it, cancels its resume, as does the agent being closed or waiting for permission when the resume is due.
 
 ## Your data
 

@@ -24,6 +24,8 @@ export function NoteEditor(props: {
   dispatch(event: EditEvent): void;
   hostId: string;
   theme: Theme;
+  /** Saving is off, as while the reservation could not be refreshed; the typed text stays. */
+  locked?: boolean;
 }) {
   const { job, session, dispatch, theme } = props;
   const { colors } = theme;
@@ -66,6 +68,7 @@ export function NoteEditor(props: {
 
   const { draft: text, problem } = session;
   const busy = session.saving;
+  const blocked = busy || !!props.locked;
   // Save compares with the saved note, which another surface may have changed meanwhile.
   const unchanged = text.trim() === (job.note ?? "") && session.pin === job.dueAt;
   const left = charactersLeft(text.length, NOTE_MAX_CHARS);
@@ -105,13 +108,13 @@ export function NoteEditor(props: {
         <Text accessibilityLiveRegion="polite" style={mutedText(colors)}>{left}</Text>
       ) : null}
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-        {job.note ? button("Remove", () => submit(""), busy) : null}
+        {job.note ? button("Remove", () => submit(""), blocked) : null}
         <View style={{ flex: 1 }} />
         {button("Cancel", () => dispatch({ type: "cancel" }), busy)}
         <Pressable
-          accessibilityRole="button" accessibilityLabel="Save extra instructions" accessibilityState={{ disabled: busy || unchanged, busy }}
-          disabled={busy || unchanged} onPress={() => submit(text)}
-          style={({ pressed }) => filled(colors, pressed, busy || unchanged)}
+          accessibilityRole="button" accessibilityLabel="Save extra instructions" accessibilityState={{ disabled: blocked || unchanged, busy }}
+          disabled={blocked || unchanged} onPress={() => submit(text)}
+          style={({ pressed }) => filled(colors, pressed, blocked || unchanged)}
         >
           {busy ? <ActivityIndicator size="small" color={colors.accentForeground} /> : null}
           <Text style={accentText(colors)}>Save</Text>

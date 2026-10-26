@@ -2,7 +2,7 @@ import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { useRpc } from "@getpaseo/plugin/client";
 import { Icon, ScrollView, useToast } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
-import { useEffect, useMemo, useReducer, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, RefreshControl, Text, View } from "react-native";
 import {
   listHistoryRpc,
@@ -32,7 +32,8 @@ import {
 } from "./format";
 import { Toggle } from "./toggle";
 import { TimeEditor } from "./time-editor";
-import { editorLocks, editSession, synced, type EditEvent, type EditSession } from "./edit-session";
+import { editorLocks, type EditEvent, type EditSession } from "./edit-session";
+import { useEditSession } from "./use-edit-session";
 import { NoteEditor } from "./note-editor";
 import { notifyScheduleChanged } from "./schedule-changes";
 import { historyQueryKey, jobsQueryKey } from "./query-keys";
@@ -446,7 +447,6 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
   const queryClient = useQueryClient();
   const toast = useToast();
   const now = useNow(15_000);
-  const [stored, dispatch] = useReducer(editSession, null);
   const queryKey = useMemo(() => jobsQueryKey(host.id), [host.id]);
 
   const historyKey = useMemo(() => historyQueryKey(host.id), [host.id]);
@@ -508,8 +508,8 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
       if (!result.changed) throw new Error(refusalLabel(input.job, result));
     },
     onMutate: ({ job, dueAt }) => {
-      // A note being written elsewhere in the list stays open with its text.
-      dispatch({ type: "moved" });
+      // Only this row's time editor closes; one open on another row, or a note, stays.
+      dispatch({ type: "moved", agentId: job.agentId });
       return optimistic((jobs) =>
         byDueAt(jobs.map((entry) => (entry.agentId === job.agentId ? { ...entry, dueAt, enabled: true } : entry))),
       );
@@ -539,11 +539,7 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
 
   const openAgent = navigation ? (agentId: string) => navigation.openAgent({ agentId }) : undefined;
   const jobs = query.data ?? [];
-  // The editor open in the list, as the latest list allows it (see `synced`).
-  const session = query.data ? synced(stored, query.data) : stored;
-  useEffect(() => {
-    if (session !== stored && query.data) dispatch({ type: "sync", jobs: query.data });
-  }, [session, stored, query.data]);
+  const [session, dispatch] = useEditSession(query.data);
   const summary = summaryLabels(jobs);
   const bulk = bulkAction(jobs);
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { agentGate, carryOver, turnAction, type TurnEvent } from "./decisions";
+import { agentGate, replan, turnAction, type Plan, type Stop, type TurnEvent } from "./decisions";
 import type { PaseoAgent } from "./paseo-types";
 import type { ResumeJob } from "./store";
 
@@ -93,33 +93,56 @@ test("Resume now never skips, and waits for a turn", () => {
   assert.equal(agentGate(job({ enabled: false }), agent({ status: "running" }), "manual"), "wait");
 });
 
-test("a pending reservation planned again keeps its counts, account and model, and never gives up", () => {
-  const pending = job({ attempts: 23, retries: 3, identity: "account-a", model: "gpt-a" });
-  const plan = { identity: "account-a", model: "gpt-b" };
-  const again = carryOver(pending, { ...plan, retry: true });
-  assert.deepEqual(again, { kept: pending, attempts: 23, retries: 3, retryDelay: 2, identity: "account-a", model: "gpt-a", ended: null });
-  assert.equal(carryOver(job({ retries: 0 }), { retry: true }).retryDelay, 0);
+const AT = new Date("2026-10-06T03:00:00.000Z");
+const RESET = new Date("2026-10-06T05:00:00.000Z");
+const stop = (plan: Plan, fields: Partial<Stop> = {}): Stop => ({ agentId: "a1", provider: "codex", plan, at: AT, baseline: BASELINE, ...fields });
+const reset = stop({ kind: "reset", resetAt: RESET });
+const retry = stop({ kind: "retry" });
+const written = (result: ReturnType<typeof replan>) => {
+  assert.ok(result && "write" in result, JSON.stringify(result));
+  return result.write;
+};
+const ended = (result: ReturnType<typeof replan>) => (result && "end" in result ? result.end.reason : null);
+
+test("a pending reservation planned again keeps the user's settings, its account and model, and counts nothing", () => {
+  const pending = job({ attempts: 23, retries: 2, identity: "account-a", model: "gpt-a", enabled: false, note: "x", resetAt: "2026-10-06T04:00:00.000Z" });
+  const next = written(replan(pending, { ...retry, identity: "account-a", model: "gpt-b" }));
+  assert.deepEqual([next.attempts, next.retries, next.identity, next.model, next.enabled, next.note], [23, 2, "account-a", "gpt-a", false, "x"]);
+  assert.equal(next.dueAt, "2026-10-06T03:30:00.000Z", "the retry step it was on: 30 minutes");
 });
 
-test("a pending reservation planned onto a reset or a check starts its retries over", () => {
-  const pending = job({ retries: 3 });
-  assert.deepEqual([carryOver(pending, { retry: false }).retries, carryOver(pending, { retry: false }).ended], [0, null]);
+test("a pending reservation's time follows the new plan, except a later time the user chose", () => {
+  assert.equal(written(replan(job({ dueAt: "2026-10-06T09:00:00.000Z" }), reset)).dueAt, "2026-10-06T05:02:00.000Z");
+  const chosen = job({ dueAt: "2026-10-06T09:00:00.000Z", userChosenTime: true });
+  assert.deepEqual([written(replan(chosen, reset)).dueAt, written(replan(chosen, reset)).userChosenTime], ["2026-10-06T09:00:00.000Z", true]);
+  const earlier = job({ dueAt: "2026-10-06T04:00:00.000Z", userChosenTime: true });
+  assert.deepEqual([written(replan(earlier, reset)).dueAt, written(replan(earlier, reset)).userChosenTime], ["2026-10-06T05:02:00.000Z", undefined]);
 });
 
-test("a pending reservation planned again binds an account it had none for, and cancels on another", () => {
-  assert.deepEqual([carryOver(job(), { retry: false, identity: "account-a", model: "gpt-a" }).identity, carryOver(job(), { retry: false, model: "gpt-a" }).model], ["account-a", "gpt-a"]);
-  assert.equal(carryOver(job({ identity: "account-a" }), { retry: false }).identity, "account-a", "an unknown account keeps the bound one");
-  assert.equal(carryOver(job({ identity: "account-a" }), { retry: false, identity: "account-b" }).ended?.reason, "account_changed");
+test("a pending reservation enters the retry sequence at its first step and leaves it on any other plan", () => {
+  const next = written(replan(job({ retries: 0 }), retry));
+  assert.deepEqual([next.retries, next.dueAt], [1, "2026-10-06T03:15:00.000Z"]);
+  assert.equal(written(replan(job({ retries: 3 }), reset)).retries, 0);
+  assert.equal(written(replan(job({ retries: 3 }), stop({ kind: "check", waiting: "usage" }))).retries, 0);
 });
 
-test("a sent continue that stops again counts once, takes the new account, and gives up at the limits", () => {
-  const plan = { identity: "account-b", model: "gpt-b" };
-  assert.deepEqual(carryOver(null, { ...plan, retry: true }), { kept: null, attempts: 0, retries: 1, retryDelay: 0, ...plan, ended: null });
-  assert.deepEqual(carryOver(null, { ...plan, retry: false }), { kept: null, attempts: 0, retries: 0, retryDelay: 0, ...plan, ended: null });
-  const sent = job({ state: "sent", attempts: 2, retries: 1, identity: "account-a" });
-  assert.deepEqual(carryOver(sent, { ...plan, retry: true }), { kept: null, attempts: 3, retries: 2, retryDelay: 1, ...plan, ended: null });
-  assert.deepEqual(carryOver(sent, { ...plan, retry: false }), { kept: null, attempts: 3, retries: 0, retryDelay: 0, ...plan, ended: null });
-  assert.equal(carryOver(job({ state: "sent", attempts: 23 }), { retry: false }).ended?.reason, "attempts");
-  assert.equal(carryOver(job({ state: "sent", retries: 3 }), { retry: true }).ended?.reason, "retries");
-  assert.equal(carryOver(job({ state: "sent", retries: 3 }), { retry: false }).ended, null, "a reset plan starts the retries over");
+test("a pending reservation is checked against its account even when the plan is the same", () => {
+  const bound = job({ identity: "account-a", resetAt: RESET.toISOString(), dueAt: "2026-10-06T05:02:00.000Z" });
+  assert.equal(replan(bound, { ...reset, identity: "account-a" }), null, "nothing to change");
+  assert.equal(replan(bound, reset), null, "an account that cannot be read keeps the bound one");
+  assert.equal(ended(replan(bound, { ...reset, identity: "account-b" })), "account_changed");
+  const unbound = job({ resetAt: RESET.toISOString(), dueAt: "2026-10-06T05:02:00.000Z" });
+  assert.equal(written(replan(unbound, { ...reset, identity: "account-a" })).identity, "account-a", "an unbound one is bound");
+});
+
+test("after a sent continue, or one being sent, a stop counts once, takes the new account, and gives up at the limits", () => {
+  for (const state of ["sent", "sending"] as const) {
+    const previous = job({ state, attempts: 2, retries: 1, identity: "account-a", note: "sent already", enabled: false });
+    const next = written(replan(previous, { ...retry, identity: "account-b" }));
+    assert.deepEqual([next.attempts, next.retries, next.dueAt, next.identity, next.note, next.enabled], [3, 2, "2026-10-06T03:30:00.000Z", "account-b", undefined, true], state);
+  }
+  assert.deepEqual([written(replan(null, retry)).attempts, written(replan(null, retry)).retries], [0, 1]);
+  assert.equal(written(replan(job({ state: "sent", retries: 1 }), reset)).retries, 0, "a reset plan starts the retries over");
+  assert.equal(ended(replan(job({ state: "sent", attempts: 23 }), reset)), "attempts");
+  assert.equal(ended(replan(job({ state: "sent", retries: 3 }), retry)), "retries");
 });

@@ -1,17 +1,18 @@
 import { useRpc, type PluginButtonContentProps } from "@getpaseo/plugin/client";
 import { Icon, useToast } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useReducer, useState } from "react";
+import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { listScheduledRpc, rescheduleRpc, resumeNowRpc, setEnabledRpc, type ScheduledJob } from "../shared/rpc";
 import { clockLabel, dayLabel, delayChoices, notePreview, RESUME_NOW_UNFINISHED, refusalLabel, relativeLabel, resumeNowToast, SCHEDULE_CHANGED, waitingLabel } from "./format";
-import { editorLocks, editSession, synced } from "./edit-session";
+import { editorLocks } from "./edit-session";
 import { NoteEditor } from "./note-editor";
 import { historyQueryKey, jobsQueryKey } from "./query-keys";
 import { accentText, bodyText, chipText, clockText, headingText, mutedText } from "./text-styles";
 import { filled, outlined, pressFeedback } from "./button-styles";
 import { notifyScheduleChanged } from "./schedule-changes";
 import { TimeEditor } from "./time-editor";
+import { useEditSession } from "./use-edit-session";
 import { Toggle } from "./toggle";
 
 export function ConversationControls(props: PluginButtonContentProps) {
@@ -30,17 +31,12 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
   const query = useQuery({ queryKey, queryFn: async () => (await list({})).jobs, refetchInterval: 10_000 });
   const job = query.data?.find((entry) => entry.agentId === agentId);
   const [now, setNow] = useState(Date.now);
-  // The editor open here, as the latest list allows it (see `synced`).
-  const [stored, dispatch] = useReducer(editSession, null);
-  const session = query.data ? synced(stored, query.data) : stored;
+  const [session, dispatch] = useEditSession(query.data);
   const editing = session?.kind ?? null;
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 10_000);
     return () => clearInterval(timer);
   }, []);
-  useEffect(() => {
-    if (session !== stored && query.data) dispatch({ type: "sync", jobs: query.data });
-  }, [session, stored, query.data]);
 
   const action = useMutation({
     mutationFn: async (input: { job: ScheduledJob } & ({ kind: "toggle"; enabled: boolean } | { kind: "move"; dueAt: string })) => {
@@ -55,7 +51,7 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
       }
     },
     onSuccess: (_result, input) => {
-      if (input.kind === "move") dispatch({ type: "moved" });
+      if (input.kind === "move") dispatch({ type: "moved", agentId });
       // Reflect only an acknowledged mutation, in the sidebar's shared cache too.
       queryClient.setQueryData<ScheduledJob[]>(queryKey, (jobs) => jobs?.map((entry) =>
         entry.agentId !== agentId || entry.dueAt !== input.job.dueAt ? entry : input.kind === "toggle"
@@ -112,6 +108,11 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
   return (
     <View testID={`resume-conversation-${agentId}`} style={{ padding: 16, gap: 16, width: "100%", maxWidth: 360 }}>
       {!layout.compact ? <Text accessibilityRole="header" style={headingText(colors)}>Auto Resume</Text> : null}
+      {/* A failed refresh keeps what was shown, with every change off until it loads. */}
+      {query.isError && query.data ? <View style={{ gap: 8 }}>
+        <Text accessibilityRole="alert" style={muted}>Couldn’t refresh this reservation.</Text>
+        {button("Refresh status", () => void query.refetch(), "RefreshCw", query.isFetching)}
+      </View> : null}
       {query.isPending ? <ActivityIndicator color={colors.foregroundMuted} /> : !query.data ? <>
         <Text accessibilityRole="alert" style={muted}>Couldn’t load this reservation.</Text>
         {button("Refresh status", () => void query.refetch(), "RefreshCw", query.isFetching)}
@@ -119,13 +120,8 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
         <Text style={muted}>Nothing scheduled for this conversation.</Text>
         {button("Close", close, "X", false)}
       </> : <>
-        {/* A failed refresh keeps the reservation shown, with its controls off until it loads. */}
-        {query.isError ? <View style={{ gap: 8 }}>
-          <Text accessibilityRole="alert" style={muted}>Couldn’t refresh this reservation.</Text>
-          {button("Refresh status", () => void query.refetch(), "RefreshCw", query.isFetching)}
-        </View> : null}
         {/* The time and the controls that move it stay together; the editor replaces all of them. */}
-        {editing === "time" && !busy ? <TimeEditor key={job.dueAt} job={job} now={now} compact stackDays theme={theme}
+        {editing === "time" && !busy ? <TimeEditor key={job.dueAt} job={job} now={now} compact stackDays theme={theme} locked={disabled}
           onSave={(dueAt) => action.mutate({ kind: "move", job, dueAt })} onCancel={() => dispatch({ type: "cancel" })} /> : (
           <View style={{ gap: 4 }}>
             <Text style={muted}>{dayLabel(job.dueAt, now)}</Text>
@@ -167,7 +163,7 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
             onValueChange={(enabled) => action.mutate({ kind: "toggle", job, enabled })} />
         </View>
         {session?.kind === "note" ? (
-          <NoteEditor job={job} session={session} dispatch={dispatch} hostId={host.id} theme={theme} />
+          <NoteEditor job={job} session={session} dispatch={dispatch} hostId={host.id} theme={theme} locked={disabled} />
         ) : preview ? (
           <Pressable
             accessibilityRole="button" accessibilityLabel="Edit extra instructions" accessibilityHint={preview}

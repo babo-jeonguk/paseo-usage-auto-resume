@@ -31,7 +31,7 @@ export type EditEvent =
   | { type: "failed"; opened: object; problem: string }
   | { type: "cancel" }
   | { type: "escape" }
-  | { type: "moved" }
+  | { type: "moved"; agentId: string }
   | { type: "sync"; jobs: readonly ScheduledJob[] };
 
 /**
@@ -60,8 +60,8 @@ export function editSession(state: EditSession | null, event: EditEvent): EditSe
     case "cancel":
       return state?.saving ? state : null;
     case "moved":
-      // A time saved from the time editor closes it, even when it is the time already set.
-      return state?.kind === "time" ? null : state;
+      // A time saved for this reservation closes its time editor, even when the time is the same.
+      return state?.kind === "time" && state.agentId === event.agentId ? null : state;
     case "escape":
       // Only an untouched editor closes; typed text leaves through Cancel.
       return state?.kind === "note" && !state.saving && state.draft.trim() === state.initial ? null : state;

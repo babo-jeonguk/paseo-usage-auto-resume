@@ -480,8 +480,10 @@ test("a retry still waiting is planned again without giving up or counting", asy
 });
 
 test("the agent is read again after the usage lookup, before anything is claimed or sent", async () => {
-  const changes: Array<[string, Partial<PaseoAgent>]> = [
+  const changes: Array<[string, Partial<PaseoAgent> | null]> = [
+    ["agent_missing", null],
     ["archived", { archivedAt: "2026-10-06T05:01:00.000Z" }],
+    ["model_changed", { model: "gpt-b" }],
     ["provider_changed", { provider: "claude" }],
     ["new_message", { lastUserMessageAt: "2026-10-06T05:01:00.000Z" }],
     ["agent_busy", { status: "closed" }],
@@ -491,18 +493,37 @@ test("the agent is read again after the usage lookup, before anything is claimed
   for (const [result, change] of changes) {
     clock = START;
     let agents: Map<string, Partial<PaseoAgent>> | undefined;
+    const base = { provider: "codex", model: "gpt-a" } as Partial<PaseoAgent>;
     const ready: SubscriptionReader = async () => {
-      agents!.set("a1", { provider: "codex", ...change });
+      if (change) agents!.set("a1", { ...base, ...change });
+      else agents!.delete("a1");
       return { auth: "subscription", status: "ready", identity: "account-model" };
     };
-    const fake = await setup({ a1: { provider: "codex" } }, { readSubscription: ready });
+    const fake = await setup({ a1: base }, { readSubscription: ready });
     agents = fake.agents;
     await fake.resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), fake.api);
-    agents.set("a1", { provider: "codex" });
+    agents.set("a1", base);
     const outcome = await fake.resumer.resumeNow(fake.api, "a1", "2026-10-06T05:02:00.000Z");
     assert.deepEqual(outcome, result === "busy" ? { result: "busy" } : { result: "canceled", reason: result }, result);
     assert.deepEqual(fake.sent, [], result);
   }
+});
+
+test("provider settings are read again after the usage lookup", async () => {
+  let armed = false;
+  let readable = true;
+  const { api, sent, resumer } = await setup({ a1: { provider: "codex" } }, {
+    readSubscription: async () => {
+      if (armed) readable = false;
+      return { auth: "subscription", status: "ready", identity: "account-model" };
+    },
+    readSettings: async () => (readable ? DEFAULT_PROVIDER_SETTINGS : null),
+  });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  armed = true;
+  assert.deepEqual(await resumer.resumeNow(api, "a1", "2026-10-06T05:02:00.000Z"), { result: "unavailable" });
+  assert.equal((await store.list()).length, 1, "unreadable settings wait");
+  assert.deepEqual(sent, []);
 });
 
 test("the tick also reads the agent again after the usage lookup", async () => {
@@ -562,6 +583,51 @@ test("a finished turn clears the reservation even when the agent cannot be read,
   await store.update("a2", (job) => job && { ...job, state: "sending" });
   await resumer.onTurnEnded(turnEnded("a2", "codex", { kind: "completed" }), api);
   assert.equal((await store.list())[0]?.state, "sending", "its claim still guards against a second send");
+});
+
+test("the same stated reset under another account cancels a pending reservation", async () => {
+  let identity = "account-a";
+  const { api, resumer } = await setup({ m1: { provider: "claude" } }, {
+    readSubscription: async () => ({ auth: "subscription", status: "unknown", identity }),
+  });
+  const notice = () => turnEnded("m1", "claude", { kind: "completed" }, claudeNotice(CLAUDE_LIMIT));
+  await resumer.onTurnEnded(notice(), api);
+  await resumer.onTurnEnded(notice(), api);
+  assert.equal((await store.list())[0]?.identity, "account-a");
+  identity = "account-b";
+  await resumer.onTurnEnded(notice(), api);
+  assert.deepEqual(await store.list(), []);
+  assert.deepEqual(await recorded(), ["m1 canceled/account_changed"]);
+});
+
+test("a turn event acts only on the reservation it read", async () => {
+  const { api, resumer } = await setup({ a1: { provider: "codex" } });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  // While the finished turn's handler reads the agent, a later stop plans a new reservation.
+  const ref = api.agents.ref;
+  api.agents.ref = (id) => {
+    const handle = ref(id);
+    const refresh = handle.refresh;
+    return Object.assign(handle, {
+      refresh: async () => {
+        await store.update("a1", (job) => job && { ...job, dueAt: "2026-10-06T06:00:00.000Z", resetAt: "2026-10-06T05:58:00.000Z" });
+        return refresh();
+      },
+    });
+  };
+  await resumer.onTurnEnded(turnEnded("a1", "codex", { kind: "completed" }), api);
+  api.agents.ref = ref;
+  assert.equal((await store.list())[0]?.dueAt, "2026-10-06T06:00:00.000Z");
+  assert.deepEqual(await recorded(), []);
+});
+
+test("archiving or an API route leaves a continue being sent with its claim", async () => {
+  const { api, resumer } = await setup({ a1: { provider: "codex" } });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  await store.update("a1", (job) => job && { ...job, state: "sending" });
+  await resumer.forget("a1");
+  assert.equal((await store.list())[0]?.state, "sending");
+  assert.deepEqual(await recorded(), []);
 });
 
 test("the continue is steered into a turn that starts after the last check", async () => {
@@ -806,14 +872,16 @@ test("startup scan plans a stop after a sent continue, counting it, but not over
   clock = new Date("2026-10-06T07:10:00.000Z");
   const row = { agentId: "c1", provider: "codex", resetAt: null, dueAt: "2026-10-06T05:02:00.000Z", baseline: "2026-10-06T02:00:00.000Z", attempts: 1, enabled: true, retries: 0 };
   await store.update("c1", () => ({ ...row, state: "sent" }));
+  await store.update("c3", () => ({ ...row, agentId: "c3", state: "sending" }));
   const waiting = { ...row, agentId: "c2", dueAt: "2026-10-06T09:00:00.000Z", state: "pending" as const };
   await store.update("c2", () => waiting);
   const stopped = { provider: "codex", status: "error", lastError: CODEX_LIMIT, updatedAt: "2026-10-06T07:06:29.999Z" } as const;
-  await setup({ c1: stopped, c2: stopped });
+  await setup({ c1: stopped, c2: stopped, c3: stopped });
   const jobs = await store.list();
   const c1 = jobs.find((job) => job.agentId === "c1");
   assert.deepEqual([c1?.state, c1?.attempts], ["pending", 2]);
   assert.deepEqual(jobs.find((job) => job.agentId === "c2"), waiting);
+  assert.equal(jobs.find((job) => job.agentId === "c3")?.state, "sending", "nor over a continue being sent");
 });
 
 test("startup scan finds a Claude closing notice and ignores everything else", async () => {

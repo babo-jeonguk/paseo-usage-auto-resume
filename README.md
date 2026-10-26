@@ -39,7 +39,7 @@ paseo plugin install github:babo-jeonguk/paseo-usage-auto-resume
 2. Keep using your agents as usual. When one stops at its limit, a resume appears in the list.
 3. At the scheduled time, the agent is asked to continue in the same conversation.
 
-Sending your own message to the agent, or closing or archiving it, cancels its resume. So does leaving it waiting for your permission.
+Sending your own message to the agent, or archiving it, cancels its resume. So does the agent being closed or waiting for your permission when the resume is due.
 
 In the list, each resume has:
 
@@ -75,7 +75,7 @@ paseo plugin update usage-auto-resume
 paseo plugin remove usage-auto-resume
 ```
 
-This also deletes the plugin's settings. Reservations and recent activity stay in `~/.paseo/plugin-data/usage-auto-resume`; delete that folder to remove them too.
+This also deletes the plugin's settings. Reservations and recent activity stay in `plugin-data/usage-auto-resume` in your Paseo home (`~/.paseo` by default); delete that folder to remove them too.
 
 ## Your data
 

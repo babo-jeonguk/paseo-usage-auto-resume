@@ -52,6 +52,8 @@ export function TimeEditor(props: {
   /** Composer popovers can be narrower than the screen's compact list rows. */
   stackDays?: boolean;
   theme: Theme;
+  /** Saving is off, as while the reservation could not be refreshed; the typed time stays. */
+  locked?: boolean;
   onSave(dueAt: string): void;
   onCancel(): void;
 }) {
@@ -62,8 +64,9 @@ export function TimeEditor(props: {
   const [day, setDay] = useState(() => Math.max(0, dayOffset(job.dueAt, now)));
   const dueAt = timeOnDay(text, day, now);
   const problem = dueAt ? rescheduleProblem(job, dueAt, now) : "Enter a time like 07:30.";
+  const blocked = !!problem || !!props.locked;
   const save = () => {
-    if (dueAt && !problem) props.onSave(dueAt);
+    if (dueAt && !blocked) props.onSave(dueAt);
   };
   // A third day (a weekly reset) does not fit beside the field and buttons on a phone.
   const daysBelow = props.stackDays || (props.compact && choices.length > 2);
@@ -122,11 +125,11 @@ export function TimeEditor(props: {
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Save time"
-          accessibilityState={{ disabled: !!problem }}
+          accessibilityState={{ disabled: blocked }}
           hitSlop={8}
-          disabled={!!problem}
+          disabled={blocked}
           onPress={save}
-          style={[styles.iconButton, styles.save, problem ? styles.disabled : null]}
+          style={[styles.iconButton, styles.save, blocked ? styles.disabled : null]}
         >
           <Icon name="Check" size={18} color={theme.colors.accentForeground} />
         </Pressable>

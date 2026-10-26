@@ -97,9 +97,10 @@ test("a refused save keeps the text and moves the pin to the latest reservation"
   assert.equal(editSession(failed, { type: "save" })?.problem, null, "a new save clears the last problem");
 });
 
-test("a time saved closes only a time editor", () => {
-  assert.equal(run(open("time"), { type: "moved" }), null);
-  assert.equal(kind(run(open("note"), { type: "moved" })), "a:note");
+test("a time saved for a reservation closes only that reservation's time editor", () => {
+  assert.equal(run(open("time"), { type: "moved", agentId: "a" }), null);
+  assert.equal(kind(run(open("time"), { type: "moved", agentId: "b" })), "a:time", "another row's +10m leaves it open");
+  assert.equal(kind(run(open("note"), { type: "moved", agentId: "a" })), "a:note");
 });
 
 test("an open editor's locks", () => {
