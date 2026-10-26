@@ -22,9 +22,42 @@ Unknown authentication, unavailable usage or a stale exhausted window schedules 
 
 ## Checks before sending
 
-The plugin cancels a reservation when the user sends another message: it checks when a turn starts, when a turn stops and at the final agent check, which also cancels for a closed or archived agent, pending permissions, or a provider change. A turn the agent starts without a user message, such as one for a Claude subagent's notification, is not a reason to cancel. If that turn stops at a limit again, the reservation keeps its switch and extra instructions. Its time follows the new notice, except that a time the user chose stays while it is later than the new one. If it finishes, the reservation is cleared as a finished turn. If it is still running at the due time, the continue waits for it to end, without a usage lookup, and **Resume now** answers that the agent is still working. A known selected model is saved even when authentication is unavailable. A different model or a change from a previously verified Codex/Claude account identity cancels the reservation, including after a restart. If account identity could not initially be verified, it is bound on the first successful check. The provider switch and reservation switch are checked before sending. **Resume now** runs the same checks, except that it ignores the reset stated in the notice and the reservation switch.
+Every hook, tick and **Resume now** follows the table below. A *pending* reservation has not been sent yet; a *sent* one is the record kept after its continue until the agent's next turn ends. A *new message* is one the user sent after the reservation was made, by Paseo's `lastUserMessageAt`. A Claude subagent's notification starts a turn without one.
 
-Sending is claimed in persistent storage first to prevent duplicate delivery after a crash. A send interrupted at that point may therefore be lost rather than retried. These checks do not provide an atomic guarantee against every concurrent change between checking and sending.
+**Turn events.** A new message cancels a pending reservation first, whatever the event; a turn that stops at a limit then gets a reservation of its own. Without one:
+
+| Event | Pending reservation | Sent record | None |
+|---|---|---|---|
+| A turn starts | kept | kept | — |
+| A turn finishes | canceled as a finished turn | cleared, unrecorded | — |
+| A turn fails without a limit | kept | kept | — |
+| A turn is stopped | kept | kept | — |
+| A turn stops at a limit | planned again, below | a new reservation, one more automatic continue counted | a new reservation |
+
+A stop at a limit makes no reservation while provider settings cannot be read or the provider is off. Planning a pending reservation again keeps its switch and extra instructions. Its reset follows the new notice or usage lookup, and its time follows the new plan, except that a time the user chose stays while it is later. It counts no continue, since none was sent.
+
+**At the due time**, checked in this order:
+
+1. Provider settings cannot be read: wait for the next check.
+2. The provider is off, or no longer runs a supported CLI: cancel.
+3. The agent is gone or archived, or its provider or model changed: cancel.
+4. A new message: cancel.
+5. The agent is closed or starting: cancel.
+6. The agent awaits permission or input: cancel.
+7. The agent is in a turn: wait for it to end, without a usage lookup. A reservation that is turned off waits too, so the turn's end decides it.
+8. The reservation is turned off: skip it.
+9. The account uses API billing, or changed: cancel.
+10. Usage is used up or cannot be verified: move the reservation to when it renews or can be checked again. A time the user chose no longer counts as theirs.
+11. Read the agent again and repeat checks 3 to 7, since the usage lookup takes a few seconds.
+12. Claim the reservation and send the continue, steering it into a turn that started in between, where the provider supports that. The extra instructions are then removed.
+
+**Resume now** runs the same checks, with three differences. In a turn, it answers that the agent is still working. It sends a reservation that is turned off. When usage holds it, it answers with the reason. In every case it leaves the reservation as it was.
+
+A turn that never ends keeps its reservation waiting with no deadline.
+
+A known selected model is saved even when authentication is unavailable. A different model or a change from a previously verified Codex/Claude account identity cancels the reservation, including after a restart. If account identity could not initially be verified, it is bound on the first successful check. The provider switch and reservation switch are checked before sending. **Resume now** runs the same checks, except that it ignores the reset stated in the notice and the reservation switch.
+
+Sending is claimed in persistent storage first to prevent duplicate delivery after a crash. A send interrupted at that point may therefore be lost rather than retried. These checks do not provide an atomic guarantee against every concurrent change between checking and sending; a provider that cannot steer has a turn started in that moment replaced by the continue.
 
 The default continue prompt asks the parent agent to review the latest conversation, workspace and task status, then continue unfinished work. It also asks the parent to resume unfinished subagents using their existing identities and tools, respect user pauses/cancellations and report blockers. The prompt can be replaced under **Continue prompt** in the plugin's settings. Saving it empty, or identical to the default, goes back to the default, which then follows later versions' changes to it. A custom prompt without the subagent instructions changes how subagents continue: the parent may start new subagents, or none, instead of resuming the unfinished ones by their existing IDs. A reservation's extra instructions, when it has them, are added below the prompt under a fixed heading. The prompt is read when the continue is sent, so a change saved while a due reservation is being checked applies to it. The plugin sends only to the parent; actual subagent continuation depends on the tools available to it. It does not create a new agent or switch providers.
 
@@ -54,7 +87,7 @@ Settings are per daemon. Hosts upgrading from the earlier one-ID-per-CLI setting
 
 Reservations survive daemon and plugin restarts. Paseo supplies its plugin API inside lifecycle hooks and RPC requests, so due-job checks wait until one of these connects it after startup. A connected app supplies the API through composer directory polling, as does opening **Auto Resume**. A connected daemon continues checking without keeping the app open; the daemon host must stay running and awake.
 
-The startup scan searches up to 200 idle/error agents active in the preceding 12 hours for missed limit stops. Existing persisted reservations can wait longer, including for weekly resets. Codex and Antigravity recovery checks error notices; Claude also checks recent timeline notices.
+The startup scan searches up to 200 idle/error agents active in the preceding 12 hours for missed limit stops. Existing persisted reservations can wait longer, including for weekly resets. Codex and Antigravity recovery checks error notices; Claude also checks recent timeline notices. A missed stop is scheduled unless the agent already has a pending reservation; after a sent continue it counts as one more automatic continue.
 
 At session open, the plugin captures non-secret launch paths, credential-store selectors, the OS username used for Keychain lookup, and credential-presence flags. These survive restarts with the reservation. For a session opened before the plugin loaded, account checks use the daemon environment plus provider configuration; environment values added by other plugins at session open are not available. Unrecognized quota shapes and custom launchers with multiple command arguments wait for verification. Known one-command launchers can use native account/status protocols.
 

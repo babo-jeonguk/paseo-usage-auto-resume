@@ -1,11 +1,12 @@
 import type { AgentTimelineItem, PaseoAgent, PaseoApi } from "./paseo-types";
 import type { PluginLifecycleEvents, PluginSessionOpenRequest } from "@getpaseo/plugin/server";
+import { agentGate, canceled, countsFor, NEW_MESSAGE, turnAction, type Cancellation, type Gate, type Outcome, type TurnEvent } from "./decisions";
 import { detectLimitStop } from "./limit";
-import type { HistoryEntry, HistoryOutcome, HistoryReason, HistoryRow, RescheduleResult, ResumeNowResult, ScheduledJob, SetNoteResult, Waiting } from "../shared/rpc";
+import type { HistoryRow, RescheduleResult, ResumeNowResult, ScheduledJob, SetNoteResult, Waiting } from "../shared/rpc";
 import type { HistoryStore } from "./history";
 import type { JobStore, ResumeJob } from "./store";
 import { captureLaunch, createSubscriptionReader, subscriptionModel, unknownCheck, type LaunchContext, type SubscriptionCheck, type SubscriptionReader } from "./subscription";
-import { GRACE_MS, MAX_ATTEMPTS, MIN_DELAY_MS, RETRY_DELAYS_MS, rescheduleWindow } from "../shared/schedule";
+import { GRACE_MS, MIN_DELAY_MS, RETRY_DELAYS_MS, rescheduleWindow } from "../shared/schedule";
 import { DEFAULT_PROVIDER_SETTINGS, DEFAULT_RESUME_SETTINGS, isProviderOn, type ProviderSettings, type ResumeSettings, type UsageSource } from "../shared/settings";
 import { cliFor } from "./providers";
 import { continuePrompt, DEFAULT_CONTINUE_PROMPT } from "../shared/prompt";
@@ -76,22 +77,7 @@ function dueFor(resetAt: Date | null, now: Date): string {
   return new Date(Math.max(resetAt.getTime() + GRACE_MS, now.getTime() + MIN_DELAY_MS)).toISOString();
 }
 
-/** Why a reservation ended. The history keeps the codes; `detail` is only the log's wording. */
-interface Outcome {
-  outcome: HistoryOutcome;
-  reason?: HistoryReason;
-  detail?: string;
-  /** The conversation title when it is at hand, kept so a deleted agent still has a name. */
-  title?: string | null;
-  /** Set when Resume now started the attempt. */
-  trigger?: HistoryEntry["trigger"];
-}
-
-type Cancellation = Outcome & { outcome: "canceled"; reason: HistoryReason };
-
-const canceled = (reason: HistoryReason, detail: string): Cancellation => ({ outcome: "canceled", reason, detail });
 const providerOff = (provider: string) => canceled("provider_off", `automatic resume is turned off for ${provider}`);
-const NEW_MESSAGE = canceled("new_message", "a newer message reached the agent");
 
 /** The tick's attempt at a due job, or Resume now's on the user's request. */
 type DeliverMode = "auto" | "manual";
@@ -121,35 +107,6 @@ function renewalFor(hold: UsageHold, stated: Date | null): Date | null {
 const staleResult = (row: ResumeJob | null | undefined): ResumeNowResult =>
   row?.state === "sending" ? { result: "sending" } : { result: "changed" };
 
-/** A turn is in progress. */
-const inTurn = (agent: PaseoAgent) => !!agent.activeTurn || agent.status === "running";
-
-/**
- * A message the user sent after the reservation was made. Only a later message counts: a snapshot
- * read before a message was recorded must not cancel the reservation that message's stop made.
- */
-const hasNewMessage = (agent: PaseoAgent, job: ResumeJob) =>
-  agent.lastUserMessageAt != null && (job.baseline === null || Date.parse(agent.lastUserMessageAt) > Date.parse(job.baseline));
-
-/**
- * Why a due job must not continue the agent, or null when it is safe to send. A running turn is
- * not a reason: one the user started also sent a newer message, and any other, such as a
- * subagent's notification, only holds the continue until it ends.
- */
-function skipReason(job: ResumeJob, agent: PaseoAgent | null): Cancellation | null {
-  if (!agent) return canceled("agent_missing", "agent no longer exists");
-  if (agent.archivedAt) return canceled("archived", "agent is archived");
-  if (agent.provider !== job.provider) return canceled("provider_changed", `provider changed to ${agent.provider}`);
-  if (job.model !== undefined && subscriptionModel(agent) !== job.model) return canceled("model_changed", "model changed");
-  if (hasNewMessage(agent, job)) return NEW_MESSAGE;
-  if (!inTurn(agent) && agent.status !== "idle" && agent.status !== "error") {
-    return canceled("agent_busy", `agent is ${agent.status}`);
-  }
-  if (agent.pendingPermissions.length > 0 || agent.attentionReason === "permission") {
-    return canceled("permission", "agent is waiting for permission or input");
-  }
-  return null;
-}
 
 /**
  * Detects usage-limit stops, keeps one durable resume job per agent, and continues the same
@@ -196,27 +153,35 @@ export function createResumer(options: {
   }
 
   async function onTurnEnded(event: TurnEnded, api: ResumerApi): Promise<void> {
-    const { agent } = event;
-    // A turn the user stopped schedules nothing, but its message may have been recorded only now.
-    if (event.outcome.kind === "canceled") return checkForNewMessage(api, agent.id);
+    const { outcome } = event;
+    const observedAt = now();
+    const stop = outcome.kind === "canceled" ? null : detectLimitStop(outcome, event.timeline, observedAt);
+    const kind: TurnEvent = outcome.kind === "canceled" ? "stopped" : stop ? "limit" : outcome.kind === "completed" ? "finished" : "failed";
+    await onTurn(api, event.agent.id, kind, (agent, source) => schedule(api, agent, source, stop!.resetAt, observedAt, { onlyIfNone: false }));
+  }
+
+  function onTurnStarted(agentId: string, api: ResumerApi): Promise<void> {
+    return onTurn(api, agentId, "started");
+  }
+
+  /**
+   * Applies the table's turn events. The agent is read only when a new message could matter, and
+   * the decision is made again against the stored row inside each write, which may have changed.
+   */
+  async function onTurn(api: ResumerApi, agentId: string, event: TurnEvent, plan?: (agent: PaseoAgent, source: UsageSource) => Promise<void>): Promise<void> {
+    const row = (await store.list()).find((job) => job.agentId === agentId) ?? null;
+    const agent = row?.state === "pending" || event === "limit" ? await loadAgent(api, agentId) : null;
+    const action = turnAction(row, agent, event);
+    const { cancel } = action;
+    if (cancel) await retire(agentId, (current) => turnAction(current, agent, event).cancel?.reason === cancel.reason, cancel);
+    // A continue already sent was reported when it went; a turn that finishes clears it quietly.
+    if (action.clearSent || event === "finished") {
+      await store.update(agentId, (current) => (current && current.state !== "pending" ? null : undefined));
+    }
+    if (!action.plan || !agent || !plan) return;
     const settings = await readSettings();
     const source = settings && (await resumableSource(api, agent.provider, settings));
-    if (!source) return;
-    const observedAt = now();
-    const stop = detectLimitStop(event.outcome, event.timeline, observedAt);
-    if (!stop) {
-      // The agent finished a turn on its own terms; nothing is waiting and retries start over.
-      // A continue already sent is cleared without a second report.
-      await retire(agent.id, (current) => current.state === "pending",
-        canceled("turn_finished", "a turn finished before the scheduled continue"), { clearOthers: true });
-      return;
-    }
-    const snapshot = await loadAgent(api, agent.id);
-    if (!snapshot) return;
-    // A message the user sent since the reservation was made ends it, even if its turn's start
-    // came before the message was recorded; the stop just seen gets a reservation of its own.
-    await retireForNewMessage(snapshot);
-    await schedule(api, snapshot, source, stop.resetAt, observedAt, { onlyIfNone: false });
+    if (source) await plan(agent, source);
   }
 
   async function schedule(
@@ -228,7 +193,10 @@ export function createResumer(options: {
     options: { onlyIfNone: boolean },
   ): Promise<void> {
     const previous = (await store.list()).find((job) => job.agentId === agent.id);
-    if (options.onlyIfNone && previous) return;
+    // A missed stop is planned unless a reservation is still waiting or being sent; after a sent
+    // continue it counts as one more.
+    const waits = (row: ResumeJob | null | undefined) => !!row && row.state !== "sent";
+    if (options.onlyIfNone && waits(previous)) return;
     const launch = launches.get(agent.id) ?? previous?.launch;
     const at = now();
     // A notice supplies the schedule; only bind identity here, leaving usage until delivery.
@@ -248,25 +216,18 @@ export function createResumer(options: {
     const waiting = plan.kind === "check" ? plan.waiting : undefined;
     let gaveUp = null as Outcome | null;
     await store.update(agent.id, (current) => {
-      if (options.onlyIfNone && current) return undefined;
+      if (options.onlyIfNone && waits(current)) return undefined;
       if (current?.state === "pending" && current.resetAt === key && current.waiting === waiting) return undefined;
-      const attempts = current && current.state !== "pending" ? current.attempts + 1 : (current?.attempts ?? 0);
-      if (attempts >= MAX_ATTEMPTS) {
-        log(`gave up on ${agent.id} after ${attempts} automatic continues hit a limit again`);
-        gaveUp = { outcome: "gave_up", reason: "attempts", detail: `${attempts} automatic continues hit a limit again` };
+      const { kept, attempts, retries, retryDelay, gaveUp: ended } = countsFor(current, plan.kind === "retry");
+      if (ended) {
+        log(`gave up on ${agent.id}: ${ended.detail}`);
+        gaveUp = ended;
         return null;
       }
-      const retries = plan.kind === "retry" ? (current?.retries ?? 0) : 0;
-      if (retries >= RETRY_DELAYS_MS.length) {
-        log(`gave up on ${agent.id}: ${retries} continues stopped again while its usage windows were not used up`);
-        gaveUp = { outcome: "gave_up", reason: "retries", detail: `${retries} continues stopped again while its usage windows were not used up` };
-        return null;
-      }
-      const planned = plan.kind === "retry" ? new Date(at.getTime() + RETRY_DELAYS_MS[retries]!).toISOString()
+      const planned = plan.kind === "retry" ? new Date(at.getTime() + RETRY_DELAYS_MS[retryDelay]!).toISOString()
         : dueFor(plan.kind === "reset" ? plan.resetAt : null, at);
       // A new plan for a reservation still waiting keeps what the user set: its switch, its note,
       // and a time they chose that is later than the plan. One already sent starts over.
-      const kept = current?.state === "pending" ? current : null;
       const keepTime = !!kept?.userChosenTime && Date.parse(kept.dueAt) > Date.parse(planned);
       const job: ResumeJob = {
         agentId: agent.id,
@@ -275,7 +236,7 @@ export function createResumer(options: {
         dueAt: keepTime ? kept!.dueAt : planned,
         baseline: agent.lastUserMessageAt ?? null,
         attempts,
-        retries: plan.kind === "retry" ? retries + 1 : 0,
+        retries,
         state: "pending",
         enabled: kept?.enabled ?? true,
         waiting,
@@ -363,26 +324,6 @@ export function createResumer(options: {
     return true;
   }
 
-  /**
-   * A turn started by a message the user sent cancels the pending continue. Any other turn, such
-   * as a subagent's notification, leaves it for the turn's end to decide: a limit again plans the
-   * same reservation anew, keeping what the user set, and a turn that finishes clears it.
-   */
-  function onTurnStarted(agentId: string, api: ResumerApi): Promise<void> {
-    return checkForNewMessage(api, agentId);
-  }
-
-  /** Reads the agent only when it has a pending reservation that a message could cancel. */
-  async function checkForNewMessage(api: ResumerApi, agentId: string): Promise<void> {
-    if (!(await store.list()).some((job) => job.agentId === agentId && job.state === "pending")) return;
-    const agent = await loadAgent(api, agentId);
-    if (agent) await retireForNewMessage(agent);
-  }
-
-  async function retireForNewMessage(agent: PaseoAgent): Promise<void> {
-    await retire(agent.id, (job) => job.state === "pending" && hasNewMessage(agent, job), NEW_MESSAGE);
-  }
-
   /** An archived agent's reservation goes with it; a continue already sent is cleared quietly. */
   async function forget(agentId: string): Promise<void> {
     launches.delete(agentId);
@@ -432,17 +373,18 @@ export function createResumer(options: {
     if (!isProviderOn(job.provider, settings)) return cancel(providerOff(job.provider));
     const source = cliFor((await api.config.get()).config, job.provider);
     if (!source) return cancel(canceled("unsupported_cli", `${job.provider} no longer runs Claude, Codex, or Antigravity`));
-    if (!job.enabled && !manual) {
+    const gated = async (gate: Exclude<Gate, null>, title: string | null): Promise<Delivery> => {
+      // A turn holds the continue without reading usage; the tick tries again after it.
+      if (gate === "wait") return { result: "busy" };
+      if (gate !== "skip") return cancel({ ...gate, title });
       // Switching it back on just now keeps it; the next tick sends it.
       const removed = await retire(job.agentId, (current) => same(current) && !current.enabled, { outcome: "skipped", detail: "turned off in Auto Resume" });
       return removed ? { result: "skipped" } : { result: "changed" };
-    }
+    };
     const agent = await loadAgent(api, job.agentId);
     const title = agent && titleOf(agent);
-    const skip = skipReason(job, agent);
-    if (skip) return cancel({ ...skip, title });
-    // Waits for the turn to end, without reading usage; the tick tries again.
-    if (inTurn(agent!)) return { result: "busy" };
+    const gate = agentGate(job, agent, mode);
+    if (gate) return gated(gate, title);
     const check = await inspect(api, agent!, source, at, launches.get(job.agentId) ?? job.launch);
     if (check.auth === "api") return cancel({ ...canceled("api_route", "authentication uses API billing"), title });
     if (job.identity && check.identity && job.identity !== check.identity) {
@@ -456,6 +398,11 @@ export function createResumer(options: {
     } else if (await postpone(job, check, at)) {
       return { result: "postponed" };
     }
+    // The usage lookup takes seconds, and Paseo's send unarchives an agent, clears its permission
+    // requests and replaces a running turn, so the agent is checked again just before the claim.
+    const latestAgent = await loadAgent(api, job.agentId);
+    const latestGate = agentGate(job, latestAgent, mode);
+    if (latestGate) return gated(latestGate, (latestAgent && titleOf(latestAgent)) ?? title);
     // Claim before sending so a crash mid-send, or a tick and Resume now at once, never delivers
     // a second continue. The current row decides: the job may have been turned off while the
     // agent was being checked, which only stops the tick.
@@ -479,7 +426,8 @@ export function createResumer(options: {
     // failure here must not leave the claim behind, so it falls back to the built-in prompt.
     const { continuePrompt: custom } = await readResumeSettings().catch(() => DEFAULT_RESUME_SETTINGS);
     try {
-      await api.agents.ref(job.agentId).send(continuePrompt({ custom, note }));
+      // A turn that starts after the last check is steered, not replaced, where the provider can.
+      await api.agents.ref(job.agentId).send(continuePrompt({ custom, note }), { activeTurnBehavior: "steer" });
     } catch (error) {
       await store.update(job.agentId, (current) => (current?.state === "sending" ? null : undefined));
       console.error(`[usage-auto-resume] could not continue ${job.agentId}`, String(error));
@@ -488,7 +436,7 @@ export function createResumer(options: {
     }
     // The sent row stays until the agent's next turn ends, which clears it without a report. The
     // note went with the continue, so the user's text is not kept any longer.
-    await store.update(job.agentId, (current) => (current?.state === "sending" ? { ...current, state: "sent", note: undefined } : undefined));
+    await store.update(job.agentId, (current) => (current?.state === "sending" ? { ...current, state: "sent", note: undefined, userChosenTime: undefined } : undefined));
     log(`continued ${job.agentId}${manual ? " on request" : ""}`);
     await record(job.agentId, job.provider, { outcome: "continued", title, trigger });
     return { result: "sent" };

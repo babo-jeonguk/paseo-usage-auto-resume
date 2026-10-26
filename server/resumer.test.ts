@@ -86,6 +86,7 @@ interface FakeOptions {
 /** Daemon stand-in: agent snapshots by ID, recorded sends, and no way to create agents. */
 function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOptions = {}) {
   const sent: Array<{ agentId: string; text: string }> = [];
+  const sendOptions: unknown[] = [];
   const listCalls: Array<{ filter?: { statuses?: string[]; includeBackground?: boolean } }> = [];
   let usageReads = 0;
   const snapshot = (agentId: string, agent: Partial<PaseoAgent>) =>
@@ -121,8 +122,9 @@ function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOption
           const agent = agents.get(agentId);
           return agent ? { agent: snapshot(agentId, agent), project: null } : null;
         },
-        send: async (text: string) => {
+        send: async (text: string, options?: unknown) => {
           sent.push({ agentId, text });
+          sendOptions.push(options);
         },
         timeline: {
           refetch: async () => ({
@@ -183,7 +185,7 @@ function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOption
     const windows = entry.windows.map((w) => ({ id: w.id, usedPct: w.usedPct ?? 100 - (w.remainingPct ?? 0), resetAt: w.resetsAt ?? null }));
     return { auth: "subscription", status: windows.some((w) => w.usedPct >= 100) ? "limited" : "ready", identity, windows };
   });
-  return { api, sent, listCalls, readSubscription, usageReads: () => usageReads };
+  return { api, sent, sendOptions, listCalls, readSubscription, usageReads: () => usageReads };
 }
 
 function turnEnded(
@@ -421,6 +423,104 @@ test("a turn the user stopped still cancels for a message recorded after it star
   assert.deepEqual(await recorded(), ["a1 canceled/new_message"]);
 });
 
+test("a turn that fails without a limit keeps the reservation", async () => {
+  const { api, resumer } = await setup({ a1: { provider: "codex" } });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  const before = await store.list();
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed("stream disconnected before completion")), api);
+  assert.deepEqual(await store.list(), before);
+  assert.deepEqual(await recorded(), []);
+});
+
+test("a turn that finishes after a new message is recorded as the message, whatever the settings", async () => {
+  const { api, resumer, agents } = await setup({ a1: { provider: "codex" } });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  agents.set("a1", { provider: "codex", lastUserMessageAt: "2026-10-06T03:30:00.000Z" });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", { kind: "completed" }), api);
+  assert.deepEqual(await recorded(), ["a1 canceled/new_message"]);
+
+  const unreadable = await setup({ a2: { provider: "codex" } });
+  await unreadable.resumer.onTurnEnded(turnEnded("a2", "codex", failed(CODEX_LIMIT)), unreadable.api);
+  const offline = createResumer({ store, history, now: () => clock, readSettings: async () => null, readSubscription: unreadable.readSubscription });
+  await offline.onTurnEnded(turnEnded("a2", "codex", { kind: "completed" }), unreadable.api);
+  assert.deepEqual(await store.list(), [], "a finished turn needs no settings to clear it");
+  assert.equal((await recorded()).at(-1), "a2 canceled/turn_finished");
+});
+
+test("a reservation turned off waits for the agent's own turn, and stays off when that turn stops at the limit", async () => {
+  const { api, sent, resumer, agents } = await setup({ a1: { provider: "codex" } });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  await resumer.setEnabled("a1", "2026-10-06T05:02:00.000Z", false);
+  agents.set("a1", { provider: "codex", status: "running" });
+  advance(3 * 60 * MINUTE);
+  await resumer.tick();
+  assert.equal((await store.list()).length, 1, "not skipped while the turn runs");
+  assert.deepEqual(await recorded(), []);
+
+  agents.set("a1", { provider: "codex" });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  const [job] = await store.list();
+  assert.equal(job?.enabled, false, "the user's switch survives the new plan");
+  clock = new Date(job!.dueAt);
+  await resumer.tick();
+  assert.deepEqual(sent, []);
+  assert.deepEqual(await recorded(), ["a1 skipped"]);
+});
+
+test("a retry still waiting is planned again without giving up or counting", async () => {
+  const { api, resumer } = await setup({ g1: { provider: "antigravity" } });
+  await store.update("g1", () => ({
+    agentId: "g1", provider: "antigravity", resetAt: "2026-10-06T05:00:00.000Z", dueAt: "2026-10-06T05:02:00.000Z",
+    baseline: "2026-10-06T02:00:00.000Z", attempts: 4, state: "pending", enabled: true, retries: 3,
+  }));
+  await resumer.onTurnEnded(turnEnded("g1", "antigravity", failed("RESOURCE_EXHAUSTED: Quota exceeded")), api);
+  const [job] = await store.list();
+  assert.deepEqual([job?.state, job?.attempts, job?.retries, job?.dueAt], ["pending", 4, 3, "2026-10-06T04:00:00.000Z"]);
+  assert.deepEqual(await recorded(), []);
+});
+
+test("the agent is read again after the usage lookup, before anything is claimed or sent", async () => {
+  const changes: Array<[string, Partial<PaseoAgent>]> = [
+    ["archived", { archivedAt: "2026-10-06T05:01:00.000Z" }],
+    ["permission", { attentionReason: "permission" }],
+    ["new_message", { lastUserMessageAt: "2026-10-06T05:01:00.000Z" }],
+    ["busy", { status: "running" }],
+  ];
+  for (const [result, change] of changes) {
+    clock = START;
+    let agents: Map<string, Partial<PaseoAgent>> | undefined;
+    const ready: SubscriptionReader = async () => {
+      agents!.set("a1", { provider: "codex", ...change });
+      return { auth: "subscription", status: "ready", identity: "account-model" };
+    };
+    const fake = await setup({ a1: { provider: "codex" } }, { readSubscription: ready });
+    agents = fake.agents;
+    await fake.resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), fake.api);
+    agents.set("a1", { provider: "codex" });
+    const outcome = await fake.resumer.resumeNow(fake.api, "a1", "2026-10-06T05:02:00.000Z");
+    assert.deepEqual(outcome, result === "busy" ? { result: "busy" } : { result: "canceled", reason: result }, result);
+    assert.deepEqual(fake.sent, [], result);
+  }
+});
+
+test("the continue is steered into a turn that starts after the last check", async () => {
+  const { api, sendOptions, resumer } = await setup({ a1: { provider: "codex" } });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  advance(3 * 60 * MINUTE);
+  await resumer.tick();
+  assert.deepEqual(sendOptions, [{ activeTurnBehavior: "steer" }]);
+});
+
+test("a sent continue drops the user's time with its note", async () => {
+  const { api, resumer } = await setup({ a1: { provider: "codex" } });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  await resumer.reschedule("a1", "2026-10-06T05:02:00.000Z", "2026-10-06T05:30:00.000Z");
+  clock = new Date("2026-10-06T05:30:00.000Z");
+  await resumer.tick();
+  const [row] = await store.list();
+  assert.deepEqual([row?.state, row?.userChosenTime], ["sent", undefined]);
+});
+
 test("a due reservation waits while a turn the user did not start runs, without reading usage", async () => {
   let reads = 0;
   const { api, sent, resumer, agents } = await setup({ a1: { provider: "codex" } }, {
@@ -639,6 +739,20 @@ test("startup scan schedules a Codex agent that hit its limit before the plugin 
   clock = new Date(expected.getTime() + 2 * MINUTE);
   await resumer.tick();
   assert.deepEqual(sent, [{ agentId: "c1", text: CONTINUE_PROMPT }]);
+});
+
+test("startup scan plans a stop after a sent continue, counting it, but not over a pending reservation", async () => {
+  clock = new Date("2026-10-06T07:10:00.000Z");
+  const row = { agentId: "c1", provider: "codex", resetAt: null, dueAt: "2026-10-06T05:02:00.000Z", baseline: "2026-10-06T02:00:00.000Z", attempts: 1, enabled: true, retries: 0 };
+  await store.update("c1", () => ({ ...row, state: "sent" }));
+  const waiting = { ...row, agentId: "c2", dueAt: "2026-10-06T09:00:00.000Z", state: "pending" as const };
+  await store.update("c2", () => waiting);
+  const stopped = { provider: "codex", status: "error", lastError: CODEX_LIMIT, updatedAt: "2026-10-06T07:06:29.999Z" } as const;
+  await setup({ c1: stopped, c2: stopped });
+  const jobs = await store.list();
+  const c1 = jobs.find((job) => job.agentId === "c1");
+  assert.deepEqual([c1?.state, c1?.attempts], ["pending", 2]);
+  assert.deepEqual(jobs.find((job) => job.agentId === "c2"), waiting);
 });
 
 test("startup scan finds a Claude closing notice and ignores everything else", async () => {
