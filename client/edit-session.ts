@@ -8,6 +8,8 @@ export type EditorKind = "time" | "note";
  * row drawn again, as when its day group changes, keeps what was typed and what it was pinned to.
  */
 export interface EditSession {
+  /** This opening of the editor, so a save made in an earlier one never lands in it. */
+  opened: object;
   agentId: string;
   kind: EditorKind;
   /** The reservation time the editor opened on. A note's save is pinned to it; a refusal moves it. */
@@ -24,9 +26,9 @@ export type EditEvent =
   | { type: "open"; kind: EditorKind; job: ScheduledJob }
   | { type: "type"; text: string }
   | { type: "save" }
-  | { type: "saved"; agentId: string }
-  | { type: "refused"; agentId: string; latest: string; problem: string }
-  | { type: "failed"; agentId: string; problem: string }
+  | { type: "saved"; opened: object }
+  | { type: "refused"; opened: object; latest: string; problem: string }
+  | { type: "failed"; opened: object; problem: string }
   | { type: "cancel" }
   | { type: "escape" }
   | { type: "moved" }
@@ -43,18 +45,18 @@ export function editSession(state: EditSession | null, event: EditEvent): EditSe
       const { kind, job } = event;
       if (job.sending || (state && (kind === "note" || state.kind === "note"))) return state;
       const note = kind === "note" ? job.note ?? "" : "";
-      return { agentId: job.agentId, kind, pin: job.dueAt, draft: note, initial: note, saving: false, problem: null };
+      return { opened: {}, agentId: job.agentId, kind, pin: job.dueAt, draft: note, initial: note, saving: false, problem: null };
     }
     case "type":
       return state?.kind === "note" && !state.saving ? { ...state, draft: event.text } : state;
     case "save":
       return state?.kind === "note" ? { ...state, saving: true, problem: null } : state;
     case "saved":
-      return ownSave(state, event.agentId) ? null : state;
+      return ownSave(state, event.opened) ? null : state;
     case "refused":
-      return ownSave(state, event.agentId) ? { ...state!, saving: false, pin: event.latest, problem: event.problem } : state;
+      return ownSave(state, event.opened) ? { ...state!, saving: false, pin: event.latest, problem: event.problem } : state;
     case "failed":
-      return ownSave(state, event.agentId) ? { ...state!, saving: false, problem: event.problem } : state;
+      return ownSave(state, event.opened) ? { ...state!, saving: false, problem: event.problem } : state;
     case "cancel":
       return state?.saving ? state : null;
     case "moved":
@@ -68,7 +70,7 @@ export function editSession(state: EditSession | null, event: EditEvent): EditSe
   }
 }
 
-const ownSave = (state: EditSession | null, agentId: string) => state?.kind === "note" && state.saving && state.agentId === agentId;
+const ownSave = (state: EditSession | null, opened: object) => state?.kind === "note" && state.saving && state.opened === opened;
 
 /**
  * The session as the latest list allows it. An editor whose reservation is gone closes, so a

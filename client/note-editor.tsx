@@ -35,7 +35,7 @@ export function NoteEditor(props: {
 
   // The results are handled here, not per call, so they still arrive if the row is drawn again.
   const save = useMutation({
-    mutationFn: async ({ note, pin }: { note: string; pin: string }) => {
+    mutationFn: async ({ note, pin }: { note: string; pin: string; opened: object }) => {
       await queryClient.cancelQueries({ queryKey });
       const result = await setNote({ agentId, dueAt: pin, note });
       if (result.changed) return { result, latest: pin };
@@ -43,17 +43,17 @@ export function NoteEditor(props: {
       const latest = queryClient.getQueryData<ScheduledJob[]>(queryKey)?.find((entry) => entry.agentId === agentId)?.dueAt;
       return { result, latest: latest ?? pin };
     },
-    onSuccess: ({ result, latest }, { note, pin }) => {
+    onSuccess: ({ result, latest }, { note, pin, opened }) => {
       // A refusal moves the pin to the latest reservation, which the screen then shows, so a
       // second save is a choice made with the new time in view.
-      if (!result.changed) return dispatch({ type: "refused", agentId, latest, problem: noteRefusal(result.reason) });
+      if (!result.changed) return dispatch({ type: "refused", opened, latest, problem: noteRefusal(result.reason) });
       const saved = note.trim() || undefined;
       queryClient.setQueryData<ScheduledJob[]>(queryKey, (jobs) => jobs?.map((entry) =>
         entry.agentId === agentId && entry.dueAt === pin ? { ...entry, note: saved } : entry));
       toast.show(saved ? "Extra instructions saved" : "Extra instructions removed", { variant: "success" });
-      dispatch({ type: "saved", agentId });
+      dispatch({ type: "saved", opened });
     },
-    onError: () => dispatch({ type: "failed", agentId, problem: "Couldn’t save the extra instructions. Try again." }),
+    onError: (_error, { opened }) => dispatch({ type: "failed", opened, problem: "Couldn’t save the extra instructions. Try again." }),
     onSettled: () => {
       notifyScheduleChanged();
       return queryClient.invalidateQueries({ queryKey });
@@ -61,7 +61,7 @@ export function NoteEditor(props: {
   });
   const submit = (note: string) => {
     dispatch({ type: "save" });
-    save.mutate({ note, pin: session.pin });
+    save.mutate({ note, pin: session.pin, opened: session.opened });
   };
 
   const { draft: text, problem } = session;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { agentGate, countsFor, turnAction, type TurnEvent } from "./decisions";
+import { agentGate, carryOver, turnAction, type TurnEvent } from "./decisions";
 import type { PaseoAgent } from "./paseo-types";
 import type { ResumeJob } from "./store";
 
@@ -44,9 +44,10 @@ test("turn events: an agent that could not be read never cancels for a message",
 });
 
 test("turn events: a sent record is cleared only by a finished turn, and a limit plans anew", () => {
+  assert.deepEqual(turnAction(job({ state: "sending" }), null, "finished"), { plan: false }, "a continue being sent keeps its claim");
   for (const state of ["sent", "sending"] as const) {
     const row = job({ state });
-    assert.deepEqual(turnAction(row, null, "finished"), { clearSent: true }, state);
+    if (state === "sent") assert.deepEqual(turnAction(row, null, "finished"), { clearSent: true });
     for (const event of ["started", "failed", "stopped"] as TurnEvent[]) assert.deepEqual(turnAction(row, null, event), { plan: false });
     assert.deepEqual(turnAction(row, agent({ lastUserMessageAt: LATER }), "limit"), { plan: true }, "only a pending reservation is canceled");
   }
@@ -75,6 +76,9 @@ test("due-time checks 3 to 8 run in the table's order", () => {
   assert.equal(gate(job({ model: "gpt-a" }), agent({ model: "gpt-b" } as Partial<PaseoAgent>)), "model_changed");
   assert.equal(gate(off, agent({ lastUserMessageAt: LATER, status: "running" })), "new_message", "4 comes before a turn");
   assert.equal(gate(off, agent({ status: "closed" })), "agent_busy");
+  assert.equal(gate(job(), agent({ archivedAt: LATER, lastUserMessageAt: LATER })), "archived", "3 before 4");
+  assert.equal(gate(job(), agent({ lastUserMessageAt: LATER, status: "closed" })), "new_message", "4 before 5");
+  assert.equal(gate(job(), agent({ status: "closed", attentionReason: "permission" })), "agent_busy", "5 before 6");
   assert.equal(gate(off, agent({ status: "initializing" })), "agent_busy");
   assert.equal(gate(off, agent({ status: "running", attentionReason: "permission" })), "permission", "6 comes before a turn");
   assert.equal(gate(off, agent({ status: "running" })), "wait", "a reservation turned off waits for the turn too");
@@ -89,20 +93,33 @@ test("Resume now never skips, and waits for a turn", () => {
   assert.equal(agentGate(job({ enabled: false }), agent({ status: "running" }), "manual"), "wait");
 });
 
-test("a pending reservation planned again keeps its counts and never gives up", () => {
-  const pending = job({ attempts: 23, retries: 3 });
-  assert.deepEqual(countsFor(pending, true), { kept: pending, attempts: 23, retries: 3, retryDelay: 2, gaveUp: null });
-  assert.deepEqual(countsFor(pending, false), { kept: pending, attempts: 23, retries: 3, retryDelay: 2, gaveUp: null });
-  assert.equal(countsFor(job({ retries: 0 }), true).retryDelay, 0);
+test("a pending reservation planned again keeps its counts, account and model, and never gives up", () => {
+  const pending = job({ attempts: 23, retries: 3, identity: "account-a", model: "gpt-a" });
+  const plan = { identity: "account-a", model: "gpt-b" };
+  const again = carryOver(pending, { ...plan, retry: true });
+  assert.deepEqual(again, { kept: pending, attempts: 23, retries: 3, retryDelay: 2, identity: "account-a", model: "gpt-a", ended: null });
+  assert.equal(carryOver(job({ retries: 0 }), { retry: true }).retryDelay, 0);
 });
 
-test("a sent continue that stops again counts once, and gives up at the limits", () => {
-  assert.deepEqual(countsFor(null, true), { kept: null, attempts: 0, retries: 1, retryDelay: 0, gaveUp: null });
-  assert.deepEqual(countsFor(null, false), { kept: null, attempts: 0, retries: 0, retryDelay: 0, gaveUp: null });
-  const sent = job({ state: "sent", attempts: 2, retries: 1 });
-  assert.deepEqual(countsFor(sent, true), { kept: null, attempts: 3, retries: 2, retryDelay: 1, gaveUp: null });
-  assert.deepEqual(countsFor(sent, false), { kept: null, attempts: 3, retries: 0, retryDelay: 0, gaveUp: null });
-  assert.equal(countsFor(job({ state: "sent", attempts: 23 }), false).gaveUp?.reason, "attempts");
-  assert.equal(countsFor(job({ state: "sent", retries: 3 }), true).gaveUp?.reason, "retries");
-  assert.equal(countsFor(job({ state: "sent", retries: 3 }), false).gaveUp, null, "a reset plan starts the retries over");
+test("a pending reservation planned onto a reset or a check starts its retries over", () => {
+  const pending = job({ retries: 3 });
+  assert.deepEqual([carryOver(pending, { retry: false }).retries, carryOver(pending, { retry: false }).ended], [0, null]);
+});
+
+test("a pending reservation planned again binds an account it had none for, and cancels on another", () => {
+  assert.deepEqual([carryOver(job(), { retry: false, identity: "account-a", model: "gpt-a" }).identity, carryOver(job(), { retry: false, model: "gpt-a" }).model], ["account-a", "gpt-a"]);
+  assert.equal(carryOver(job({ identity: "account-a" }), { retry: false }).identity, "account-a", "an unknown account keeps the bound one");
+  assert.equal(carryOver(job({ identity: "account-a" }), { retry: false, identity: "account-b" }).ended?.reason, "account_changed");
+});
+
+test("a sent continue that stops again counts once, takes the new account, and gives up at the limits", () => {
+  const plan = { identity: "account-b", model: "gpt-b" };
+  assert.deepEqual(carryOver(null, { ...plan, retry: true }), { kept: null, attempts: 0, retries: 1, retryDelay: 0, ...plan, ended: null });
+  assert.deepEqual(carryOver(null, { ...plan, retry: false }), { kept: null, attempts: 0, retries: 0, retryDelay: 0, ...plan, ended: null });
+  const sent = job({ state: "sent", attempts: 2, retries: 1, identity: "account-a" });
+  assert.deepEqual(carryOver(sent, { ...plan, retry: true }), { kept: null, attempts: 3, retries: 2, retryDelay: 1, ...plan, ended: null });
+  assert.deepEqual(carryOver(sent, { ...plan, retry: false }), { kept: null, attempts: 3, retries: 0, retryDelay: 0, ...plan, ended: null });
+  assert.equal(carryOver(job({ state: "sent", attempts: 23 }), { retry: false }).ended?.reason, "attempts");
+  assert.equal(carryOver(job({ state: "sent", retries: 3 }), { retry: true }).ended?.reason, "retries");
+  assert.equal(carryOver(job({ state: "sent", retries: 3 }), { retry: false }).ended, null, "a reset plan starts the retries over");
 });

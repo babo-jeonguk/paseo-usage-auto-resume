@@ -119,6 +119,11 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
         <Text style={muted}>Nothing scheduled for this conversation.</Text>
         {button("Close", close, "X", false)}
       </> : <>
+        {/* A failed refresh keeps the reservation shown, with its controls off until it loads. */}
+        {query.isError ? <View style={{ gap: 8 }}>
+          <Text accessibilityRole="alert" style={muted}>Couldn’t refresh this reservation.</Text>
+          {button("Refresh status", () => void query.refetch(), "RefreshCw", query.isFetching)}
+        </View> : null}
         {/* The time and the controls that move it stay together; the editor replaces all of them. */}
         {editing === "time" && !busy ? <TimeEditor key={job.dueAt} job={job} now={now} compact stackDays theme={theme}
           onSave={(dueAt) => action.mutate({ kind: "move", job, dueAt })} onCancel={() => dispatch({ type: "cancel" })} /> : (

@@ -482,8 +482,10 @@ test("a retry still waiting is planned again without giving up or counting", asy
 test("the agent is read again after the usage lookup, before anything is claimed or sent", async () => {
   const changes: Array<[string, Partial<PaseoAgent>]> = [
     ["archived", { archivedAt: "2026-10-06T05:01:00.000Z" }],
-    ["permission", { attentionReason: "permission" }],
+    ["provider_changed", { provider: "claude" }],
     ["new_message", { lastUserMessageAt: "2026-10-06T05:01:00.000Z" }],
+    ["agent_busy", { status: "closed" }],
+    ["permission", { attentionReason: "permission" }],
     ["busy", { status: "running" }],
   ];
   for (const [result, change] of changes) {
@@ -501,6 +503,65 @@ test("the agent is read again after the usage lookup, before anything is claimed
     assert.deepEqual(outcome, result === "busy" ? { result: "busy" } : { result: "canceled", reason: result }, result);
     assert.deepEqual(fake.sent, [], result);
   }
+});
+
+test("the tick also reads the agent again after the usage lookup", async () => {
+  let agents: Map<string, Partial<PaseoAgent>> | undefined;
+  let archive = false;
+  const ready: SubscriptionReader = async () => {
+    if (archive) agents!.set("a1", { provider: "codex", archivedAt: "2026-10-06T05:01:00.000Z" });
+    return { auth: "subscription", status: "ready", identity: "account-model" };
+  };
+  const fake = await setup({ a1: { provider: "codex" } }, { readSubscription: ready });
+  agents = fake.agents;
+  await fake.resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), fake.api);
+  archive = true;
+  advance(3 * 60 * MINUTE);
+  await fake.resumer.tick();
+  assert.deepEqual(fake.sent, []);
+  assert.deepEqual(await recorded(), ["a1 canceled/archived"]);
+});
+
+test("a reservation planned again stays bound to its account, and another account cancels it", async () => {
+  let identity: string | undefined = "account-a";
+  const reader: SubscriptionReader = async () => (identity ? { auth: "subscription", status: "unknown", identity } : unknownCheck());
+  const { api, resumer } = await setup({ a1: { provider: "codex" } }, { readSubscription: reader });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  identity = undefined;
+  advance(30 * MINUTE);
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  assert.equal((await store.list())[0]?.identity, "account-a", "an account that cannot be read keeps the bound one");
+  identity = "account-b";
+  advance(30 * MINUTE);
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  assert.deepEqual(await store.list(), []);
+  assert.deepEqual(await recorded(), ["a1 canceled/account_changed"]);
+});
+
+test("a retry still waiting that is planned onto a stated reset starts its retries over", async () => {
+  const { api, resumer } = await setup({ a1: { provider: "codex" } });
+  await store.update("a1", () => ({
+    agentId: "a1", provider: "codex", resetAt: null, dueAt: "2026-10-06T04:00:00.000Z",
+    baseline: "2026-10-06T02:00:00.000Z", attempts: 0, state: "pending", enabled: true, retries: 3,
+  }));
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  const [job] = await store.list();
+  assert.deepEqual([job?.resetAt, job?.retries], ["2026-10-06T05:00:00.000Z", 0]);
+});
+
+test("a finished turn clears the reservation even when the agent cannot be read, and leaves a continue being sent", async () => {
+  const { api, resumer } = await setup({ a1: { provider: "codex" }, a2: { provider: "codex" } });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  const ref = api.agents.ref;
+  api.agents.ref = (id) => Object.assign(ref(id), { refresh: async () => { throw new Error("daemon busy"); } });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", { kind: "completed" }), api);
+  api.agents.ref = ref;
+  assert.deepEqual(await recorded(), ["a1 canceled/turn_finished"]);
+
+  await resumer.onTurnEnded(turnEnded("a2", "codex", failed(CODEX_LIMIT)), api);
+  await store.update("a2", (job) => job && { ...job, state: "sending" });
+  await resumer.onTurnEnded(turnEnded("a2", "codex", { kind: "completed" }), api);
+  assert.equal((await store.list())[0]?.state, "sending", "its claim still guards against a second send");
 });
 
 test("the continue is steered into a turn that starts after the last check", async () => {

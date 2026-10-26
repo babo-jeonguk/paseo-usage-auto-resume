@@ -13,7 +13,9 @@ const open = (kind: "time" | "note", fields: Partial<ScheduledJob> = {}): EditEv
 const kind = (state: EditSession | null) => state && `${state.agentId}:${state.kind}`;
 
 test("extra instructions open with the saved note and the reservation's time", () => {
-  assert.deepEqual(run(open("note", { note: "Rerun the tests" })), {
+  const { opened, ...rest } = run(open("note", { note: "Rerun the tests" }))!;
+  assert.equal(typeof opened, "object");
+  assert.deepEqual(rest, {
     agentId: "a", kind: "note", pin: DUE, draft: "Rerun the tests", initial: "Rerun the tests", saving: false, problem: null,
   });
 });
@@ -70,23 +72,27 @@ test("Escape closes only an untouched editor, ignoring spaces at either end", ()
 });
 
 test("a save's result reaches only the editor that made it", () => {
-  const saving = [open("note"), { type: "save" }] as EditEvent[];
-  assert.equal(run(...saving, { type: "saved", agentId: "a" }), null);
-  // The reservation went while saving, and another editor opened before the result came back.
-  const other = run(...saving, { type: "sync", jobs: [job({ agentId: "b" })] }, open("note", { agentId: "b" }));
-  assert.equal(kind(other), "b:note");
-  assert.equal(kind(editSession(other, { type: "saved", agentId: "a" })), "b:note");
-  assert.equal(kind(editSession(other, { type: "failed", agentId: "a", problem: "x" })), "b:note");
-  const otherSaving = editSession(other, { type: "save" });
-  assert.equal(kind(editSession(otherSaving, { type: "saved", agentId: "a" })), "b:note", "even while it saves too");
-  assert.equal(kind(run(open("note"), { type: "saved", agentId: "a" })), "a:note", "no save was in flight");
+  const first = run(open("note"), { type: "save" })!;
+  assert.equal(editSession(first, { type: "saved", opened: first.opened }), null);
+  // The reservation was sent while saving, and the editor opened again on the agent's next one.
+  const gone = editSession(first, { type: "sync", jobs: [] });
+  const again = editSession(editSession(gone, open("note", { dueAt: "2026-10-06T10:02:00.000Z" })), { type: "save" });
+  for (const late of [
+    { type: "saved", opened: first.opened },
+    { type: "refused", opened: first.opened, latest: DUE, problem: "x" },
+    { type: "failed", opened: first.opened, problem: "x" },
+  ] as EditEvent[]) {
+    assert.equal(editSession(again, late), again, late.type);
+  }
+  const idle = run(open("note"))!;
+  assert.equal(editSession(idle, { type: "saved", opened: idle.opened }), idle, "no save was in flight");
 });
 
 test("a refused save keeps the text and moves the pin to the latest reservation", () => {
-  const refused = run(open("note"), { type: "type", text: "draft" }, { type: "save" },
-    { type: "refused", agentId: "a", latest: "2026-10-06T05:12:00.000Z", problem: "changed" });
+  const saving = run(open("note"), { type: "type", text: "draft" }, { type: "save" })!;
+  const refused = editSession(saving, { type: "refused", opened: saving.opened, latest: "2026-10-06T05:12:00.000Z", problem: "changed" });
   assert.deepEqual([refused?.draft, refused?.pin, refused?.saving, refused?.problem], ["draft", "2026-10-06T05:12:00.000Z", false, "changed"]);
-  const failed = run(open("note"), { type: "type", text: "draft" }, { type: "save" }, { type: "failed", agentId: "a", problem: "retry" });
+  const failed = editSession(saving, { type: "failed", opened: saving.opened, problem: "retry" });
   assert.deepEqual([failed?.draft, failed?.pin, failed?.saving, failed?.problem], ["draft", DUE, false, "retry"]);
   assert.equal(editSession(failed, { type: "save" })?.problem, null, "a new save clears the last problem");
 });

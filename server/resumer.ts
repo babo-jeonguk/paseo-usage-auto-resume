@@ -1,6 +1,6 @@
 import type { AgentTimelineItem, PaseoAgent, PaseoApi } from "./paseo-types";
 import type { PluginLifecycleEvents, PluginSessionOpenRequest } from "@getpaseo/plugin/server";
-import { agentGate, canceled, countsFor, NEW_MESSAGE, turnAction, type Cancellation, type Gate, type Outcome, type TurnEvent } from "./decisions";
+import { agentGate, canceled, carryOver, turnAction, type Cancellation, type Gate, type Outcome, type TurnEvent } from "./decisions";
 import { detectLimitStop } from "./limit";
 import type { HistoryRow, RescheduleResult, ResumeNowResult, ScheduledJob, SetNoteResult, Waiting } from "../shared/rpc";
 import type { HistoryStore } from "./history";
@@ -157,7 +157,7 @@ export function createResumer(options: {
     const observedAt = now();
     const stop = outcome.kind === "canceled" ? null : detectLimitStop(outcome, event.timeline, observedAt);
     const kind: TurnEvent = outcome.kind === "canceled" ? "stopped" : stop ? "limit" : outcome.kind === "completed" ? "finished" : "failed";
-    await onTurn(api, event.agent.id, kind, (agent, source) => schedule(api, agent, source, stop!.resetAt, observedAt, { onlyIfNone: false }));
+    await onTurn(api, event.agent.id, kind, stop ? { resetAt: stop.resetAt, observedAt } : undefined);
   }
 
   function onTurnStarted(agentId: string, api: ResumerApi): Promise<void> {
@@ -168,20 +168,18 @@ export function createResumer(options: {
    * Applies the table's turn events. The agent is read only when a new message could matter, and
    * the decision is made again against the stored row inside each write, which may have changed.
    */
-  async function onTurn(api: ResumerApi, agentId: string, event: TurnEvent, plan?: (agent: PaseoAgent, source: UsageSource) => Promise<void>): Promise<void> {
+  async function onTurn(api: ResumerApi, agentId: string, event: TurnEvent, stop?: { resetAt: Date | null; observedAt: Date }): Promise<void> {
     const row = (await store.list()).find((job) => job.agentId === agentId) ?? null;
-    const agent = row?.state === "pending" || event === "limit" ? await loadAgent(api, agentId) : null;
+    // An agent that cannot be read only loses the message check; a finished turn still clears.
+    const agent = row?.state === "pending" || event === "limit" ? await loadAgent(api, agentId).catch(() => null) : null;
     const action = turnAction(row, agent, event);
-    const { cancel } = action;
-    if (cancel) await retire(agentId, (current) => turnAction(current, agent, event).cancel?.reason === cancel.reason, cancel);
-    // A continue already sent was reported when it went; a turn that finishes clears it quietly.
-    if (action.clearSent || event === "finished") {
-      await store.update(agentId, (current) => (current && current.state !== "pending" ? null : undefined));
-    }
-    if (!action.plan || !agent || !plan) return;
+    if (action.cancel) await retire(agentId, (current) => !!turnAction(current, agent, event).cancel, action.cancel);
+    // A continue already sent was reported when it went, so it is cleared quietly.
+    if (action.clearSent) await store.update(agentId, (current) => (current && turnAction(current, agent, event).clearSent ? null : undefined));
+    if (!action.plan || !agent || !stop) return;
     const settings = await readSettings();
     const source = settings && (await resumableSource(api, agent.provider, settings));
-    if (source) await plan(agent, source);
+    if (source) await schedule(api, agent, source, stop.resetAt, stop.observedAt, { onlyIfNone: false });
   }
 
   async function schedule(
@@ -214,14 +212,15 @@ export function createResumer(options: {
     const resetAt = plan.kind === "reset" ? plan.resetAt : null;
     const key = resetAt ? minuteIso(resetAt) : null;
     const waiting = plan.kind === "check" ? plan.waiting : undefined;
-    let gaveUp = null as Outcome | null;
+    let ended = null as Outcome | null;
     await store.update(agent.id, (current) => {
       if (options.onlyIfNone && waits(current)) return undefined;
       if (current?.state === "pending" && current.resetAt === key && current.waiting === waiting) return undefined;
-      const { kept, attempts, retries, retryDelay, gaveUp: ended } = countsFor(current, plan.kind === "retry");
-      if (ended) {
-        log(`gave up on ${agent.id}: ${ended.detail}`);
-        gaveUp = ended;
+      const carried = carryOver(current, { retry: plan.kind === "retry", identity: check.identity, model: subscriptionModel(agent) });
+      const { kept, attempts, retries, retryDelay, identity, model } = carried;
+      if (carried.ended) {
+        log(`${carried.ended.outcome} ${agent.id}: ${carried.ended.detail}`);
+        ended = carried.ended;
         return null;
       }
       const planned = plan.kind === "retry" ? new Date(at.getTime() + RETRY_DELAYS_MS[retryDelay]!).toISOString()
@@ -240,8 +239,8 @@ export function createResumer(options: {
         state: "pending",
         enabled: kept?.enabled ?? true,
         waiting,
-        identity: check.identity,
-        model: subscriptionModel(agent),
+        identity,
+        model,
         launch,
         note: kept?.note,
         userChosenTime: keepTime || undefined,
@@ -250,7 +249,7 @@ export function createResumer(options: {
       return job;
     });
     // Recorded outside the update so the job file is never held waiting on the history file.
-    if (gaveUp) await record(agent.id, agent.provider, { ...gaveUp, title: titleOf(agent) });
+    if (ended) await record(agent.id, agent.provider, { ...ended, title: titleOf(agent) });
   }
 
   async function timelineTail(api: ResumerApi, agentId: string): Promise<AgentTimelineItem[]> {
@@ -354,10 +353,9 @@ export function createResumer(options: {
   }
 
   /**
-   * One delivery attempt: every safety and usage check, then the claim and the send. Resume now
-   * runs the same checks with three differences: it sends a reservation that is turned off,
-   * ignores the reset the notice stated, and leaves the reservation as it was when the usage
-   * holds it. Only the tick skips or postpones, so each mode gets its own result type.
+   * One delivery attempt: the due-time checks of the table in docs/behavior.md, then the claim
+   * and the send. Resume now differs where the table says. Only the tick skips or postpones, so
+   * each mode gets its own result type.
    */
   function deliver(job: ResumeJob, api: ResumerApi, at: Date, mode: "auto"): Promise<Delivery>;
   function deliver(job: ResumeJob, api: ResumerApi, at: Date, mode: "manual"): Promise<ResumeNowResult>;

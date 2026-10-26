@@ -167,6 +167,8 @@ function createStyles(theme: Theme, compact: boolean) {
       paddingVertical: 8,
     },
     retryText: { color: colors.foreground, fontSize: 14, fontWeight: "500" as const },
+    stale: { flexDirection: "row" as const, alignItems: "center" as const, gap: 8, flexWrap: "wrap" as const },
+    staleText: { color: colors.foregroundMuted, fontSize: 14, flex: 1, minWidth: 180 },
     historyHeader: {
       flexDirection: "row" as const,
       alignItems: "flex-start" as const,
@@ -648,6 +650,16 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
         ) : undefined
       }
     >
+      {/* A failed refresh keeps the list it has, which may be out of date. */}
+      {query.isError && query.data ? (
+        <View style={styles.stale}>
+          <Icon name="TriangleAlert" size={16} color={theme.colors.statusDanger} />
+          <Text accessibilityRole="alert" style={styles.staleText}>Couldn’t refresh schedules. This list may be out of date.</Text>
+          <Pressable accessibilityRole="button" onPress={refresh} style={styles.retry}>
+            <Text style={styles.retryText}>Try again</Text>
+          </Pressable>
+        </View>
+      ) : null}
       {content}
       {!query.data ? null : (
         <HistorySection query={history} theme={theme} styles={styles} onOpen={openAgent} />

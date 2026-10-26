@@ -57,7 +57,8 @@ export function turnAction(row: ResumeJob | null, agent: PaseoAgent | null, even
     if (event === "finished") return { cancel: TURN_FINISHED };
     return { plan };
   }
-  if (row && event === "finished") return { clearSent: true };
+  // A continue still being sent keeps its claim, which guards against sending it twice.
+  if (row?.state === "sent" && event === "finished") return { clearSent: true };
   return { plan };
 }
 
@@ -85,33 +86,46 @@ export function agentGate(job: ResumeJob, agent: PaseoAgent | null, mode: "auto"
   return null;
 }
 
-export interface Counts {
+export interface CarryOver {
   /** The pending reservation planned again, whose user settings carry over. */
   kept: ResumeJob | null;
   attempts: number;
   retries: number;
   /** Index into the retry delays when the plan is a retry. */
   retryDelay: number;
-  /** Set when the stop ends the sequence instead of planning it. */
-  gaveUp: Outcome | null;
+  /** The account and model the reservation stays bound to. */
+  identity?: string;
+  model?: string;
+  /** Set when the stop ends the reservation instead of planning it. */
+  ended: Outcome | null;
 }
 
 /**
- * What a new plan counts. Only a sent continue that stopped again counts toward giving up, so a
- * pending reservation planned again keeps its counts and never gives up.
+ * What a new plan takes over from the row it replaces.
+ * - A pending reservation planned again stays bound to its account and model; another account
+ *   cancels it, as at the due time. Only a retry plan keeps its retry count, as a postponement
+ *   does, and nothing else counts: no continue was sent, so it never gives up.
+ * - After a sent continue, the stop counts toward giving up.
  */
-export function countsFor(current: ResumeJob | null, retry: boolean): Counts {
+export function carryOver(current: ResumeJob | null, plan: { retry: boolean; identity?: string; model?: string }): CarryOver {
   const kept = current?.state === "pending" ? current : null;
   if (kept) {
-    return { kept, attempts: kept.attempts, retries: kept.retries, retryDelay: Math.max(kept.retries - 1, 0), gaveUp: null };
+    const changed = !!kept.identity && !!plan.identity && kept.identity !== plan.identity;
+    const retries = plan.retry ? kept.retries : 0;
+    return {
+      kept, attempts: kept.attempts, retries, retryDelay: Math.max(retries - 1, 0),
+      identity: kept.identity ?? plan.identity, model: kept.model ?? plan.model,
+      ended: changed ? canceled("account_changed", "account or model changed") : null,
+    };
   }
+  const bound = { identity: plan.identity, model: plan.model };
   const attempts = current ? current.attempts + 1 : 0;
   if (attempts >= MAX_ATTEMPTS) {
-    return { kept, attempts, retries: 0, retryDelay: 0, gaveUp: { outcome: "gave_up", reason: "attempts", detail: `${attempts} automatic continues hit a limit again` } };
+    return { kept, attempts, retries: 0, retryDelay: 0, ...bound, ended: { outcome: "gave_up", reason: "attempts", detail: `${attempts} automatic continues hit a limit again` } };
   }
-  const done = retry ? (current?.retries ?? 0) : 0;
+  const done = plan.retry ? (current?.retries ?? 0) : 0;
   if (done >= RETRY_DELAYS_MS.length) {
-    return { kept, attempts, retries: done, retryDelay: 0, gaveUp: { outcome: "gave_up", reason: "retries", detail: `${done} continues stopped again while its usage windows were not used up` } };
+    return { kept, attempts, retries: done, retryDelay: 0, ...bound, ended: { outcome: "gave_up", reason: "retries", detail: `${done} continues stopped again while its usage windows were not used up` } };
   }
-  return { kept, attempts, retries: retry ? done + 1 : 0, retryDelay: done, gaveUp: null };
+  return { kept, attempts, retries: plan.retry ? done + 1 : 0, retryDelay: done, ...bound, ended: null };
 }
