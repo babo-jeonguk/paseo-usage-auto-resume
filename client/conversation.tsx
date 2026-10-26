@@ -1,11 +1,12 @@
 import { useRpc, type PluginButtonContentProps } from "@getpaseo/plugin/client";
 import { Icon, useToast } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useReducer, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { listScheduledRpc, rescheduleRpc, resumeNowRpc, setEnabledRpc, type ScheduledJob } from "../shared/rpc";
 import { clockLabel, dayLabel, delayChoices, notePreview, RESUME_NOW_UNFINISHED, refusalLabel, relativeLabel, resumeNowToast, SCHEDULE_CHANGED, waitingLabel } from "./format";
-import { NoteEditor, type EditorKind } from "./note-editor";
+import { editorLocks, editSession, synced } from "./edit-session";
+import { NoteEditor } from "./note-editor";
 import { historyQueryKey, jobsQueryKey } from "./query-keys";
 import { accentText, bodyText, chipText, clockText, headingText, mutedText } from "./text-styles";
 import { filled, outlined, pressFeedback } from "./button-styles";
@@ -29,15 +30,17 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
   const query = useQuery({ queryKey, queryFn: async () => (await list({})).jobs, refetchInterval: 10_000 });
   const job = query.data?.find((entry) => entry.agentId === agentId);
   const [now, setNow] = useState(Date.now);
-  // One editor at a time. The time editor closes when the reservation moves or starts sending;
-  // the note editor stays, so typed text is never lost, and its save is pinned instead. Both close
-  // when the reservation is gone, so a later one never opens with an editor.
-  const [editing, setEditing] = useState<EditorKind | null>(null);
+  // The editor open here, as the latest list allows it (see `synced`).
+  const [stored, dispatch] = useReducer(editSession, null);
+  const session = query.data ? synced(stored, query.data) : stored;
+  const editing = session?.kind ?? null;
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 10_000);
     return () => clearInterval(timer);
   }, []);
-  useEffect(() => setEditing((current) => (job && current === "note" ? current : null)), [job?.dueAt, job?.sending]);
+  useEffect(() => {
+    if (session !== stored && query.data) dispatch({ type: "sync", jobs: query.data });
+  }, [session, stored, query.data]);
 
   const action = useMutation({
     mutationFn: async (input: { job: ScheduledJob } & ({ kind: "toggle"; enabled: boolean } | { kind: "move"; dueAt: string })) => {
@@ -52,7 +55,7 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
       }
     },
     onSuccess: (_result, input) => {
-      setEditing((current) => (current === "time" ? null : current));
+      if (input.kind === "move") dispatch({ type: "moved" });
       // Reflect only an acknowledged mutation, in the sidebar's shared cache too.
       queryClient.setQueryData<ScheduledJob[]>(queryKey, (jobs) => jobs?.map((entry) =>
         entry.agentId !== agentId || entry.dueAt !== input.job.dueAt ? entry : input.kind === "toggle"
@@ -92,10 +95,11 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
   const text = bodyText(colors);
   const busy = action.isPending || resume.isPending || !!job?.sending;
   const disabled = busy || query.isError || query.isPending;
-  // Opening the note while a time is typed would drop the time. While a note is written nothing
-  // moves or sends the reservation: its save is pinned to this time, and a continue would leave it behind.
-  const noteLocked = disabled || editing === "time";
-  const moveLocked = disabled || editing === "note";
+  // While a note is written nothing moves or sends the reservation: its save is pinned to this
+  // time, and a continue would leave it behind.
+  const locks = editorLocks(session);
+  const noteLocked = disabled || locks.note;
+  const moveLocked = disabled || locks.time;
   const preview = job?.note ? notePreview(job.note, 200) : undefined;
   const button = (label: string, onPress: () => void, icon: string, unavailable = disabled) => (
     <Pressable
@@ -108,7 +112,7 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
   return (
     <View testID={`resume-conversation-${agentId}`} style={{ padding: 16, gap: 16, width: "100%", maxWidth: 360 }}>
       {!layout.compact ? <Text accessibilityRole="header" style={headingText(colors)}>Auto Resume</Text> : null}
-      {query.isPending ? <ActivityIndicator color={colors.foregroundMuted} /> : query.isError ? <>
+      {query.isPending ? <ActivityIndicator color={colors.foregroundMuted} /> : !query.data ? <>
         <Text accessibilityRole="alert" style={muted}>Couldn’t load this reservation.</Text>
         {button("Refresh status", () => void query.refetch(), "RefreshCw", query.isFetching)}
       </> : !job ? <>
@@ -117,14 +121,14 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
       </> : <>
         {/* The time and the controls that move it stay together; the editor replaces all of them. */}
         {editing === "time" && !busy ? <TimeEditor key={job.dueAt} job={job} now={now} compact stackDays theme={theme}
-          onSave={(dueAt) => action.mutate({ kind: "move", job, dueAt })} onCancel={() => setEditing(null)} /> : (
+          onSave={(dueAt) => action.mutate({ kind: "move", job, dueAt })} onCancel={() => dispatch({ type: "cancel" })} /> : (
           <View style={{ gap: 4 }}>
             <Text style={muted}>{dayLabel(job.dueAt, now)}</Text>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
               <Text style={clockText(colors)}>{clockLabel(job.dueAt)}</Text>
               <Pressable
                 accessibilityRole="button" accessibilityLabel="Change time" accessibilityState={{ disabled: moveLocked }}
-                disabled={moveLocked} hitSlop={6} onPress={() => setEditing("time")}
+                disabled={moveLocked} hitSlop={6} onPress={() => dispatch({ type: "open", kind: "time", job })}
                 style={({ pressed }) => ({ ...pressFeedback(colors, pressed, moveLocked), width: 32, height: 32, borderRadius: 6, alignItems: "center", justifyContent: "center" })}
               >
                 <Icon name="Pencil" size={16} color={colors.foregroundMuted} />
@@ -157,12 +161,12 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
             accessibilityLabel="Resume this reservation"
             onValueChange={(enabled) => action.mutate({ kind: "toggle", job, enabled })} />
         </View>
-        {editing === "note" ? (
-          <NoteEditor job={job} hostId={host.id} theme={theme} onClose={() => setEditing(null)} />
+        {session?.kind === "note" ? (
+          <NoteEditor job={job} session={session} dispatch={dispatch} hostId={host.id} theme={theme} />
         ) : preview ? (
           <Pressable
             accessibilityRole="button" accessibilityLabel="Edit extra instructions" accessibilityHint={preview}
-            accessibilityState={{ disabled: noteLocked }} disabled={noteLocked} onPress={() => setEditing("note")}
+            accessibilityState={{ disabled: noteLocked }} disabled={noteLocked} onPress={() => dispatch({ type: "open", kind: "note", job })}
             style={({ pressed }) => ({ ...pressFeedback(colors, pressed, noteLocked), flexDirection: "row", alignItems: "flex-start", gap: 8, padding: 10, borderRadius: 6, borderWidth: 1, borderColor: colors.border })}
           >
             <Icon name="NotebookPen" size={16} color={colors.foregroundMuted} />
@@ -172,7 +176,7 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
             </View>
             <Icon name="Pencil" size={16} color={colors.foregroundMuted} />
           </Pressable>
-        ) : button("Add extra instructions", () => setEditing("note"), "NotebookPen", noteLocked)}
+        ) : button("Add extra instructions", () => dispatch({ type: "open", kind: "note", job }), "NotebookPen", noteLocked)}
         {/* A sibling of the editor, so its key must not repeat the editor's. */}
         <ResumeNow key={`resume-now-${job.dueAt}`} theme={theme} disabled={moveLocked} pending={resume.isPending}
           onSend={() => resume.mutate(job)} />

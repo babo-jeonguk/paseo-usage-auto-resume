@@ -2,7 +2,7 @@ import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { useRpc } from "@getpaseo/plugin/client";
 import { Icon, ScrollView, useToast } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useReducer, useState } from "react";
 import { ActivityIndicator, Pressable, RefreshControl, Text, View } from "react-native";
 import {
   listHistoryRpc,
@@ -32,7 +32,8 @@ import {
 } from "./format";
 import { Toggle } from "./toggle";
 import { TimeEditor } from "./time-editor";
-import { NoteEditor, type EditorKind } from "./note-editor";
+import { editorLocks, editSession, synced, type EditEvent, type EditSession } from "./edit-session";
+import { NoteEditor } from "./note-editor";
 import { notifyScheduleChanged } from "./schedule-changes";
 import { historyQueryKey, jobsQueryKey } from "./query-keys";
 
@@ -195,27 +196,24 @@ function JobRow(props: {
   job: ScheduledJob;
   now: number;
   divided: boolean;
-  /** The editor open on this row; one at a time across the list. */
-  editing: EditorKind | null;
-  /**
-   * The editor open anywhere in the list. While a note is being written nothing else opens, so
-   * its text is never replaced; while a time is, no note opens.
-   */
-  openEditor: EditorKind | null;
+  /** The one editor open in the list, on this row or another. */
+  session: EditSession | null;
+  dispatch(event: EditEvent): void;
   compact: boolean;
   hostId: string;
   theme: Theme;
   styles: Styles;
-  onEdit(editing: EditorKind | null): void;
   onReschedule(job: ScheduledJob, dueAt: string): void;
   onToggle(job: ScheduledJob, enabled: boolean): void;
   onOpen?: (agentId: string) => void;
 }) {
-  const { job, now, styles, theme, onOpen, editing } = props;
+  const { job, now, styles, theme, onOpen, session, dispatch } = props;
+  const editing = session?.agentId === job.agentId ? session.kind : null;
   const on = job.enabled;
   const busy = job.sending;
-  const timeLocked = busy || props.openEditor === "note";
-  const noteLocked = busy || props.openEditor !== null;
+  const locks = editorLocks(session);
+  const timeLocked = busy || locks.time;
+  const noteLocked = busy || locks.note;
   const tone = on ? theme.colors.foreground : theme.colors.foregroundMuted;
   const title = job.title ?? "Untitled agent";
   const place = placeLabel(job);
@@ -234,7 +232,7 @@ function JobRow(props: {
       accessibilityState={{ disabled: noteLocked }}
       disabled={noteLocked}
       hitSlop={4}
-      onPress={() => props.onEdit("note")}
+      onPress={() => dispatch({ type: "open", kind: "note", job })}
       style={({ pressed }) => [props.compact ? styles.metaButton : styles.iconButton, noteLocked ? styles.disabled : null, pressed ? styles.pressed : null]}
     >
       <Icon name="NotebookPen" size={props.compact ? 16 : 18} color={job.note ? theme.colors.accent : theme.colors.foregroundMuted} />
@@ -250,7 +248,7 @@ function JobRow(props: {
           compact={props.compact}
           theme={theme}
           onSave={(dueAt) => props.onReschedule(job, dueAt)}
-          onCancel={() => props.onEdit(null)}
+          onCancel={() => dispatch({ type: "cancel" })}
         />
       ) : null}
       <View style={styles.rowLine}>
@@ -263,7 +261,7 @@ function JobRow(props: {
                 accessibilityState={{ disabled: timeLocked }}
                 disabled={timeLocked}
                 hitSlop={8}
-                onPress={() => props.onEdit("time")}
+                onPress={() => dispatch({ type: "open", kind: "time", job })}
               >
                 <Text style={[styles.time, { color: tone }, timeLocked ? null : styles.timeEditable]}>{clockLabel(job.dueAt)}</Text>
               </Pressable>
@@ -332,9 +330,9 @@ function JobRow(props: {
         )}
       </View>
       {/* Below the time and title, which stay in view so a refused save can be checked against them. */}
-      {editing === "note" ? (
+      {session && editing === "note" ? (
         <View style={styles.noteEditor}>
-          <NoteEditor job={job} hostId={props.hostId} theme={theme} onClose={() => props.onEdit(null)} />
+          <NoteEditor job={job} session={session} dispatch={dispatch} hostId={props.hostId} theme={theme} />
         </View>
       ) : null}
     </View>
@@ -446,7 +444,7 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
   const queryClient = useQueryClient();
   const toast = useToast();
   const now = useNow(15_000);
-  const [editing, setEditing] = useState<{ agentId: string; kind: EditorKind } | null>(null);
+  const [stored, dispatch] = useReducer(editSession, null);
   const queryKey = useMemo(() => jobsQueryKey(host.id), [host.id]);
 
   const historyKey = useMemo(() => historyQueryKey(host.id), [host.id]);
@@ -509,7 +507,7 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
     },
     onMutate: ({ job, dueAt }) => {
       // A note being written elsewhere in the list stays open with its text.
-      setEditing((current) => (current?.kind === "time" ? null : current));
+      dispatch({ type: "moved" });
       return optimistic((jobs) =>
         byDueAt(jobs.map((entry) => (entry.agentId === job.agentId ? { ...entry, dueAt, enabled: true } : entry))),
       );
@@ -539,14 +537,11 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
 
   const openAgent = navigation ? (agentId: string) => navigation.openAgent({ agentId }) : undefined;
   const jobs = query.data ?? [];
-  // The editor open in the list, if its row is still there; a time editor closes when its continue
-  // starts, while a note editor stays so its text is not lost.
-  const editingJob = editing ? jobs.find((job) => job.agentId === editing.agentId) : undefined;
-  const openEditor = editing && editingJob && (editing.kind === "note" || !editingJob.sending) ? editing.kind : null;
-  // An editor whose row has gone must neither keep the other rows locked nor open on a later reservation.
+  // The editor open in the list, as the latest list allows it (see `synced`).
+  const session = query.data ? synced(stored, query.data) : stored;
   useEffect(() => {
-    if (editing && !openEditor) setEditing(null);
-  }, [editing, openEditor]);
+    if (session !== stored && query.data) dispatch({ type: "sync", jobs: query.data });
+  }, [session, stored, query.data]);
   const summary = summaryLabels(jobs);
   const bulk = bulkAction(jobs);
 
@@ -557,7 +552,7 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
         <ActivityIndicator color={theme.colors.foregroundMuted} />
       </View>
     );
-  } else if (query.isError) {
+  } else if (!query.data) {
     content = (
       <View style={styles.centered}>
         <Icon name="TriangleAlert" size={24} color={theme.colors.statusDanger} />
@@ -620,13 +615,12 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
                   job={job}
                   now={now}
                   divided={index > 0}
-                  editing={editing?.agentId === job.agentId ? openEditor : null}
-                  openEditor={openEditor}
+                  session={session}
+                  dispatch={dispatch}
                   compact={layout.compact}
                   hostId={host.id}
                   theme={theme}
                   styles={styles}
-                  onEdit={(kind) => setEditing(kind ? { agentId: job.agentId, kind } : null)}
                   onOpen={openAgent}
                   onReschedule={(target, dueAt) => move.mutate({ job: target, dueAt })}
                   onToggle={(target, enabled) => toggle.mutate({ job: target, enabled })}
@@ -655,7 +649,7 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
       }
     >
       {content}
-      {query.isPending || query.isError ? null : (
+      {!query.data ? null : (
         <HistorySection query={history} theme={theme} styles={styles} onOpen={openAgent} />
       )}
     </ScrollView>

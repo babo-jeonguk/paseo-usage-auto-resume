@@ -1,11 +1,11 @@
 import { useRpc, type PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { NOTE_MAX_CHARS } from "../shared/prompt";
 import { setNoteRpc, type ScheduledJob } from "../shared/rpc";
 import { filled, outlined } from "./button-styles";
+import type { EditEvent, EditSession } from "./edit-session";
 import { charactersLeft, noteRefusal } from "./format";
 import { jobsQueryKey } from "./query-keys";
 import { notifyScheduleChanged } from "./schedule-changes";
@@ -13,64 +13,61 @@ import { accentText, bodyText, dangerText, inputText, mutedText } from "./text-s
 
 type Theme = PluginSurfaceProps["theme"];
 
-/** The two editors a reservation offers; both surfaces keep at most one open. */
-export type EditorKind = "time" | "note";
-
 /**
- * Writes the note sent after one reservation's continue. Saving never moves or switches the
- * reservation, and the typed text stays through every failure.
+ * Writes the note sent after one reservation's continue. What is typed, the time it is pinned to
+ * and the save in flight live in the surface's `session`, so a row drawn again keeps them. Saving
+ * never moves or switches the reservation, and the typed text stays through every failure.
  */
 export function NoteEditor(props: {
   job: ScheduledJob;
+  session: EditSession;
+  dispatch(event: EditEvent): void;
   hostId: string;
   theme: Theme;
-  onClose(): void;
 }) {
-  const { job, theme } = props;
+  const { job, session, dispatch, theme } = props;
   const { colors } = theme;
   const setNote = useRpc(setNoteRpc);
   const queryClient = useQueryClient();
   const toast = useToast();
   const queryKey = jobsQueryKey(props.hostId);
-  // What the editor opened on, which Escape checks for typing. Save compares with the saved note
-  // instead, which another surface may have changed meanwhile.
-  const [initial] = useState(job.note ?? "");
-  const [text, setText] = useState(initial);
-  // The reservation the user saw. A refusal moves it to the latest one, which the screen then
-  // shows, so a second save is a choice made with the new time in view.
-  const [pin, setPin] = useState(job.dueAt);
-  const [problem, setProblem] = useState<string | null>(null);
+  const { agentId } = job;
 
+  // The results are handled here, not per call, so they still arrive if the row is drawn again.
   const save = useMutation({
-    mutationFn: async (note: string) => {
+    mutationFn: async ({ note, pin }: { note: string; pin: string }) => {
       await queryClient.cancelQueries({ queryKey });
-      const result = await setNote({ agentId: job.agentId, dueAt: pin, note });
+      const result = await setNote({ agentId, dueAt: pin, note });
       if (result.changed) return { result, latest: pin };
       await queryClient.refetchQueries({ queryKey });
-      const latest = queryClient.getQueryData<ScheduledJob[]>(queryKey)?.find((entry) => entry.agentId === job.agentId)?.dueAt;
+      const latest = queryClient.getQueryData<ScheduledJob[]>(queryKey)?.find((entry) => entry.agentId === agentId)?.dueAt;
       return { result, latest: latest ?? pin };
     },
-    onSuccess: ({ result, latest }, note) => {
-      if (!result.changed) {
-        setPin(latest);
-        setProblem(noteRefusal(result.reason));
-        return;
-      }
+    onSuccess: ({ result, latest }, { note, pin }) => {
+      // A refusal moves the pin to the latest reservation, which the screen then shows, so a
+      // second save is a choice made with the new time in view.
+      if (!result.changed) return dispatch({ type: "refused", agentId, latest, problem: noteRefusal(result.reason) });
       const saved = note.trim() || undefined;
       queryClient.setQueryData<ScheduledJob[]>(queryKey, (jobs) => jobs?.map((entry) =>
-        entry.agentId === job.agentId && entry.dueAt === pin ? { ...entry, note: saved } : entry));
+        entry.agentId === agentId && entry.dueAt === pin ? { ...entry, note: saved } : entry));
       toast.show(saved ? "Extra instructions saved" : "Extra instructions removed", { variant: "success" });
-      props.onClose();
+      dispatch({ type: "saved", agentId });
     },
-    onError: () => setProblem("Couldn’t save the extra instructions. Try again."),
+    onError: () => dispatch({ type: "failed", agentId, problem: "Couldn’t save the extra instructions. Try again." }),
     onSettled: () => {
       notifyScheduleChanged();
       return queryClient.invalidateQueries({ queryKey });
     },
   });
+  const submit = (note: string) => {
+    dispatch({ type: "save" });
+    save.mutate({ note, pin: session.pin });
+  };
 
-  const busy = save.isPending;
-  const unchanged = text.trim() === (job.note ?? "") && pin === job.dueAt;
+  const { draft: text, problem } = session;
+  const busy = session.saving;
+  // Save compares with the saved note, which another surface may have changed meanwhile.
+  const unchanged = text.trim() === (job.note ?? "") && session.pin === job.dueAt;
   const left = charactersLeft(text.length, NOTE_MAX_CHARS);
   const button = (label: string, onPress: () => void, unavailable: boolean) => (
     <Pressable
@@ -89,15 +86,13 @@ export function NoteEditor(props: {
         maxLength={NOTE_MAX_CHARS}
         autoFocus
         value={text}
-        onChangeText={setText}
+        onChangeText={(value) => dispatch({ type: "type", text: value })}
         editable={!busy}
         placeholder="Extra instructions sent after the continue prompt"
         placeholderTextColor={colors.foregroundMuted}
         textAlignVertical="top"
-        // Escape closes only an untouched editor; typed text leaves through Cancel. Like Cancel, it
-        // waits for a save in flight, whose result closes whichever editor is open by then.
         onKeyPress={(event) => {
-          if (event.nativeEvent.key === "Escape" && !busy && text.trim() === initial) props.onClose();
+          if (event.nativeEvent.key === "Escape") dispatch({ type: "escape" });
         }}
         style={{
           ...inputText(colors), minHeight: 112, maxHeight: 220,
@@ -110,12 +105,12 @@ export function NoteEditor(props: {
         <Text accessibilityLiveRegion="polite" style={mutedText(colors)}>{left}</Text>
       ) : null}
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-        {job.note ? button("Remove", () => save.mutate(""), busy) : null}
+        {job.note ? button("Remove", () => submit(""), busy) : null}
         <View style={{ flex: 1 }} />
-        {button("Cancel", props.onClose, busy)}
+        {button("Cancel", () => dispatch({ type: "cancel" }), busy)}
         <Pressable
           accessibilityRole="button" accessibilityLabel="Save extra instructions" accessibilityState={{ disabled: busy || unchanged, busy }}
-          disabled={busy || unchanged} onPress={() => save.mutate(text)}
+          disabled={busy || unchanged} onPress={() => submit(text)}
           style={({ pressed }) => filled(colors, pressed, busy || unchanged)}
         >
           {busy ? <ActivityIndicator size="small" color={colors.accentForeground} /> : null}
