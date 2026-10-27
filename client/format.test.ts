@@ -280,6 +280,6 @@ test("a note preview is one line, cut with an ellipsis", () => {
 });
 
 test("a refused note says why", () => {
-  assert.equal(noteRefusal("changed"), "This reservation already ran or was replaced, so these extra instructions can’t be saved.");
+  assert.equal(noteRefusal("changed"), "This reservation already ran, was canceled or was replaced, so these extra instructions can’t be saved.");
   assert.match(noteRefusal("sending"), /being sent/);
 });

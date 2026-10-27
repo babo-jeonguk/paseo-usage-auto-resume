@@ -162,10 +162,10 @@ export function createResumer(options: {
     const agent = row?.state === "pending" || event === "limit" ? await loadAgent(api, agentId).catch(() => null) : null;
     const action = turnAction(row, agent, event);
     // A reservation that replaced the one read is not this event's.
-    const read = (current: ResumeJob | null, state: ResumeJob["state"]) => !!current && !!row && current.id === row.id && current.state === state;
-    if (action.cancel) await retire(agentId, (current) => read(current, "pending"), action.cancel);
+    const stillSeen = (current: ResumeJob | null, state: ResumeJob["state"]) => !!current && !!row && current.id === row.id && current.state === state;
+    if (action.cancel) await retire(agentId, (current) => stillSeen(current, "pending"), action.cancel);
     // A continue already sent was reported when it went, so it is cleared quietly.
-    if (action.clearSent) await store.update(agentId, (current) => (read(current, "sent") ? null : undefined));
+    if (action.clearSent) await store.update(agentId, (current) => (stillSeen(current, "sent") ? null : undefined));
     if (!action.schedules || !agent || !stop) return;
     const settings = await readSettings();
     const source = settings && (await resumableSource(api, agent.provider, settings));

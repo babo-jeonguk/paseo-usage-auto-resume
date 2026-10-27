@@ -357,5 +357,5 @@ export function notePreview(note: string, maxChars: number): string {
 export function noteRefusal(reason: Extract<SetNoteResult, { changed: false }>["reason"]): string {
   return reason === "sending"
     ? "This reservation is being sent, so its extra instructions can’t change."
-    : "This reservation already ran or was replaced, so these extra instructions can’t be saved.";
+    : "This reservation already ran, was canceled or was replaced, so these extra instructions can’t be saved.";
 }

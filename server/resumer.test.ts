@@ -1639,6 +1639,35 @@ test("a reservation whose agent moves to API billing is recorded once, at a stop
   assert.equal((await history.list())[1]?.title, "Fix login", "a stop that loaded the agent keeps its title");
 });
 
+test("a due-time attempt that finds API billing leaves a reservation moved meanwhile for its new time", async () => {
+  let auth: SubscriptionCheck["auth"] = "subscription";
+  let move = false;
+  const { api, resumer, sent } = await setup({ a1: { provider: "codex" } }, {
+    readSubscription: async () => {
+      if (move) {
+        move = false;
+        // The user moves it while the tick looks the account up.
+        await resumer.reschedule("a1", await pinOf(store, "a1"), "2026-10-06T07:00:00.000Z");
+      }
+      return auth === "api" ? { auth, status: "unknown" } : { auth, status: "ready", identity: "account-model" };
+    },
+  });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  const { id } = await pinOf(store, "a1");
+  auth = "api";
+  move = true;
+  advance(3 * 60 * MINUTE);
+  await resumer.tick();
+  const [job] = await store.list();
+  assert.deepEqual([job?.id, job?.state, job?.dueAt], [id, "pending", "2026-10-06T07:00:00.000Z"]);
+  assert.deepEqual(await recorded(), []);
+  advance(60 * MINUTE);
+  await resumer.tick();
+  assert.deepEqual(sent, []);
+  assert.deepEqual(await store.list(), []);
+  assert.deepEqual(await recorded(), ["a1 canceled/api_route"]);
+});
+
 test("a stop whose windows are not used up retries after 15, 30 and 60 minutes, then gives up", async () => {
   const { api, resumer, sent } = await setup({ a1: { provider: "codex" } }, {
     readSubscription: async () => ({ auth: "subscription", status: "ready", identity: "account-model" }),
