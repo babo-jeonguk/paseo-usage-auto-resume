@@ -56,6 +56,7 @@ async function harness(t: TestContext, source: UsageSource, plan: string) {
       ref: (id: string) => ({
         refresh: async () => ({ agent, project: null }),
         send: async (text: string) => { sent.push({ agentId: id, text }); },
+        timeline: { refetch: async () => ({ error: null, entries: [{ item: { type: "user_message", text: "Continue the fixture task" }, seqStart: 0 }] }) },
       }),
     },
   } as unknown as ResumerApi;
@@ -107,7 +108,7 @@ async function harness(t: TestContext, source: UsageSource, plan: string) {
     agent: { id: agent.id, provider, workspaceId: null, parentAgentId: null, cwd: dir, title: null },
     turnId: "fixture-turn", outcome: { kind: "failed", error: { message: source === "antigravity"
       ? "Individual quota reached. Resets in 120h." : "Usage limit reached" } },
-    timeline: [{ type: "user_message", text: "Continue the fixture task" }],
+    timeline: [],
   };
   return { state, agent, api, store, resumer, makeResumer, sent, event, authPath, credentials,
     setTime: (value: string) => { clock = new Date(value); },

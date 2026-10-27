@@ -144,9 +144,8 @@ export function createResumer(options: {
     const observedAt = now();
     let stop = null;
     if (outcome.kind !== "canceled") {
-      // Paseo 0.13 sends the event's timeline empty, so the agent's recent items are read instead.
-      const timeline = event.timeline.length > 0 ? event.timeline : await timelineTail(api, event.agent.id);
-      stop = detectLimitStop(outcome, timeline, observedAt);
+      // The event's own timeline is deprecated and empty from Paseo 0.13, so it is never read.
+      stop = detectLimitStop(outcome, await timelineTail(api, event.agent.id), observedAt);
     }
     const kind = turnEventOf(outcome.kind, !!stop);
     await onTurn(api, event.agent.id, kind, stop ? { resetAt: stop.resetAt, observedAt } : undefined);
@@ -227,10 +226,18 @@ export function createResumer(options: {
     if (ended) await record(agent.id, agent.provider, { ...ended, title: titleOf(agent) });
   }
 
-  /** The agent's latest timeline items, oldest first; none when they cannot be read. */
+  /** The agent's latest timeline items, oldest first; none, and a log line, when they cannot be read. */
   async function timelineTail(api: ResumerApi, agentId: string): Promise<AgentTimelineItem[]> {
-    const page = await api.agents.ref(agentId).timeline.refetch({ direction: "tail", limit: TAIL_TIMELINE_ITEMS }).catch(() => null);
-    if (!page || page.error) return [];
+    let page;
+    try {
+      page = await api.agents.ref(agentId).timeline.refetch({ direction: "tail", limit: TAIL_TIMELINE_ITEMS });
+    } catch (error) {
+      page = { error: String(error), entries: [] };
+    }
+    if (page.error) {
+      console.error(`[usage-auto-resume] could not read the timeline of ${agentId}`, page.error);
+      return [];
+    }
     return [...page.entries].sort((left, right) => left.seqStart - right.seqStart).map((entry) => entry.item);
   }
 

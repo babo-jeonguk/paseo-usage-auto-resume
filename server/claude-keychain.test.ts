@@ -15,6 +15,8 @@ const NOW = new Date("2026-10-20T00:00:00Z");
 const authEnv = Object.fromEntries(["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN",
   "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"].map(key => [key, ""]));
 const api = { config: { get: async () => ({ config: { providers: { claude: { env: authEnv } } } }) } } as unknown as Pick<PaseoApi, "config">;
+/** An agent timeline whose latest turn ended with `notice`. */
+const timelineOf = (notice: string) => ({ refetch: async () => ({ error: null, entries: [{ item: { type: "assistant_message", text: notice }, seqStart: 0 }] }) });
 const agent = { id: "fixture-agent", provider: "claude", cwd: "/tmp", model: "claude-opus-4-6" } as PaseoAgent;
 
 test("a macOS Claude subscription reaches account and usage verification", async () => {
@@ -80,14 +82,15 @@ for (const plan of ["pro", "max", "team"]) for (const window of ["five", "week"]
     const nativeAgent = { ...agent, model: plan === "pro" ? "claude-sonnet-4-6" : "claude-opus-4-6",
       status: "idle", lastUserMessageAt: null, pendingPermissions: [], activeTurn: null, attentionReason: null, archivedAt: null };
     const sent: string[] = [];
+    const notice = `You've hit your limit. Resets at ${new Date(reset).toISOString()}`;
     const host = { config: { get: async () => ({ config: { providers: { claude: { env } } } }) },
       agents: { list: async () => ({ entries: [] }), ref: () => ({ refresh: async () => ({ agent: nativeAgent, project: null }),
-        send: async (text: string) => { sent.push(text); } }) } } as unknown as ResumerApi;
+        send: async (text: string) => { sent.push(text); }, timeline: timelineOf(notice) }) } } as unknown as ResumerApi;
     const store = createJobStore(join(home, "jobs.json"));
     const make = () => createResumer({ store: createJobStore(join(home, "jobs.json")), now: () => new Date(clock), readSubscription: read });
     const resumer = make();
     const event = { agent: { id: agent.id, provider: "claude", workspaceId: null, parentAgentId: null, cwd: "/tmp", title: null }, turnId: "fixture-turn",
-      outcome: { kind: "completed" }, timeline: [{ type: "assistant_message", text: `You've hit your limit. Resets at ${new Date(reset).toISOString()}` }] } as PluginLifecycleEvents["agent.turn_ended"];
+      outcome: { kind: "completed" }, timeline: [] } as PluginLifecycleEvents["agent.turn_ended"];
     await resumer.onTurnEnded(event, host);
     assert.equal(reads, 0);
     assert.equal((await store.list())[0]?.dueAt, new Date(due).toISOString());
@@ -135,11 +138,12 @@ for (const failure of ["locked", "missing", "denied", "timeout", "malformed", "e
     const nativeAgent = { ...agent, status: "idle", lastUserMessageAt: null, pendingPermissions: [], activeTurn: null, attentionReason: null, archivedAt: null };
     const host = { ...api, agents: { list: async () => ({ entries: [] }), ref: () => ({
       refresh: async () => ({ agent: nativeAgent, project: null }), send: async (text: string) => { sent.push(text); },
+      timeline: timelineOf("You've hit your limit. Resets in 1 hour."),
     }) } } as unknown as ResumerApi;
     const store = createJobStore(join(home, "jobs.json"));
     const resumer = createResumer({ store, now: () => new Date(clock), readSubscription: read });
     await resumer.onTurnEnded({ agent: { id: agent.id, provider: "claude", workspaceId: null, parentAgentId: null, cwd: "/tmp", title: null }, turnId: "fixture-turn",
-      outcome: { kind: "completed" }, timeline: [{ type: "assistant_message", text: "You've hit your limit. Resets in 1 hour." }] }, host);
+      outcome: { kind: "completed" }, timeline: [] }, host);
     clock += 62 * 60_000;
     await resumer.attach(host);
     assert.deepEqual(sent, []);

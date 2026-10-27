@@ -97,8 +97,9 @@ async function scenario(t: TestContext, profile: Profile, limit: "five" | "week"
     : source === "claude" && limit === "five" ? "You've hit your limit · resets 3pm (Asia/Seoul)"
     : `You've hit your ${limit === "week" ? "weekly " : "usage "}limit. Try again at ${iso(reset)}.`;
   let stopped = false;
+  let stoppedWith = notice;
   const timeline = () => [{ type: "user_message", text: "Continue the simulated task" },
-    ...(stopped && source === "claude" ? [{ type: "assistant_message", text: notice }] : [])];
+    ...(stopped ? [{ type: "assistant_message", text: stoppedWith }] : [])];
   const env = Object.fromEntries([
     "OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN", "OPENAI_BASE_URL", "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK",
@@ -160,10 +161,11 @@ async function scenario(t: TestContext, profile: Profile, limit: "five" | "week"
     agent: { id: agent.id, provider, cwd: dir, title: agent.title, workspaceId: null, parentAgentId: null },
     turnId: "fixture-turn", outcome: source === "claude" ? { kind: "completed" }
       : { kind: "failed", error: { message, ...(source === "antigravity" ? { code: "RESOURCE_EXHAUSTED" } : {}) } },
-    timeline: [{ type: "user_message", text: "Continue the simulated task" }, { type: "assistant_message", text: message }],
+    timeline: [],
   });
   const stop = async (message = notice) => {
     stopped = true;
+    stoppedWith = message;
     agent.status = source === "claude" ? "idle" : "error";
     agent.lastError = source === "claude" ? undefined : message;
     await resumer.onTurnEnded(event(message), api);
