@@ -6,9 +6,9 @@ A [Paseo](https://paseo.sh) plugin that automatically asks the same Codex, Claud
 
 [한국어](README.ko.md)
 
-![Automatic resume reservations grouped by day, with times, switches and conversation links](assets/auto-resume.png)
+![Automatic resume reservations grouped by day, with extra instructions, switches and recent activity](assets/auto-resume.png)
 
-Actual Paseo web interface with sample reservations. Each row shows what is scheduled to continue or waiting for verification.
+Actual Paseo web interface with sample reservations. Each row shows what is scheduled to continue or waiting for verification, and recent activity shows how earlier resumes ended.
 
 - **Pick up in the same conversation.** When a supported agent stops at a usage limit, a resume is scheduled for you.
 - **See what comes next.** Check upcoming resumes across providers and workspaces. Reservations survive daemon and plugin restarts.
@@ -52,13 +52,15 @@ The header switch turns every shown resume off or on together. **Recent activity
 
 A conversation with a resume also shows an **Auto Resume** button next to the message box. Use it to manage that resume without leaving the conversation, or select **Resume now** if the limit lifted early.
 
+![The Auto Resume panel in a conversation stopped at its limit, with delay buttons, extra instructions and Resume now](assets/composer.png)
+
 A resume waiting for verification means the plugin couldn't confirm your account or usage yet; it checks again at the time shown.
 
 ## Settings
 
 Open **Settings → Plugins → usage-auto-resume → Settings**.
 
-![Provider settings with account labels and individual switches](assets/provider-settings.png)
+![Settings with a switch and account for each provider, and the continue prompt](assets/settings.png)
 
 - **Providers:** turn resumes on or off for each provider, including profiles such as `claude-main` or `codex-sub`. Turning one off cancels its pending resumes.
 - **Continue prompt:** see the message sent to the agent and replace it. **Reset to default** brings back the built-in one, which also asks the agent to resume its unfinished subagents.

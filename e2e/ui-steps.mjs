@@ -18,7 +18,8 @@ export async function uiPhase(ctx) {
   page.on('pageerror', (e) => pageErrors.push(e.message));
   const shot = (name) => page.screenshot({ path: join(out, name + '.png'), fullPage: false }).catch(() => {});
   const iso = (ms) => new Date(ms).toISOString();
-  const pill = () => page.getByRole('button', { name: 'Auto Resume', exact: true }).filter({ hasText: /^(Resume |Check |Resuming|Unavailable)/ });
+  // The pill reads "Resume 23:40", "Tmr 01:02" or "Wed 09:00" by day, "Check …", "Resume off", "Resuming…" or "Unavailable".
+  const pill = () => page.getByRole('button', { name: 'Auto Resume', exact: true }).filter({ hasText: /^(Resume|Tmr|Mon|Tue|Wed|Thu|Fri|Sat|Sun|Check|Resuming|Unavailable)\b/ });
   const toast = (t) => page.getByText(t, { exact: true });
   const openConversation = async (a) => {
     await page.goto(origin);
