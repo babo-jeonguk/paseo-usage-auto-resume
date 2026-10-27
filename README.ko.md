@@ -6,9 +6,9 @@
 
 [English](README.md)
 
-![날짜별 자동 재개 예약과 시각, 스위치, 대화 열기 버튼](assets/auto-resume.png)
+![날짜별 자동 재개 예약과 추가 지시, 스위치, 최근 활동](assets/auto-resume.png)
 
-샘플 예약을 사용한 실제 Paseo 웹 화면입니다. 재개 예정인 작업과 확인 대기 중인 작업을 함께 볼 수 있습니다.
+샘플 예약을 사용한 실제 Paseo 웹 화면입니다. 재개 예정인 작업과 확인 대기 중인 작업, 그리고 최근 재개가 어떻게 끝났는지 함께 볼 수 있습니다.
 
 - **같은 대화에서 이어서.** 지원하는 에이전트가 사용 한도로 멈추면 재개가 자동으로 예약됩니다.
 - **다음 일정을 한눈에.** 여러 provider와 작업공간의 재개 일정을 모아 봅니다. 데몬이나 플러그인을 재시작해도 예약은 유지됩니다.
@@ -52,13 +52,15 @@ paseo plugin install github:babo-jeonguk/paseo-usage-auto-resume
 
 예약이 있는 대화에는 메시지 입력창 옆에 **Auto Resume** 버튼도 나타납니다. 대화를 떠나지 않고 그 예약을 관리할 수 있고, 한도가 일찍 풀렸다면 **Resume now**로 바로 재개할 수 있습니다.
 
+![한도로 멈춘 대화의 Auto Resume 패널: 미루기 버튼, 추가 지시, Resume now](assets/composer.png)
+
 예약이 확인 대기 중이라고 나오면, 아직 계정이나 사용량을 확인하지 못했다는 뜻입니다. 표시된 시각에 다시 확인합니다.
 
 ## 설정
 
 **Settings → Plugins → usage-auto-resume → Settings**를 여세요.
 
-![계정 표시와 provider별 스위치가 있는 설정 화면](assets/provider-settings.png)
+![provider별 스위치와 계정, Continue prompt가 있는 설정 화면](assets/settings.png)
 
 - **Providers:** provider별로 자동 재개를 켜거나 끕니다. `claude-main`, `codex-sub` 같은 프로필도 포함됩니다. 끄면 그 provider의 대기 중인 예약이 취소됩니다.
 - **Continue prompt:** 에이전트에게 보내는 메시지를 확인하고 바꿀 수 있습니다. **Reset to default**를 누르면 하위 에이전트까지 이어서 진행하도록 요청하는 기본 메시지로 돌아갑니다.
