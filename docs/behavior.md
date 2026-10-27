@@ -6,6 +6,10 @@
 
 Usage Auto Resume detects short provider limit notices and explicit limit error codes at the end of a turn. Claude can finish a turn normally while leaving a limit notice, so detection also checks the closing assistant message. Context overflow, ordinary errors and API billing failures are excluded.
 
+Paseo 0.13 and later no longer send the turn's timeline with its end, so the plugin reads the agent's latest 20 timeline items itself, from the latest user message on. When they cannot be read, only the error the turn failed with is checked.
+
+Each daemon runs its own copy of the plugin, and a turn's end reaches only the daemon that runs the agent. An agent that Paseo's connected hosts run on another machine is resumed only when the plugin is installed and turned on in that machine's daemon.
+
 The plugin keeps one resume reservation per agent. When a notice states a reset time, it schedules that time plus two minutes without querying usage. Codex and Claude authentication is checked separately to bind the account/model when available; a failed identity check does not replace the stated schedule with an earlier verification wait. API-key and external billing routes are excluded. A saved OAuth login alone does not override an active API route.
 
 Without a reset time, Codex and Claude authentication and account/model usage are checked directly to choose the schedule, including for workspace credit notices. Failed authentication or usage checks create a verification wait. Every Codex/Claude delivery still requires fresh subscription authentication and available usage; a timestamp alone never authorizes a continue.
@@ -87,7 +91,7 @@ Settings are per daemon. Hosts upgrading from the earlier one-ID-per-CLI setting
 
 Reservations survive daemon and plugin restarts. Paseo supplies its plugin API inside lifecycle hooks and RPC requests, so due-job checks wait until one of these connects it after startup. A connected app supplies the API through composer directory polling, as does opening **Auto Resume**. A connected daemon continues checking without keeping the app open; the daemon host must stay running and awake.
 
-The startup scan searches up to 200 idle/error agents active in the preceding 12 hours for missed limit stops. Existing persisted reservations can wait longer, including for weekly resets. Codex and Antigravity recovery checks error notices; Claude also checks recent timeline notices. A missed stop is scheduled unless the agent already has a reservation that is pending or being sent; after a sent continue it counts as one more automatic continue.
+The startup scan searches up to 200 idle/error agents active in the preceding 12 hours for missed limit stops. Existing persisted reservations can wait longer, including for weekly resets. Codex and Antigravity recovery checks error notices; Claude also checks notices in its latest 20 timeline items, and an agent whose timeline cannot be read is skipped. A missed stop is scheduled unless the agent already has a reservation that is pending or being sent; after a sent continue it counts as one more automatic continue.
 
 At session open, the plugin captures non-secret launch paths, credential-store selectors, the OS username used for Keychain lookup, and credential-presence flags. These survive restarts with the reservation. For a session opened before the plugin loaded, account checks use the daemon environment plus provider configuration; environment values added by other plugins at session open are not available. Unrecognized quota shapes and custom launchers with multiple command arguments wait for verification. Known one-command launchers can use native account/status protocols.
 
