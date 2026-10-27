@@ -1,5 +1,6 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { NOTE_MAX_CHARS } from "./prompt";
 
 /** The check a reservation waits on instead of a promised continue: the account, or its usage. */
 export const WaitingSchema = z.enum(["auth", "usage"]);
@@ -7,6 +8,8 @@ export const WaitingSchema = z.enum(["auth", "usage"]);
 export type Waiting = z.infer<typeof WaitingSchema>;
 
 export const ScheduledJobSchema = z.object({
+  /** The reservation, kept while it is moved, switched or planned again; a replacement has another. */
+  id: z.string(),
   agentId: z.string(),
   provider: z.string(),
   /** Composer placement; optional for older server responses, null when unavailable. */
@@ -22,6 +25,8 @@ export const ScheduledJobSchema = z.object({
   sending: z.boolean(),
   /** This row's time is a status check, not a promised continue. */
   waiting: WaitingSchema.optional(),
+  /** The user's extra instruction sent after the continue prompt; older servers never send it. */
+  note: z.string().optional(),
 });
 
 export type ScheduledJob = z.infer<typeof ScheduledJobSchema>;
@@ -34,7 +39,8 @@ export const listScheduledRpc = defineRpc({
 
 export const setEnabledRpc = defineRpc({
   name: "auto-resume.set-enabled",
-  input: z.object({ agentId: z.string(), dueAt: z.string(), enabled: z.boolean() }),
+  /** `id` and `dueAt` are the reservation and time the screen showed. */
+  input: z.object({ agentId: z.string(), id: z.string(), dueAt: z.string(), enabled: z.boolean() }),
   /** False when the job already ran, was canceled, or was rescheduled since it was shown. */
   output: z.object({ changed: z.boolean() }),
 });
@@ -44,7 +50,7 @@ export const RescheduleResultSchema = z.discriminatedUnion("changed", [
   z.object({
     changed: z.literal(false),
     /**
-     * `changed`: the job already ran, was canceled, or moved since it was shown.
+     * `changed`: the job already ran, was canceled or replaced, or moved since it was shown.
      * `sending`: the continue is being delivered. `too-early`: before `earliest` (the limit
      * reset plus grace, or a minute from now). `too-late`: more than a week out.
      */
@@ -57,15 +63,30 @@ export type RescheduleResult = z.infer<typeof RescheduleResultSchema>;
 
 export const rescheduleRpc = defineRpc({
   name: "auto-resume.reschedule",
-  /** `dueAt` is the time the screen showed; `newDueAt` replaces it. */
-  input: z.object({ agentId: z.string(), dueAt: z.string(), newDueAt: z.iso.datetime() }),
+  /** `id` and `dueAt` are the reservation and time the screen showed; `newDueAt` replaces the time. */
+  input: z.object({ agentId: z.string(), id: z.string(), dueAt: z.string(), newDueAt: z.iso.datetime() }),
   output: RescheduleResultSchema,
+});
+
+export const SetNoteResultSchema = z.discriminatedUnion("changed", [
+  z.object({ changed: z.literal(true) }),
+  /** `changed`: it already ran, was canceled or replaced; a move does not refuse a note. `sending`: being delivered. */
+  z.object({ changed: z.literal(false), reason: z.enum(["changed", "sending"]) }),
+]);
+
+export type SetNoteResult = z.infer<typeof SetNoteResultSchema>;
+
+export const setNoteRpc = defineRpc({
+  name: "auto-resume.set-note",
+  /** An empty or blank note removes it. `id` is the reservation the screen showed, wherever it has moved. */
+  input: z.object({ agentId: z.string(), id: z.string(), note: z.string().max(NOTE_MAX_CHARS) }),
+  output: SetNoteResultSchema,
 });
 
 export const setAllEnabledRpc = defineRpc({
   name: "auto-resume.set-all-enabled",
   /** The rows the screen showed; jobs scheduled since, or being sent, are left alone. */
-  input: z.object({ enabled: z.boolean(), jobs: z.array(z.object({ agentId: z.string(), dueAt: z.string() })) }),
+  input: z.object({ enabled: z.boolean(), jobs: z.array(z.object({ agentId: z.string(), id: z.string(), dueAt: z.string() })) }),
   /** How many jobs flipped. */
   output: z.object({ changed: z.number().int().nonnegative() }),
 });
@@ -110,9 +131,11 @@ export const ResumeNowResultSchema = z.discriminatedUnion("result", [
   z.object({ result: z.literal("canceled"), reason: HistoryReasonSchema }),
   /** Sending threw; the reservation was removed. */
   z.object({ result: z.literal("send_failed") }),
+  /** Not sent, the reservation unchanged: the agent is running a turn the user did not start. */
+  z.object({ result: z.literal("busy") }),
   /** Already being sent. */
   z.object({ result: z.literal("sending") }),
-  /** Already ran, was canceled, or moved since it was shown. */
+  /** Already ran, was canceled or replaced, or moved since it was shown. */
   z.object({ result: z.literal("changed") }),
   /** Settings could not be read, so nothing was checked or sent. */
   z.object({ result: z.literal("unavailable") }),
@@ -122,8 +145,8 @@ export type ResumeNowResult = z.infer<typeof ResumeNowResultSchema>;
 
 export const resumeNowRpc = defineRpc({
   name: "auto-resume.resume-now",
-  /** `dueAt` is the time the screen showed. */
-  input: z.object({ agentId: z.string(), dueAt: z.string() }),
+  /** `id` and `dueAt` are the reservation and time the screen showed. */
+  input: z.object({ agentId: z.string(), id: z.string(), dueAt: z.string() }),
   output: ResumeNowResultSchema,
 });
 

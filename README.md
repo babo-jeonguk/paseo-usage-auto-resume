@@ -10,62 +10,83 @@ A [Paseo](https://paseo.sh) plugin that automatically asks the same Codex, Claud
 
 Actual Paseo web interface with sample reservations. Each row shows what is scheduled to continue or waiting for verification.
 
-- **Pick up in the same conversation.** Resumes are scheduled automatically when a supported agent stops at a usage limit.
-- **See what comes next.** Check upcoming resumes across providers and workspaces, including session and weekly resets. Reservations survive daemon and plugin restarts.
-- **Adjust when you need to.** Skip one resume, turn the displayed reservations off together, or move a resume to a later time.
+- **Pick up in the same conversation.** When a supported agent stops at a usage limit, a resume is scheduled for you.
+- **See what comes next.** Check upcoming resumes across providers and workspaces. Reservations survive daemon and plugin restarts.
+- **Adjust when you need to.** Skip a resume, move it, add instructions for it, or resume right away.
 
-## Install and start
+## Requirements
 
-Requires **Paseo daemon and app 0.11.0 or later**, with plugins enabled, and the provider CLI already signed in on the daemon host. Enable plugins in **Settings → Plugins**, or set `pluginsEnabled` to `true` in the daemon configuration.
+- **Paseo daemon and app 0.11.0 or later**, with plugins enabled in **Settings → Plugins**.
+- The provider CLI already signed in on the daemon host, and the host kept awake.
 
-| Provider | Current behavior |
+| Provider | Before sending |
 | --- | --- |
-| Codex | Verifies the ChatGPT account, model and subscription usage before sending. |
-| Claude | Verifies the claude.ai account, model and subscription usage. On macOS, reads the selected profile's Keychain or fallback credential file. |
-| Antigravity | Uses the reset stated in the limit notice; account and usage verification are unavailable. |
+| Codex | Checks that your ChatGPT subscription has usage left. |
+| Claude | Checks that your claude.ai subscription has usage left. |
+| Antigravity | Follows the limit message; usage can't be checked. |
 
-API-key and external billing routes are excluded.
+Agents billed through an API key or another billing route are not resumed.
+
+## Install
 
 ```bash
 paseo plugin install github:babo-jeonguk/paseo-usage-auto-resume
 ```
 
-1. Open **Auto Resume** from the sidebar. An empty list is normal until an eligible limit stop is found.
-2. Continue using your agents as usual. When a supported agent hits its limit, a resume reservation or verification wait appears automatically.
-3. Keep the daemon host awake and running. A reset time in the notice is scheduled with a two-minute buffer without an initial usage lookup. Without a stated time, Codex and Claude look up the account/model usage to choose the schedule. Both require fresh account and usage checks before sending.
+## Use
 
-A verification wait shows the **next check time**, not a promised resume. If you send another message or the agent is running, closed, archived or awaiting permission, the pending resume is canceled.
+1. Open **Auto Resume** from the sidebar. The list stays empty until an agent hits a usage limit.
+2. Keep using your agents as usual. When one stops at its limit, a resume appears in the list.
+3. At the scheduled time, the agent is asked to continue in the same conversation.
 
-## Adjust a resume
+Sending your own message to the agent, or archiving it, cancels its resume. So does the agent being closed or waiting for your permission when the resume is due.
 
-Each row shows the time, countdown or verification status, conversation title, provider and workspace.
+In the list, each resume has:
 
-- **Switch:** off skips this resume. Turn it back on before its time to restore it.
-- **+10m / time:** delay by ten minutes or select the time to enter another one. The editor explains the allowed range. Changing the time turns the reservation on.
-- **Header switch:** turn the displayed reservations off or back on together. A resume already being sent is left alone.
-- **Open button:** go to the existing conversation.
+- **Switch:** turn it off to skip this resume; turn it back on before its time to restore it.
+- **+10m / time:** delay it by ten minutes, or select the time to enter another one.
+- **Extra instructions:** add something to tell the agent with this continue. They are sent once.
+- **Open:** go to the conversation.
 
-For a verification wait, changing the time moves the next check.
+The header switch turns every shown resume off or on together. **Recent activity** below the list shows how resumes ended in the last 24 hours.
 
-**Recent activity** below the list shows how reservations ended in the last 24 hours: continued, skipped, canceled and why, or gave up.
+A conversation with a resume also shows an **Auto Resume** button next to the message box. Use it to manage that resume without leaving the conversation, or select **Resume now** if the limit lifted early.
 
-Scheduled conversations also show an **Auto Resume** composer pill with their time or status. Select it to turn that reservation off or back on, delay it by 10 minutes, 30 minutes or an hour, or change its time without leaving the conversation. **Resume now** sends the continue right away when a limit lifted early; it runs the same checks first and is blocked while Codex or Claude usage is still used up. Off reservations keep their pill until their due time; reservations that run or are canceled lose it. The sidebar and conversation controls manage the same reservation.
+A resume waiting for verification means the plugin couldn't confirm your account or usage yet; it checks again at the time shown.
 
-## Choose providers
+## Settings
 
-Open **Settings → Plugins → usage-auto-resume → Settings**. Built-in providers and profiles that extend them, such as `claude-main` or `codex-sub`, are listed with their account when available.
+Open **Settings → Plugins → usage-auto-resume → Settings**.
 
 ![Provider settings with account labels and individual switches](assets/provider-settings.png)
 
-All supported providers start on, including newly added ones. Turning a provider off cancels its pending reservations, including skipped ones. Turning it back on does not restore canceled reservations. Settings apply immediately and are stored per daemon.
+- **Providers:** turn resumes on or off for each provider, including profiles such as `claude-main` or `codex-sub`. Turning one off cancels its pending resumes.
+- **Continue prompt:** see the message sent to the agent and replace it. **Reset to default** brings back the built-in one, which also asks the agent to resume its unfinished subagents.
 
-## Data and operating limits
+## Update
 
-The plugin reads agent state, recent limit notices, provider configuration and CLI credentials. Codex and Claude checks contact their providers' account/usage endpoints without model turns. Tokens are never saved in jobs or logged. Resume prompts go through Paseo to the existing agent and its provider; reservations are stored locally.
+```bash
+paseo plugin update usage-auto-resume
+```
 
-After a restart, checks resume once a lifecycle event or an app request supplies the Paseo API. A connected app does this through composer polling. Unreadable authentication or usage keeps Codex/Claude in verification wait. Subagent continuation depends on the parent agent's tools.
+## Remove
 
-See [behavior, data access and troubleshooting](docs/behavior.md) for retry rules, storage paths and other limits, or [development and registry submission](docs/development.md) to contribute. Provider expansion and handoff ideas are tracked in [#3](https://github.com/babo-jeonguk/paseo-usage-auto-resume/issues/3) and [#4](https://github.com/babo-jeonguk/paseo-usage-auto-resume/issues/4).
+```bash
+paseo plugin remove usage-auto-resume
+```
+
+This also deletes the plugin's settings. Reservations and recent activity stay in `plugin-data/usage-auto-resume` in your Paseo home (`~/.paseo` by default); delete that folder to remove them too.
+
+## Your data
+
+- The plugin reads your agents' state, their recent limit messages and your provider CLI sign-ins on the daemon host.
+- Codex and Claude usage checks contact the provider's account service and don't use any model turns. Sign-in tokens are never saved or logged.
+- Reservations, extra instructions and a changed continue prompt are stored on the daemon host. Extra instructions are deleted once sent.
+- The continue message goes through Paseo to your existing agent, like a message you send yourself.
+
+## More
+
+[Behavior, data access and troubleshooting](docs/behavior.md) has the exact rules. To contribute, see [development and registry submission](docs/development.md). Ideas for more providers and handoffs are in [#3](https://github.com/babo-jeonguk/paseo-usage-auto-resume/issues/3) and [#4](https://github.com/babo-jeonguk/paseo-usage-auto-resume/issues/4).
 
 ## Credits and license
 

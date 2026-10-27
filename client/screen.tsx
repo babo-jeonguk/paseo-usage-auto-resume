@@ -21,6 +21,7 @@ import {
   historyDateLabel,
   historyLabel,
   historySummary,
+  notePreview,
   placeLabel,
   providerLabel,
   refusalLabel,
@@ -31,6 +32,9 @@ import {
 } from "./format";
 import { Toggle } from "./toggle";
 import { TimeEditor } from "./time-editor";
+import { editorLocks, type EditEvent, type EditSession } from "./edit-session";
+import { useEditSession } from "./use-edit-session";
+import { NoteEditor } from "./note-editor";
 import { notifyScheduleChanged } from "./schedule-changes";
 import { historyQueryKey, jobsQueryKey } from "./query-keys";
 
@@ -100,6 +104,11 @@ function createStyles(theme: Theme, compact: boolean) {
     },
     relative: { color: colors.foregroundMuted, fontSize: 12, fontVariant: ["tabular-nums" as const] },
     title: { fontSize: 14, marginTop: 2 },
+    note: { color: colors.foregroundMuted, fontSize: 12, marginTop: 4 },
+    noteEditor: { marginTop: 12 },
+    titleLine: { flexDirection: "row" as const, alignItems: "center" as const, gap: 4 },
+    titleText: { flexShrink: 1 },
+    metaButton: { width: 28, height: 28, borderRadius: 6, alignItems: "center" as const, justifyContent: "center" as const },
     meta: {
       flexDirection: "row" as const,
       flexWrap: "wrap" as const,
@@ -159,6 +168,8 @@ function createStyles(theme: Theme, compact: boolean) {
       paddingVertical: 8,
     },
     retryText: { color: colors.foreground, fontSize: 14, fontWeight: "500" as const },
+    stale: { flexDirection: "row" as const, alignItems: "center" as const, gap: 8, flexWrap: "wrap" as const },
+    staleText: { color: colors.foregroundMuted, fontSize: 14, flex: 1, minWidth: 180 },
     historyHeader: {
       flexDirection: "row" as const,
       alignItems: "flex-start" as const,
@@ -188,18 +199,24 @@ function JobRow(props: {
   job: ScheduledJob;
   now: number;
   divided: boolean;
-  editing: boolean;
+  /** The one editor open in the list, on this row or another. */
+  session: EditSession | null;
+  dispatch(event: EditEvent): void;
   compact: boolean;
+  hostId: string;
   theme: Theme;
   styles: Styles;
-  onEdit(editing: boolean): void;
   onReschedule(job: ScheduledJob, dueAt: string): void;
   onToggle(job: ScheduledJob, enabled: boolean): void;
   onOpen?: (agentId: string) => void;
 }) {
-  const { job, now, styles, theme, onOpen, editing } = props;
+  const { job, now, styles, theme, onOpen, session, dispatch } = props;
+  const editing = session?.reservation === job.id ? session.kind : null;
   const on = job.enabled;
   const busy = job.sending;
+  const locks = editorLocks(session);
+  const timeLocked = busy || locks.time;
+  const noteLocked = busy || locks.note;
   const tone = on ? theme.colors.foreground : theme.colors.foregroundMuted;
   const title = job.title ?? "Untitled agent";
   const place = placeLabel(job);
@@ -209,39 +226,62 @@ function JobRow(props: {
   const countdown = job.resetAt ? relativeLabel(job.dueAt, now) : `${relativeLabel(job.dueAt, now)} · reset unknown`;
   const status = busy ? "Continuing…" : on ? waitingLabel(job) ?? countdown : "Skipped";
   const resetSpoken = job.resetAt ? `limit resets at ${clockLabel(job.resetAt)}` : "reset time unknown, checks again";
+  // Beside the other controls on wide layouts; on a phone it ends the title line instead, so
+  // the time and title keep the width they had.
+  const noteButton = (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={job.note ? `Edit extra instructions for ${title}` : `Add extra instructions for ${title}`}
+      accessibilityState={{ disabled: noteLocked }}
+      disabled={noteLocked}
+      hitSlop={4}
+      onPress={() => dispatch({ type: "open", kind: "note", job })}
+      style={({ pressed }) => [props.compact ? styles.metaButton : styles.iconButton, noteLocked ? styles.disabled : null, pressed ? styles.pressed : null]}
+    >
+      <Icon name="NotebookPen" size={props.compact ? 16 : 18} color={job.note ? theme.colors.accent : theme.colors.foregroundMuted} />
+    </Pressable>
+  );
 
   return (
     <View style={[styles.row, props.divided ? styles.rowDivider : null]}>
-      {editing ? (
+      {editing === "time" ? (
         <TimeEditor
           job={job}
           now={now}
           compact={props.compact}
           theme={theme}
           onSave={(dueAt) => props.onReschedule(job, dueAt)}
-          onCancel={() => props.onEdit(false)}
+          onCancel={() => dispatch({ type: "cancel" })}
         />
       ) : null}
       <View style={styles.rowLine}>
         <View style={styles.rowBody}>
-          {editing ? null : (
+          {editing === "time" ? null : (
             <View style={styles.timeLine}>
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={`Change time for ${title}, now ${clockLabel(job.dueAt)}`}
-                accessibilityState={{ disabled: busy }}
-                disabled={busy}
+                accessibilityState={{ disabled: timeLocked }}
+                disabled={timeLocked}
                 hitSlop={8}
-                onPress={() => props.onEdit(true)}
+                onPress={() => dispatch({ type: "open", kind: "time", job })}
               >
-                <Text style={[styles.time, { color: tone }, busy ? null : styles.timeEditable]}>{clockLabel(job.dueAt)}</Text>
+                <Text style={[styles.time, { color: tone }, timeLocked ? null : styles.timeEditable]}>{clockLabel(job.dueAt)}</Text>
               </Pressable>
               <Text style={styles.relative}>{status}</Text>
             </View>
           )}
-          <Text style={[styles.title, { color: tone }]} numberOfLines={1}>
-            {title}
-          </Text>
+          <View style={styles.titleLine}>
+            <Text style={[styles.title, styles.titleText, { color: tone }]} numberOfLines={1}>
+              {title}
+            </Text>
+            {props.compact && editing === null ? noteButton : null}
+          </View>
+          {job.note && editing !== "note" ? (
+            <Text style={styles.note} numberOfLines={1}>
+              Extra Instructions : {notePreview(job.note, 120)}
+            </Text>
+          ) : null}
           <View style={styles.meta}>
             <View style={styles.chip}>
               <Text style={styles.chipText}>{providerLabel(job.provider)}</Text>
@@ -268,6 +308,7 @@ function JobRow(props: {
             >
               <Text style={styles.pillText}>{bump.label}</Text>
             </Pressable>
+            {props.compact ? null : noteButton}
             {onOpen ? (
               <Pressable
                 accessibilityRole="button"
@@ -291,6 +332,12 @@ function JobRow(props: {
           </>
         )}
       </View>
+      {/* Below the time and title, which stay in view so a refused save can be checked against them. */}
+      {session && editing === "note" ? (
+        <View style={styles.noteEditor}>
+          <NoteEditor job={job} session={session} dispatch={dispatch} hostId={props.hostId} theme={theme} locked={busy} />
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -400,7 +447,6 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
   const queryClient = useQueryClient();
   const toast = useToast();
   const now = useNow(15_000);
-  const [editing, setEditing] = useState<string | null>(null);
   const queryKey = useMemo(() => jobsQueryKey(host.id), [host.id]);
 
   const historyKey = useMemo(() => historyQueryKey(host.id), [host.id]);
@@ -410,6 +456,7 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
     queryFn: async () => (await listScheduled({})).jobs,
     refetchInterval: 30_000,
   });
+  const [session, dispatch] = useEditSession(query.data);
   const history = useQuery({
     queryKey: historyKey,
     queryFn: async () => (await listHistory({})).entries,
@@ -444,13 +491,14 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
     mutationFn: async (input: { job: ScheduledJob; enabled: boolean }) => {
       const { changed } = await setEnabled({
         agentId: input.job.agentId,
+        id: input.job.id,
         dueAt: input.job.dueAt,
         enabled: input.enabled,
       });
       if (!changed) throw new Error(SCHEDULE_CHANGED);
     },
     onMutate: ({ job, enabled }) =>
-      optimistic((jobs) => jobs.map((entry) => (entry.agentId === job.agentId ? { ...entry, enabled } : entry))),
+      optimistic((jobs) => jobs.map((entry) => (entry.id === job.id ? { ...entry, enabled } : entry))),
     onError: (error, _input, context) => rollback(error, context),
     onSettled: settled,
   });
@@ -458,13 +506,14 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
   // Moving a job turns it on, like changing an alarm's time; it may also change its day group.
   const move = useMutation({
     mutationFn: async (input: { job: ScheduledJob; dueAt: string }) => {
-      const result = await reschedule({ agentId: input.job.agentId, dueAt: input.job.dueAt, newDueAt: input.dueAt });
+      const result = await reschedule({ agentId: input.job.agentId, id: input.job.id, dueAt: input.job.dueAt, newDueAt: input.dueAt });
       if (!result.changed) throw new Error(refusalLabel(input.job, result));
     },
     onMutate: ({ job, dueAt }) => {
-      setEditing(null);
+      // Only this row's time editor closes; one open on another row, or a note, stays.
+      dispatch({ type: "moved", reservation: job.id });
       return optimistic((jobs) =>
-        byDueAt(jobs.map((entry) => (entry.agentId === job.agentId ? { ...entry, dueAt, enabled: true } : entry))),
+        byDueAt(jobs.map((entry) => (entry.id === job.id ? { ...entry, dueAt, enabled: true } : entry))),
       );
     },
     onError: (error, _input, context) => rollback(error, context),
@@ -477,12 +526,12 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
       (
         await setAllEnabled({
           enabled: input.enabled,
-          jobs: input.jobs.map(({ agentId, dueAt }) => ({ agentId, dueAt })),
+          jobs: input.jobs.map(({ agentId, id, dueAt }) => ({ agentId, id, dueAt })),
         })
       ).changed,
     onMutate: ({ enabled, jobs: shown }) => {
-      const ids = new Set(shown.map((job) => job.agentId));
-      return optimistic((jobs) => jobs.map((entry) => (ids.has(entry.agentId) ? { ...entry, enabled } : entry)));
+      const ids = new Set(shown.map((job) => job.id));
+      return optimistic((jobs) => jobs.map((entry) => (ids.has(entry.id) ? { ...entry, enabled } : entry)));
     },
     onSuccess: (changed, { enabled }) =>
       toast.show(`${changed} ${changed === 1 ? "schedule" : "schedules"} turned ${enabled ? "on" : "off"}`),
@@ -502,7 +551,7 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
         <ActivityIndicator color={theme.colors.foregroundMuted} />
       </View>
     );
-  } else if (query.isError) {
+  } else if (!query.data) {
     content = (
       <View style={styles.centered}>
         <Icon name="TriangleAlert" size={24} color={theme.colors.statusDanger} />
@@ -565,11 +614,12 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
                   job={job}
                   now={now}
                   divided={index > 0}
-                  editing={editing === job.agentId && !job.sending}
+                  session={session}
+                  dispatch={dispatch}
                   compact={layout.compact}
+                  hostId={host.id}
                   theme={theme}
                   styles={styles}
-                  onEdit={(start) => setEditing(start ? job.agentId : null)}
                   onOpen={openAgent}
                   onReschedule={(target, dueAt) => move.mutate({ job: target, dueAt })}
                   onToggle={(target, enabled) => toggle.mutate({ job: target, enabled })}
@@ -597,8 +647,21 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
         ) : undefined
       }
     >
+      {/* A failed refresh keeps the list it has, which may be out of date. */}
+      {query.isError && query.data ? (
+        <View style={styles.stale}>
+          <Icon name="TriangleAlert" size={16} color={theme.colors.statusDanger} />
+          <Text accessibilityRole="alert" style={styles.staleText}>Couldn’t refresh schedules. This list may be out of date.</Text>
+          <Pressable
+            accessibilityRole="button" accessibilityState={{ disabled: query.isFetching }} disabled={query.isFetching}
+            onPress={refresh} style={[styles.retry, query.isFetching ? styles.disabled : null]}
+          >
+            <Text style={styles.retryText}>Try again</Text>
+          </Pressable>
+        </View>
+      ) : null}
       {content}
-      {query.isPending || query.isError ? null : (
+      {!query.data ? null : (
         <HistorySection query={history} theme={theme} styles={styles} onOpen={openAgent} />
       )}
     </ScrollView>

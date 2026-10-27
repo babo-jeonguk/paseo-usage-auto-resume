@@ -3,13 +3,16 @@ import { createHistoryStore } from "./server/history";
 import { discoverProviders } from "./server/providers";
 import { createResumer } from "./server/resumer";
 import { createJobStore } from "./server/store";
-import { listHistoryRpc, listProvidersRpc, listScheduledRpc, rescheduleRpc, resumeNowRpc, setAllEnabledRpc, setEnabledRpc } from "./shared/rpc";
-import { providerSettings } from "./shared/settings";
+import { listHistoryRpc, listProvidersRpc, listScheduledRpc, rescheduleRpc, resumeNowRpc, setAllEnabledRpc, setEnabledRpc, setNoteRpc } from "./shared/rpc";
+import { DEFAULT_RESUME_SETTINGS, providerSettings, resumeSettings } from "./shared/settings";
 
 const TICK_MS = 30_000;
 
 export default function contribute(server: PluginServerContext) {
   const settings = server.registerSettings(providerSettings);
+  const promptSettings = server.registerSettings(resumeSettings);
+  // The tick reads these on every send; the same failure is reported once, not every time.
+  let resumeError: string | null = null;
   const resumer = createResumer({
     store: createJobStore(),
     history: createHistoryStore(),
@@ -18,6 +21,20 @@ export default function contribute(server: PluginServerContext) {
       if (current.status === "ready") return current.values;
       console.error("[usage-auto-resume] settings unreadable; automatic resumes are waiting", current.error);
       return null;
+    },
+    // Unlike the provider switches, unreadable values here never hold a resume: the built-in
+    // prompt is a safe thing to send.
+    readResumeSettings: async () => {
+      const current = await promptSettings.read().catch((error: unknown) => ({ status: "invalid" as const, error: String(error) }));
+      if (current.status === "ready") {
+        resumeError = null;
+        return current.values;
+      }
+      if (current.error !== resumeError) {
+        console.error("[usage-auto-resume] continue prompt settings unreadable; sending the built-in prompt", current.error);
+      }
+      resumeError = current.error;
+      return DEFAULT_RESUME_SETTINGS;
     },
   });
   const report = (error: unknown) => console.error("[usage-auto-resume] hook failed", String(error));
@@ -29,7 +46,7 @@ export default function contribute(server: PluginServerContext) {
     settings.subscribe(() => void resumer.reconcileProviders().catch(report)),
     server.on("agent.turn_started", (event, { paseo }) => {
       void resumer.attach(paseo);
-      void resumer.onTurnStarted(event.agent.id).catch(report);
+      void resumer.onTurnStarted(event.agent.id, paseo).catch(report);
     }),
     server.on("agent.turn_ended", (event, { paseo }) => {
       void resumer.attach(paseo);
@@ -56,21 +73,25 @@ export default function contribute(server: PluginServerContext) {
     void resumer.attach(paseo);
     return { providers: await discoverProviders(paseo) };
   });
-  server.handle(setEnabledRpc, async ({ agentId, dueAt, enabled }, { paseo }) => {
+  server.handle(setEnabledRpc, async ({ agentId, id, dueAt, enabled }, { paseo }) => {
     void resumer.attach(paseo);
-    return { changed: await resumer.setEnabled(agentId, dueAt, enabled) };
+    return { changed: await resumer.setEnabled(agentId, { id, dueAt }, enabled) };
   });
   server.handle(setAllEnabledRpc, async ({ enabled, jobs }, { paseo }) => {
     void resumer.attach(paseo);
     return { changed: await resumer.setAllEnabled(enabled, jobs) };
   });
-  server.handle(rescheduleRpc, async ({ agentId, dueAt, newDueAt }, { paseo }) => {
+  server.handle(rescheduleRpc, async ({ agentId, id, dueAt, newDueAt }, { paseo }) => {
     void resumer.attach(paseo);
-    return resumer.reschedule(agentId, dueAt, newDueAt);
+    return resumer.reschedule(agentId, { id, dueAt }, newDueAt);
   });
-  server.handle(resumeNowRpc, async ({ agentId, dueAt }, { paseo }) => {
+  server.handle(setNoteRpc, async ({ agentId, id, note }, { paseo }) => {
     void resumer.attach(paseo);
-    return resumer.resumeNow(paseo, agentId, dueAt);
+    return resumer.setNote(agentId, { id }, note);
+  });
+  server.handle(resumeNowRpc, async ({ agentId, id, dueAt }, { paseo }) => {
+    void resumer.attach(paseo);
+    return resumer.resumeNow(paseo, agentId, { id, dueAt });
   });
   const timer = setInterval(() => void resumer.tick().catch(report), TICK_MS);
 
