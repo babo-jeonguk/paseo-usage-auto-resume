@@ -10,7 +10,11 @@ npm run check
 paseo plugin install "$PWD"
 ```
 
-`npm run check` runs TypeScript checking and the Node test suite. `npm run test:native` runs the account check against an installed CLI selected by `NATIVE_CLI=claude` or `NATIVE_CLI=codex`, using fixture logins in a temporary home; CI runs it on Linux and Windows for Claude Code (native installer and npm) and Codex (npm: a pinned release through the full check, and the latest release started and stopped only, since it does not answer a fixture login). After changing an installed directory plugin:
+`npm run check` runs TypeScript checking and the Node test suite. `npm run test:native` runs the account check against an installed CLI selected by `NATIVE_CLI=claude` or `NATIVE_CLI=codex`, using fixture logins in a temporary home; CI runs it on Linux and Windows for Claude Code (native installer and npm) and Codex (npm: a pinned release through the full check, and the latest release started and stopped only, since it does not answer a fixture login).
+
+`e2e/` holds a by-hand end-to-end simulation. It installs the plugin from GitHub into an isolated real Paseo daemon and drives limit stops, reservations, Resume now, the tick, cancellations, the startup scan and a rollback, with the real Claude Code, Codex and Antigravity CLIs against local fake model APIs, on Linux and Windows. Run it before a release or after a Paseo upgrade; see [its README](../e2e/README.md).
+
+After changing an installed directory plugin:
 
 ```bash
 paseo plugin reload usage-auto-resume

@@ -7,3 +7,4 @@ node_modules/
 .DS_Store
 coverage/
 .scratch/
+e2e/out-*/
