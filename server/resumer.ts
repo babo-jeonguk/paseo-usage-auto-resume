@@ -18,7 +18,7 @@ export const CONTINUE_PROMPT = DEFAULT_CONTINUE_PROMPT;
 
 /** Startup scan looks at agents active this recently; older stops are left to the user. */
 const SCAN_WINDOW_MS = 12 * 3_600_000;
-const SCAN_TIMELINE_ITEMS = 20;
+const TAIL_TIMELINE_ITEMS = 20;
 
 export type ResumerApi = Pick<PaseoApi, "agents" | "config" | "providers">;
 type TurnEnded = PluginLifecycleEvents["agent.turn_ended"];
@@ -142,7 +142,11 @@ export function createResumer(options: {
   async function onTurnEnded(event: TurnEnded, api: ResumerApi): Promise<void> {
     const { outcome } = event;
     const observedAt = now();
-    const stop = outcome.kind === "canceled" ? null : detectLimitStop(outcome, event.timeline, observedAt);
+    let stop = null;
+    if (outcome.kind !== "canceled") {
+      // The event's own timeline is deprecated and empty from Paseo 0.13, so it is never read.
+      stop = detectLimitStop(outcome, await timelineTail(api, event.agent.id), observedAt);
+    }
     const kind = turnEventOf(outcome.kind, !!stop);
     await onTurn(api, event.agent.id, kind, stop ? { resetAt: stop.resetAt, observedAt } : undefined);
   }
@@ -222,9 +226,18 @@ export function createResumer(options: {
     if (ended) await record(agent.id, agent.provider, { ...ended, title: titleOf(agent) });
   }
 
+  /** The agent's latest timeline items, oldest first; none, and a log line, when they cannot be read. */
   async function timelineTail(api: ResumerApi, agentId: string): Promise<AgentTimelineItem[]> {
-    const page = await api.agents.ref(agentId).timeline.refetch({ direction: "tail", limit: SCAN_TIMELINE_ITEMS });
-    if (page.error) return [];
+    let page;
+    try {
+      page = await api.agents.ref(agentId).timeline.refetch({ direction: "tail", limit: TAIL_TIMELINE_ITEMS });
+    } catch (error) {
+      page = { error: String(error), entries: [] };
+    }
+    if (page.error) {
+      console.error(`[usage-auto-resume] could not read the timeline of ${agentId}`, page.error);
+      return [];
+    }
     return [...page.entries].sort((left, right) => left.seqStart - right.seqStart).map((entry) => entry.item);
   }
 

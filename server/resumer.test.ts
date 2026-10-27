@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, test } from "node:test";
+import { afterEach, beforeEach, mock, test } from "node:test";
 import type { PaseoAgent } from "@getpaseo/client";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import type { PluginLifecycleEvents, PluginTurnOutcome } from "@getpaseo/plugin/server";
@@ -30,6 +30,8 @@ let dir: string;
 let store: JobStore;
 let history: HistoryStore;
 let clock: Date;
+/** Each agent's timeline as its last turn left it, which a turn end reads back. */
+const turnTimelines = new Map<string, AgentTimelineItem[]>();
 const savedCodexHome = process.env.CODEX_HOME;
 
 const jwt = (claims: Record<string, unknown>) =>
@@ -46,6 +48,7 @@ beforeEach(async () => {
   store = createJobStore(join(dir, "jobs.json"));
   history = createHistoryStore({ path: join(dir, "history.json"), now: () => clock });
   clock = START;
+  turnTimelines.clear();
   await signIn(join(dir, "claude"), ".claude.json", { oauthAccount: { emailAddress: MAIN_EMAIL } });
   await signIn(join(dir, "claude-sub"), ".claude.json", { oauthAccount: { emailAddress: SUB_EMAIL } });
   await signIn(join(dir, "codex"), "auth.json", { tokens: { id_token: jwt({ email: CODEX_EMAIL }), access_token: "opaque" } });
@@ -71,6 +74,8 @@ async function recorded(): Promise<string[]> {
 interface FakeOptions {
   readSubscription?: SubscriptionReader;
   timelines?: Record<string, AgentTimelineItem[]>;
+  /** How reading an agent's timeline fails: an error page, or a rejected request. */
+  timelineFailure?: "page" | "throw";
   backgroundAgents?: string[];
   /** A newer SDK can reject inclusive discovery against an older host. */
   backgroundUnsupported?: boolean;
@@ -89,6 +94,7 @@ function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOption
   const sent: Array<{ agentId: string; text: string }> = [];
   const sendOptions: unknown[] = [];
   const listCalls: Array<{ filter?: { statuses?: string[]; includeBackground?: boolean } }> = [];
+  const timelineReads: Array<{ agentId: string; query: unknown }> = [];
   let usageReads = 0;
   const snapshot = (agentId: string, agent: Partial<PaseoAgent>) =>
     ({
@@ -128,10 +134,15 @@ function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOption
           sendOptions.push(options);
         },
         timeline: {
-          refetch: async () => ({
-            error: null,
-            entries: (options.timelines?.[agentId] ?? []).map((item, seqStart) => ({ item, seqStart })),
-          }),
+          refetch: async (query: unknown) => {
+            timelineReads.push({ agentId, query });
+            if (options.timelineFailure === "throw") throw new Error("timeline unavailable");
+            if (options.timelineFailure === "page") return { error: "timeline unavailable", entries: [] };
+            return {
+              error: null,
+              entries: (turnTimelines.get(agentId) ?? options.timelines?.[agentId] ?? []).map((item, seqStart) => ({ item, seqStart })),
+            };
+          },
         },
       }),
       create: () => {
@@ -186,20 +197,22 @@ function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOption
     const windows = entry.windows.map((w) => ({ id: w.id, usedPct: w.usedPct ?? 100 - (w.remainingPct ?? 0), resetAt: w.resetsAt ?? null }));
     return { auth: "subscription", status: windows.some((w) => w.usedPct >= 100) ? "limited" : "ready", identity, windows };
   });
-  return { api, sent, sendOptions, listCalls, readSubscription, usageReads: () => usageReads };
+  return { api, sent, sendOptions, listCalls, timelineReads, readSubscription, usageReads: () => usageReads };
 }
 
+/** A turn end as Paseo 0.13 sends it; `timeline` is what the agent's timeline then reads. */
 function turnEnded(
   agentId: string,
   provider: string,
   outcome: PluginTurnOutcome,
   timeline: AgentTimelineItem[] = [{ type: "user_message", text: "Implement the feature" }],
 ): PluginLifecycleEvents["agent.turn_ended"] {
+  turnTimelines.set(agentId, timeline);
   return {
     agent: { id: agentId, workspaceId: "wks", parentAgentId: null, provider, cwd: "/repo", title: null },
     turnId: "turn-1",
     outcome,
-    timeline,
+    timeline: [],
   };
 }
 
@@ -291,6 +304,77 @@ test("startup scan also detects a separate limit notice after a long Claude answ
     { type: "assistant_message", text: CLAUDE_LIMIT, messageId: "limit" },
   ] } });
   assert.equal((await store.list())[0]?.dueAt, "2026-10-06T06:02:00.000Z");
+});
+
+test("a turn end reads the Claude notice from the agent's latest timeline", async () => {
+  const { api, sent, timelineReads, resumer } = await setup({ m1: { provider: "claude" } });
+  timelineReads.length = 0;
+  await resumer.onTurnEnded(turnEnded("m1", "claude", { kind: "completed" }, claudeNotice(CLAUDE_LIMIT)), api);
+
+  assert.deepEqual(timelineReads, [{ agentId: "m1", query: { direction: "tail", limit: 20 } }]);
+  assert.equal((await store.list())[0]?.dueAt, "2026-10-06T06:02:00.000Z");
+  clock = new Date("2026-10-06T06:02:00.000Z");
+  await resumer.tick();
+  assert.deepEqual(sent, [{ agentId: "m1", text: CONTINUE_PROMPT }]);
+});
+
+test("the timeline a turn end carries is never read", async () => {
+  const { api, resumer } = await setup({ m1: { provider: "claude" }, m2: { provider: "claude" } });
+  // Paseo 0.11 and 0.12 filled it; the agent's own timeline decides alike on every version.
+  await resumer.onTurnEnded({ ...turnEnded("m1", "claude", { kind: "completed" }), timeline: claudeNotice(CLAUDE_LIMIT) }, api);
+  assert.deepEqual(await store.list(), []);
+  // A later Paseo may drop the field altogether.
+  const { timeline: _dropped, ...bare } = turnEnded("m2", "claude", { kind: "completed" }, claudeNotice(CLAUDE_LIMIT));
+  await resumer.onTurnEnded(bare as PluginLifecycleEvents["agent.turn_ended"], api);
+  assert.deepEqual((await store.list()).map((job) => job.agentId), ["m2"]);
+});
+
+test("a canceled turn reads no timeline", async () => {
+  const { api, timelineReads, resumer } = await setup({ m1: { provider: "claude" } });
+  timelineReads.length = 0;
+  await resumer.onTurnEnded(turnEnded("m1", "claude", { kind: "canceled", reason: "interrupted" }, claudeNotice(CLAUDE_LIMIT)), api);
+  assert.deepEqual(timelineReads, []);
+  assert.deepEqual(await store.list(), []);
+});
+
+test("a notice before the latest user message is not this turn's", async () => {
+  const { api, resumer } = await setup({ m1: { provider: "claude" } });
+  await resumer.onTurnEnded(turnEnded("m1", "claude", { kind: "completed" }, [
+    ...claudeNotice(CLAUDE_LIMIT),
+    { type: "user_message", text: "Continue" },
+    { type: "assistant_message", text: "Done." },
+  ]), api);
+  assert.deepEqual(await store.list(), []);
+});
+
+for (const failure of ["page", "throw"] as const) {
+  test(`a timeline that cannot be read (${failure}) is logged and leaves the outcome to decide`, async () => {
+    const { api, resumer } = await setup({ a1: { provider: "codex" }, m1: { provider: "claude" } }, { timelineFailure: failure });
+    const logged = mock.method(console, "error", () => {});
+    try {
+      await resumer.onTurnEnded(turnEnded("m1", "claude", { kind: "completed" }, claudeNotice(CLAUDE_LIMIT)), api);
+      assert.deepEqual(await store.list(), [], "no notice was read");
+      assert.deepEqual(logged.mock.calls.map((call) => call.arguments[0]), ["[usage-auto-resume] could not read the timeline of m1"]);
+      await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+      assert.equal((await store.list())[0]?.dueAt, "2026-10-06T05:02:00.000Z");
+    } finally {
+      logged.mock.restore();
+    }
+  });
+}
+
+test("startup scan goes on past a Claude agent whose timeline read is rejected", async () => {
+  const logged = mock.method(console, "error", () => {});
+  try {
+    await setup({
+      m1: { provider: "claude" },
+      a1: { provider: "codex", status: "error", lastError: CODEX_LIMIT },
+    }, { timelineFailure: "throw" });
+    assert.deepEqual((await store.list()).map((job) => job.agentId), ["a1"]);
+    assert.deepEqual(logged.mock.calls.map((call) => call.arguments[0]), ["[usage-auto-resume] could not read the timeline of m1"]);
+  } finally {
+    logged.mock.restore();
+  }
 });
 
 test("a structured limit code uses the existing usage-window fallback", async () => {
