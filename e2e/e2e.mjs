@@ -241,7 +241,7 @@ const checkStartupScan = (S, provider, title) => step(11, S, 'startup scan: agen
   return `no job while disabled; after enable the scan created one: due ${job.dueAt} (resetAt ${job.resetAt})`;
 });
 
-// A stopped daemon closes every agent; Paseo 0.14 also closes one idle for an hour, which a run cannot wait for.
+// Stands in for Paseo 0.14's one-hour idle close, which a run cannot wait for.
 const restartDaemon = async () => {
   await client.close().catch(() => {});
   await paseo('daemon', 'stop').catch(() => {});
@@ -252,7 +252,7 @@ const checkClosedAgent = (S, provider, title) => step(16, S, 'a reservation whos
   const k = await mkAgent(title, provider);
   await hit(k, S, limitWith(S, 4 * 3600));
   await restartDaemon();
-  // fetchAgent reads the stored record; reading the timeline here would reopen the agent.
+  // Reading the timeline here would reopen the agent.
   const status = await agentStatus(k.id);
   assert.equal(status, 'closed', 'agent status after the restart');
   const sent0 = continues(S).length;
@@ -261,8 +261,8 @@ const checkClosedAgent = (S, provider, title) => step(16, S, 'a reservation whos
   await waitFor(async () => { await rpc('auto-resume.list').catch(() => {}); return continues(S).length === sent0 + 1; }, 'continue to the closed agent', 240000, 3000);
   await sleep(6000);
   assert.equal(continues(S).length, sent0 + 1, 'more than one continue');
-  assert.equal((await readHistory()).find((h) => h.agentId === k.id && h.outcome !== 'continued')?.reason, undefined, 'canceled instead');
-  assert.ok((await readHistory()).some((h) => h.agentId === k.id && h.outcome === 'continued'), 'history continued');
+  const outcomes = (await readHistory()).filter((h) => h.agentId === k.id).map((h) => `${h.outcome}${h.reason ? '/' + h.reason : ''}`);
+  assert.deepEqual(outcomes, ['continued'], 'history');
   assert.ok((await timelineText(k.id)).join('\n').includes(DEFAULT_MARK), 'continue not in the same agent timeline');
   return `status ${status} after the restart; 1 continue reached the model in the same agent's timeline, history continued`;
 });

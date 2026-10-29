@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { agentGate, turnAction, type Gate, type TurnEvent } from "./decisions";
+import { agentGate, turnAction, type TurnEvent } from "./decisions";
 import type { PaseoAgent } from "./paseo-types";
 import type { ResumeJob } from "./store";
 
@@ -18,6 +18,11 @@ const agent = (fields: Partial<PaseoAgent> = {}) => ({
   attentionReason: null, archivedAt: null, activeTurn: null, ...fields,
 }) as PaseoAgent;
 const reason = (action: { cancel?: { reason: string } }) => action.cancel?.reason ?? null;
+/** The gate's cancel reason, or its wait/skip/go-on result. */
+const gate = (row: ResumeJob, snapshot: PaseoAgent | null, mode: "auto" | "manual" = "auto") => {
+  const result = agentGate(row, snapshot, mode);
+  return result && typeof result === "object" ? result.reason : result;
+};
 
 test("turn events: a new message cancels a pending reservation first, and a limit still plans its own", () => {
   const message = agent({ lastUserMessageAt: LATER });
@@ -65,10 +70,6 @@ test("a message counts only when it is later than the baseline", () => {
 });
 
 test("due-time checks 3 to 8 run in the table's order", () => {
-  const gate = (row: ResumeJob, snapshot: PaseoAgent | null, mode: "auto" | "manual" = "auto") => {
-    const result = agentGate(row, snapshot, mode);
-    return result && typeof result === "object" ? result.reason : result;
-  };
   const off = job({ enabled: false });
   assert.equal(gate(off, null), "agent_missing");
   assert.equal(gate(off, agent({ archivedAt: LATER, status: "running" })), "archived", "3 comes before a turn");
@@ -88,13 +89,12 @@ test("due-time checks 3 to 8 run in the table's order", () => {
 });
 
 test("a closed agent is resumed, not canceled: Paseo reopens its saved session on send", () => {
-  assert.equal(agentGate(job(), agent({ status: "closed" }), "auto"), null);
-  assert.equal(agentGate(job({ enabled: false }), agent({ status: "closed" }), "auto"), "skip");
-  assert.equal(agentGate(job(), agent({ status: "closed" }), "manual"), null);
-  const reason = (gate: Gate) => (gate && typeof gate === "object" ? gate.reason : gate);
-  assert.equal(reason(agentGate(job(), agent({ status: "closed", archivedAt: LATER }), "auto")), "archived");
-  assert.equal(reason(agentGate(job(), agent({ status: "closed", lastUserMessageAt: LATER }), "auto")), "new_message");
-  assert.equal(reason(agentGate(job(), agent({ status: "closed", attentionReason: "permission" }), "auto")), "permission");
+  assert.equal(gate(job(), agent({ status: "closed" })), null);
+  assert.equal(gate(job({ enabled: false }), agent({ status: "closed" })), "skip");
+  assert.equal(gate(job(), agent({ status: "closed" }), "manual"), null);
+  assert.equal(gate(job(), agent({ status: "closed", archivedAt: LATER })), "archived");
+  assert.equal(gate(job(), agent({ status: "closed", lastUserMessageAt: LATER })), "new_message");
+  assert.equal(gate(job(), agent({ status: "closed", attentionReason: "permission" })), "permission");
 });
 
 test("Resume now never skips, and waits for a turn", () => {
