@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { agyFallback, agyUsage, agyWindows, createAgyUsageReader } from "./agy-usage";
 import { UnsafeShimError } from "./cli-launch";
@@ -198,7 +198,8 @@ test("a relative launcher path is probed where Paseo runs agy", async () => {
     return args[0] === "--version" ? "1.4.9" : JSON.stringify(fixture);
   } });
   await read({ command: ["./bin/agy"], cwd: "/project", env: {} }, flash, "a");
-  assert.deepEqual(binaries, [join("/project", "bin/agy"), join("/project", "bin/agy")]);
+  // Resolved like a path Paseo spawns from that cwd, with the drive on Windows.
+  assert.deepEqual(binaries, [resolve("/project", "bin/agy"), resolve("/project", "bin/agy")]);
 });
 
 test("the real process runner reads a fake agy executable without a model or account", { skip: process.platform === "win32" }, async () => {
