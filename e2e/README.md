@@ -84,3 +84,7 @@ Time is advanced through the reschedule RPC, or by editing `jobs.json` to a past
 - Real provider limits.
 - Connected hosts.
 - Native apps.
+
+## Known issues
+
+- **Windows: an item that saves a reservation or history entry fails now and then.** The plugin saves `jobs.json` and `history.json` by renaming a temporary file over them. Windows refuses that rename while another process has the file open, and the harness reads both files throughout the run, so a save that lands on a read fails. On a Windows host this failed 1.8% of saves with a reader polling every second and 3.6% every 0.3 seconds (the UI phase's pace); no save failed out of 1000 without one. The failed save is lost, so the item waiting for it times out (seen in 8, the UI phase's 4, 9 and 15). The daemon log then holds an `EPERM: operation not permitted, rename '…jobs.json.….tmp' -> '…jobs.json'` (or `history.json`) line from the same moment; rerun the item. The plugin keeps a single rename because no other program normally reads these files. Item 14 does not catch a failure on an RPC path, which the daemon logs as `Error handling message` rather than as plugin output.
