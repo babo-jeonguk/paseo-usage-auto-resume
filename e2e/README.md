@@ -25,7 +25,7 @@ No model request leaves the host and no real account is used. Each CLI runs with
 - Node 22 or later.
 - `@getpaseo/cli` of the Paseo version under test, installed in its own prefix: `npm i --prefix /tmp/paseo-<v> @getpaseo/cli@<v>`. Do not use the CLI that runs your own daemon's home.
 - The CLIs to test (`claude`, `codex`, `agy`). Windows also needs Git on `PATH` for the GitHub install; portable MinGit is enough.
-- `--ui 1` (Linux only) needs Playwright and a Chromium build. Set `PW_ROOT` to the `node_modules` directory that holds `playwright`, and `CHROME` to the Chromium binary.
+- `--ui 1` needs Playwright and a Chromium-based browser. Set `PW_ROOT` to the `node_modules` directory that holds `playwright`. `CHROME` picks the browser binary; without it, Linux uses Playwright's Chromium and Windows uses the installed Microsoft Edge, so Windows needs no browser download (`npm i --prefix <dir> playwright` is enough).
 
 ## Run
 
@@ -84,4 +84,3 @@ Time is advanced through the reschedule RPC, or by editing `jobs.json` to a past
 - Real provider limits.
 - Connected hosts.
 - Native apps.
-- The Windows web UI.

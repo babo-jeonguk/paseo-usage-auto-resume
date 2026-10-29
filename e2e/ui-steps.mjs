@@ -1,4 +1,4 @@
-// UI phase of the e2e (Linux only): drives the real Paseo web app with Playwright against the same
+// UI phase of the e2e (Linux and Windows): drives the real Paseo web app with Playwright against the same
 // daemon/plugin as e2e.mjs. Imported by e2e.mjs when --ui 1.
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
@@ -8,11 +8,15 @@ import { writeFile } from 'node:fs/promises';
 export async function uiPhase(ctx) {
   const { step, note, rpc, mkAgent, hit, setUsage, jobOf, editJob, readJobs, readHistory, continues, writeSettings, waitFor, sleep, origin, out, API, DEFAULT_MARK } = ctx;
   const S = 'claude-ui';
-  const pwRoot = process.env.PW_ROOT ?? (process.env.HOME + '/.npm/_npx/e41f203b7505f1fb/node_modules/');
-  const chrome = process.env.CHROME ?? (process.env.HOME + '/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome');
+  const isWin = process.platform === 'win32';
+  const pwRoot = process.env.PW_ROOT ?? (isWin ? null : process.env.HOME + '/.npm/_npx/e41f203b7505f1fb/node_modules/');
+  if (!pwRoot) throw new Error('--ui 1 on Windows needs PW_ROOT: the node_modules directory that holds playwright');
+  // CHROME, else Playwright's Chromium on Linux and the Edge every Windows install ships (no browser download).
+  const browserAt = process.env.CHROME ? { executablePath: process.env.CHROME }
+    : isWin ? { channel: 'msedge' } : { executablePath: process.env.HOME + '/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome' };
   const { chromium } = createRequire(pwRoot)('playwright');
   const { expect } = createRequire(pwRoot)('playwright/test');
-  const browser = await chromium.launch({ headless: true, executablePath: chrome });
+  const browser = await chromium.launch({ headless: true, ...browserAt });
   const page = await (await browser.newContext({ viewport: { width: 1440, height: 960 }, locale: 'en-US' })).newPage();
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message));

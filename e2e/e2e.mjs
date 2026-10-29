@@ -6,7 +6,7 @@
 // node e2e.mjs --label linux-0.13.2 --cli <@getpaseo/cli dir> --root <run dir> --suites claude,codex,antigravity \
 //   [--from <ref, default v1.2.2>] [--to <ref, default main>] [--source <git source>] [--out <results dir>] \
 //   [--min 1] [--ui 1] [--hold 1] [--claude <bin>] [--codex <bin>] [--agy <bin>] [--path <extra PATH dirs>]
-// --ui 1 reads Playwright from PW_ROOT and Chromium from CHROME (see ui-steps.mjs).
+// --ui 1 reads Playwright from PW_ROOT and the browser from CHROME, else Chromium on Linux and Edge on Windows (see ui-steps.mjs).
 import assert from 'node:assert/strict';
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { closeSync, existsSync, openSync, readFileSync, appendFileSync } from 'node:fs';
@@ -78,12 +78,19 @@ const note = (item, suite, name, ev) => { results.push({ item, suite, ok: null, 
 // ---- data files ---------------------------------------------------------------------------
 const readJobs = async () => existsSync(jobsFile) ? JSON.parse(await readFile(jobsFile, 'utf8')).jobs : [];
 const readHistory = async () => existsSync(historyFile) ? JSON.parse(await readFile(historyFile, 'utf8')).entries : [];
-const writeJobs = async (jobs) => { await mkdir(data, { recursive: true }); await writeFile(jobsFile + '.tmp', JSON.stringify({ version: 1, jobs }, null, 2)); await rename(jobsFile + '.tmp', jobsFile); };
+// Windows refuses to rename over a file another process (the plugin) has open, unlike POSIX; the refusal ends on its own.
+const replace = async (path, text) => {
+  await writeFile(path + '.tmp', text);
+  for (const until = Date.now() + 10000; ; await sleep(100)) {
+    try { return await rename(path + '.tmp', path); } catch (e) { if (!isWin || !['EPERM', 'EACCES', 'EBUSY'].includes(e.code) || Date.now() > until) throw e; }
+  }
+};
+const writeJobs = async (jobs) => { await mkdir(data, { recursive: true }); await replace(jobsFile, JSON.stringify({ version: 1, jobs }, null, 2)); };
 const jobOf = async (id) => (await readJobs()).find((j) => j.agentId === id);
 const editJob = async (id, patch) => writeJobs((await readJobs()).map((j) => j.agentId === id ? { ...j, ...patch } : j));
-const setUsage = async (v) => { await writeFile(usageFile + '.tmp', JSON.stringify(v)); await rename(usageFile + '.tmp', usageFile); };
+const setUsage = (v) => replace(usageFile, JSON.stringify(v));
 const modelState = {};
-const setModel = async (api, v) => { modelState[api] = v; await writeFile(modelCtl + '.tmp', JSON.stringify(modelState)); await rename(modelCtl + '.tmp', modelCtl); };
+const setModel = (api, v) => { modelState[api] = v; return replace(modelCtl, JSON.stringify(modelState)); };
 const allRequests = () => readFileSync(modelLog, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
 const API = { claude: 'claude', codex: 'codex', antigravity: 'agy' };
 // agy puts the continue in an earlier user turn and repeats it in later requests, so count distinct user turns (they carry a timestamp).
