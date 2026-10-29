@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { writeFile } from 'node:fs/promises';
 
 export async function uiPhase(ctx) {
-  const { step, note, rpc, mkAgent, hit, setUsage, jobOf, editJob, readHistory, continues, writeSettings, waitFor, sleep, origin, out, API, DEFAULT_MARK } = ctx;
+  const { step, note, rpc, mkAgent, hit, setUsage, jobOf, editJob, readJobs, readHistory, continues, writeSettings, waitFor, sleep, origin, out, API, DEFAULT_MARK } = ctx;
   const S = 'claude-ui';
   const pwRoot = process.env.PW_ROOT ?? (process.env.HOME + '/.npm/_npx/e41f203b7505f1fb/node_modules/');
   const chrome = process.env.CHROME ?? (process.env.HOME + '/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome');
@@ -45,6 +45,25 @@ export async function uiPhase(ctx) {
     await expect(page.getByRole('heading', { name: 'Automatic resume' })).toBeVisible({ timeout: 60000 });
   };
   const hhmm = (ms) => { const d = new Date(ms); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
+  const openScreen = async () => {
+    await page.goto(origin);
+    await page.getByRole('button', { name: 'Auto Resume', exact: true }).first().click({ timeout: 60000 });
+    await expect(page.getByRole('button', { name: /^Turn all (off|on)$/ })).toBeVisible({ timeout: 60000 });
+  };
+  // The section heading the screen files a reservation under, as client/format.ts dayLabel writes it.
+  const dayLabel = (ms) => {
+    const day = (t) => { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); };
+    const days = Math.round((day(ms) - day(Date.now())) / 86400000);
+    return days <= 0 ? 'Today' : days === 1 ? 'Tomorrow' : new Date(ms).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  };
+  // Walks up from a row to its card, whose previous sibling is the day heading.
+  const headingOf = (title) => page.getByRole('button', { name: new RegExp(`^Change time for ${title}, now `) }).evaluate((el) => {
+    for (let n = el; n; n = n.parentElement) {
+      const prev = n.previousElementSibling;
+      if (prev && prev.children.length === 0 && prev.textContent) return prev.textContent;
+    }
+    return null;
+  });
 
   try {
     // ---- item 4 in the UI: presets and Change time -----------------------------------------
@@ -153,6 +172,86 @@ export async function uiPhase(ctx) {
       await page.getByRole('switch', { name: /Claude Sub/ }).click();
       await sleep(1500);
       return 'history canceled/provider_off right after the switch; switched back on';
+    });
+
+    // ---- item 15: the Auto Resume screen ------------------------------------------------------
+    const T1 = 'UI screen row', T2 = 'UI screen later day';
+    const r1 = await mkAgent(T1), r2 = await mkAgent(T2);
+    await hit(r1, 'claude'); await hit(r2, 'claude');
+    // Two days ahead, as a weekly reset would place it; jobs.json is reread by the store.
+    const later = new Date(); later.setDate(later.getDate() + 2); later.setHours(10, 0, 0, 0);
+    await editJob(r2.id, { resetAt: iso(later.getTime() - 120000), dueAt: iso(later.getTime()) });
+    await guarded(15, 'screen groups reservations under their day', async () => {
+      await openScreen();
+      const want1 = dayLabel(Date.parse((await jobOf(r1.id)).dueAt)), want2 = dayLabel(later.getTime());
+      assert.notEqual(want1, want2);
+      await waitFor(async () => (await headingOf(T2).catch(() => null)) === want2, `${T2} under ${want2}`, 30000, 500);
+      assert.equal(await headingOf(T1), want1);
+      await shot('ui-7-screen');
+      return `"${T1}" under ${want1}, "${T2}" under ${want2}`;
+    });
+
+    const NOTE = 'UI-ROW-NOTE-' + Math.random().toString(36).slice(2, 7);
+    await guarded(15, 'screen row: +10m, Change time and extra instructions change only that reservation', async () => {
+      await openScreen();
+      const other = await jobOf(r2.id);
+      const cur = (await jobOf(r1.id)).dueAt;
+      await page.getByRole('button', { name: `Delay 10 minutes for ${T1}`, exact: true }).click();
+      const bumped = iso(Date.parse(cur) + 600000);
+      await waitFor(async () => (await jobOf(r1.id)).dueAt === bumped, '+10m applied', 20000, 300);
+      const target = Date.parse(bumped) + 2 * 3600000 + 3 * 60000;
+      const crosses = new Date(target).getDate() !== new Date().getDate();
+      await page.getByRole('button', { name: new RegExp(`^Change time for ${T1}, now `) }).click();
+      await page.getByRole('textbox', { name: `New time for ${T1}`, exact: true }).fill(hhmm(target));
+      await page.getByRole('radio', { name: crosses ? 'Tomorrow' : 'Today', exact: true }).click();
+      await page.getByRole('button', { name: 'Save time', exact: true }).click();
+      await waitFor(async () => Math.abs(Date.parse((await jobOf(r1.id)).dueAt) - target) < 60000, 'Change time applied', 20000, 300);
+      await page.getByRole('button', { name: `Add extra instructions for ${T1}`, exact: true }).click();
+      await page.getByRole('textbox', { name: `Extra instructions for ${T1}`, exact: true }).fill(NOTE);
+      await page.getByRole('button', { name: 'Save extra instructions', exact: true }).click();
+      await waitFor(async () => (await jobOf(r1.id))?.note === NOTE, 'note saved', 20000, 300);
+      await expect(page.getByText(`Extra Instructions : ${NOTE}`, { exact: true })).toBeVisible({ timeout: 15000 });
+      await shot('ui-8-screen-row');
+      assert.deepEqual(await jobOf(r2.id), other, 'the other reservation changed');
+      return `+10m -> ${bumped.slice(11, 16)}Z, Change time -> ${(await jobOf(r1.id)).dueAt} (typed ${hhmm(target)}), note ${NOTE} shown on the row; "${T2}" unchanged`;
+    });
+
+    await guarded(15, 'screen row Open goes to its conversation', async () => {
+      await openScreen();
+      await page.getByRole('button', { name: `Open ${T1}`, exact: true }).click();
+      await expect(page.getByTestId('workspace-tab-agent_' + r1.id)).toBeVisible({ timeout: 45000 });
+      await expect(pill()).toBeVisible({ timeout: 45000 });
+      return `conversation of "${T1}" opened with its Auto Resume pill`;
+    });
+
+    await guarded(15, 'Turn all off / Turn all on change every pending reservation on screen', async () => {
+      await openScreen();
+      const pending = async () => (await readJobs()).filter((j) => j.state === 'pending');
+      const shown = (await pending()).length;
+      await page.getByRole('button', { name: 'Turn all off', exact: true }).click();
+      await expect(toast(`${shown} ${shown === 1 ? 'schedule' : 'schedules'} turned off`)).toBeVisible({ timeout: 30000 });
+      await waitFor(async () => (await pending()).every((j) => !j.enabled), 'all off', 20000, 300);
+      await expect(page.getByText('All turned off', { exact: true })).toBeVisible();
+      await shot('ui-9-all-off');
+      await page.getByRole('button', { name: 'Turn all on', exact: true }).click();
+      await expect(toast(`${shown} ${shown === 1 ? 'schedule' : 'schedules'} turned on`)).toBeVisible({ timeout: 30000 });
+      await waitFor(async () => (await pending()).every((j) => j.enabled), 'all on', 20000, 300);
+      return `${shown} pending reservations turned off, "All turned off" shown, then all turned on again`;
+    });
+
+    await guarded(15, 'screen row switch off: skipped at its due time, extra instructions dropped, nothing sent', async () => {
+      await openScreen();
+      await page.getByRole('switch', { name: new RegExp(`^Continue ${T1} automatically at `) }).click();
+      await waitFor(async () => (await jobOf(r1.id))?.enabled === false, 'switched off', 20000, 300);
+      // The header detail; Recent activity's summary also ends in "· 1 skipped".
+      await expect(page.getByText(/^Next (check )?at \d\d:\d\d( · \d+ waiting)? · 1 skipped$/)).toBeVisible({ timeout: 15000 });
+      const sent0 = continues('claude').length;
+      await editJob(r1.id, { resetAt: iso(Date.now() - 120000), dueAt: iso(Date.now() - 60000) });
+      await waitFor(async () => (await readHistory()).some((h) => h.agentId === r1.id && h.outcome === 'skipped'), 'skipped', 240000, 1000);
+      assert.equal(continues('claude').length, sent0, 'a continue was sent');
+      assert.equal(await jobOf(r1.id), undefined);
+      assert.ok(!(await readJobs()).some((j) => j.note === NOTE), 'note kept after the skip');
+      return 'switch off -> "1 skipped" in the header; at the due time history skipped, row and its note gone, 0 continues';
     });
 
     // ---- item 12 in the UI: Recent activity -------------------------------------------------
