@@ -54,6 +54,11 @@ function resolveWindows(command: string, options: CliOptions, exists: (path: str
   return null;
 }
 
+/** A `.cmd`/`.bat` launcher whose path or arguments cmd.exe would reinterpret, so it is not started. */
+export class UnsafeShimError extends Error {
+  constructor() { super("The CLI path cannot be passed to cmd.exe safely"); }
+}
+
 /**
  * How to start a provider CLI without a shell. On Windows, npm installs CLIs as `.cmd` shims,
  * which Node starts only through cmd.exe, so the shim's path is quoted into a cmd.exe command
@@ -69,7 +74,7 @@ export function cliLaunch(
   if (!resolved || !/\.(cmd|bat)$/i.test(resolved)) return { file: resolved ?? command, args };
   // Inside quotes cmd.exe still expands %VAR%, and a quote would end the path early.
   if (/["%]/.test(resolved) || args.some((arg) => !/^[\w.-]+$/.test(arg))) {
-    throw new Error("The CLI path cannot be passed to cmd.exe safely");
+    throw new UnsafeShimError();
   }
   return {
     file: envAnyCase(options.env, "COMSPEC") ?? "cmd.exe",

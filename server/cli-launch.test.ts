@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
-import { cliHome, cliLaunch, runCli, spawnCli, stopProcessTree } from "./cli-launch";
+import { cliHome, cliLaunch, runCli, spawnCli, stopProcessTree, UnsafeShimError } from "./cli-launch";
 
 const files = (...paths: string[]) => (path: string) => paths.map((entry) => entry.toLowerCase()).includes(path.toLowerCase());
 const windowsEnv = { Path: "C:\\Windows\\system32;C:\\npm\\prefix;C:\\Users\\me\\.local\\bin", PATHEXT: ".COM;.EXE;.BAT;.CMD", ComSpec: "C:\\Windows\\system32\\cmd.exe" };
@@ -56,7 +56,7 @@ test("a path cmd.exe would expand or split is refused rather than run", () => {
   for (const path of ["C:\\%TEMP%\\claude.cmd", 'C:\\odd"name\\claude.cmd']) {
     assert.throws(() => cliLaunch(path, ["--version"], onWindows(files(path))), /safely/);
   }
-  assert.throws(() => cliLaunch("claude", ["a&b"], onWindows(npmShim)), /safely/);
+  assert.throws(() => cliLaunch("claude", ["a&b"], onWindows(npmShim)), UnsafeShimError);
 });
 
 test("a CLI that cannot be found keeps its name, so starting it fails as before", () => {

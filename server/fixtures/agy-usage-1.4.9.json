@@ -1,0 +1,60 @@
+{
+  "status": "SUCCESS",
+  "num_turns": 0,
+  "conversation_id": "",
+  "usage": {
+    "total_tokens": 0
+  },
+  "command": {
+    "name": "usage",
+    "data": {
+      "groups": [
+        {
+          "name": "Gemini Models",
+          "buckets": [
+            {
+              "id": "gemini-weekly",
+              "window": "weekly",
+              "remaining_fraction": 0.9847396612167358,
+              "reset_time": "2026-11-01T15:15:44Z"
+            },
+            {
+              "id": "gemini-5h",
+              "window": "5h",
+              "remaining_fraction": 0.9878427982330322,
+              "reset_time": "2026-10-28T16:23:45Z"
+            }
+          ]
+        },
+        {
+          "name": "Claude and GPT models",
+          "buckets": [
+            {
+              "id": "3p-weekly",
+              "window": "weekly",
+              "remaining_fraction": 1,
+              "reset_time": "2026-11-04T13:17:16Z"
+            },
+            {
+              "id": "3p-5h",
+              "window": "5h",
+              "remaining_fraction": 1,
+              "reset_time": "2026-10-28T18:17:16Z"
+            }
+          ]
+        },
+        {
+          "name": "Gemini 4 Argon",
+          "buckets": [
+            {
+              "id": "gemini-argon-wtu-weekly",
+              "window": "weekly",
+              "remaining_fraction": 0.5394589304924011,
+              "reset_time": "2026-10-31T00:58:30Z"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
