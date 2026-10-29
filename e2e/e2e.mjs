@@ -195,6 +195,40 @@ const hit = async (a, suite, state = { mode: 'limit' }, timeout = 240000) => {
   return job;
 };
 const sinceLog = (from) => readFileSync(daemonLog, 'utf8').split(/\r?\n/).slice(from);
+const limitWith = (suite, sec) => suite === 'antigravity' ? { mode: 'limit', resetText: `${sec / 3600}h` } : { mode: 'limit', resetInSec: sec };
+
+// ---- checks shared by every suite -------------------------------------------------------------
+// 9 through the settings file; the UI phase uses the Settings switch.
+const checkProviderOff = (S, provider, title) => step(9, S, 'turning the provider off cancels its pending reservations (settings file edit)', async () => {
+  const f = await mkAgent(title, provider);
+  await hit(f, S);
+  await writeSettings('providers', 2, { disabledProviders: [provider] });
+  let how = 'immediately (settings change picked up)';
+  const immediate = await waitFor(async () => (await readHistory()).some((h) => h.agentId === f.id && h.reason === 'provider_off'), 'provider_off now', 25000, 1000).catch(() => null);
+  if (!immediate) {
+    how = 'not pushed on a file edit (Paseo only notifies subscribers for writes through its settings API); cancelled by the due-time check instead';
+    await editJob(f.id, { resetAt: iso(Date.now() - 120000), dueAt: iso(Date.now() - 60000) });
+    await waitFor(async () => (await readHistory()).some((h) => h.agentId === f.id && h.reason === 'provider_off'), 'provider_off at due time', 200000, 1000);
+  }
+  await writeSettings('providers', 2, { disabledProviders: [] });
+  assert.equal(await jobOf(f.id), undefined);
+  return `${provider}: history canceled/provider_off, job gone, nothing sent: ${how}`;
+});
+const checkStartupScan = (S, provider, title) => step(11, S, 'startup scan: agent stopped at a limit while the plugin was disabled gets a reservation after enabling', async () => {
+  const h = await mkAgent(title, provider);
+  await client.disablePlugin(PLUGIN);
+  assert.match(paseo('plugin', 'ls', PLUGIN), /usage-auto-resume\s+\S+\s+no/, 'plugin not disabled');
+  await setModel(API[S], limitWith(S, 4 * 3600));
+  await client.sendAgentMessage(h.id, 'Work on the task.');
+  await waitFor(async () => (await agentStatus(h.id)) !== 'running' && (await timelineText(h.id)).some((l) => /limit|quota|429/i.test(l)), 'agent stopped at the limit', 240000, 1000);
+  await sleep(3000);
+  await setModel(API[S], { mode: 'text' });
+  assert.equal(await jobOf(h.id), undefined, 'reservation made while plugin disabled');
+  await client.enablePlugin(PLUGIN);
+  // A connected app polls the plugin's list RPC, which hands the plugin the Paseo API the scan needs.
+  const job = await waitFor(async () => { await rpc('auto-resume.list').catch(() => {}); const j = await jobOf(h.id); return j?.state === 'pending' ? j : null; }, 'scan reservation', 240000, 3000);
+  return `no job while disabled; after enable the scan created one: due ${job.dueAt} (resetAt ${job.resetAt})`;
+});
 
 // ==========================================================================================
 const ctx = { step, note, results, rpc, client: () => client, mkAgent, hit, setModel, setUsage, jobOf, editJob, readJobs, readHistory, writeJobs, continues, writeSettings, waitFor, sleep, origin, out, jobsFile, historyFile, root, API, DEFAULT_MARK, timelineText, home };
@@ -401,22 +435,7 @@ try {
     });
     if (!MIN) {
       // 9 (settings file edit; the UI switch is exercised in the UI phase where there is a browser)
-      const f = await mkAgent('Provider off', 'claude-sub');
-      await step(9, S, 'turning the provider off cancels its pending reservations (settings file edit)', async () => {
-        await hit(f, S);
-        await writeSettings('providers', 2, { disabledProviders: ['claude-sub'] });
-        let how = 'immediately (settings change picked up)';
-        const immediate = await waitFor(async () => (await readHistory()).some((h) => h.agentId === f.id && h.reason === 'provider_off'), 'provider_off now', 25000, 1000).catch(() => null);
-        if (!immediate) {
-          how = 'not pushed on a file edit (Paseo only notifies subscribers for writes through its settings API); cancelled by the due-time check instead';
-          await editJob(f.id, { resetAt: iso(Date.now() - 120000), dueAt: iso(Date.now() - 60000) });
-          await waitFor(async () => (await readHistory()).some((h) => h.agentId === f.id && h.reason === 'provider_off'), 'provider_off at due time', 200000, 1000);
-        }
-        const sent = continues(S).length;
-        await writeSettings('providers', 2, { disabledProviders: [] });
-        assert.equal(await jobOf(f.id), undefined);
-        return `history canceled/provider_off, job gone, nothing sent: ${how}`;
-      });
+      await checkProviderOff(S, 'claude-sub', 'Provider off');
       // 10
       const g = await mkAgent('New message');
       await step(10, S, 'a new user message cancels the reservation', async () => {
@@ -428,21 +447,7 @@ try {
       });
       if (UI) { const m = await import(pathToFileURL(join(here, 'ui-steps.mjs'))); await m.uiPhase(ctx); }
       // 11
-      await step(11, S, 'startup scan: agent stopped at a limit while the plugin was disabled gets a reservation after enabling', async () => {
-        const h = await mkAgent('Missed while disabled');
-        await client.disablePlugin(PLUGIN);
-        assert.match(paseo('plugin', 'ls', PLUGIN), /usage-auto-resume\s+\S+\s+no/, 'plugin not disabled');
-        await setModel('claude', { mode: 'limit', resetInSec: 4 * 3600 });
-        await client.sendAgentMessage(h.id, 'Work on the task.');
-        await waitFor(async () => (await agentStatus(h.id)) !== 'running' && (await timelineText(h.id)).some((l) => /limit/i.test(l)), 'agent stopped at the limit', 240000, 1000);
-        await sleep(3000);
-        await setModel('claude', { mode: 'text' });
-        assert.equal(await jobOf(h.id), undefined, 'reservation made while plugin disabled');
-        await client.enablePlugin(PLUGIN);
-        // A connected app polls the plugin's list RPC, which hands the plugin the Paseo API the scan needs.
-        const job = await waitFor(async () => { await rpc('auto-resume.list').catch(() => {}); const j = await jobOf(h.id); return j?.state === 'pending' ? j : null; }, 'scan reservation', 240000, 3000);
-        return `no job while disabled; after enable the scan created one: due ${job.dueAt} (resetAt ${job.resetAt})`;
-      });
+      await checkStartupScan(S, 'claude', 'Missed while disabled');
     }
   }
 
@@ -452,7 +457,7 @@ try {
     const a = await mkAgent(`${S} limit`, S);
     let job;
     await step(3, S, `real ${S} CLI limit -> reservation at stated reset + 2 min`, async () => {
-      job = await hit(a, S, S === 'codex' ? { mode: 'limit', resetInSec: resetSec } : { mode: 'limit', resetText: '2h' });
+      job = await hit(a, S, limitWith(S, resetSec));
       const lim = allRequests().filter((r) => r.api === API[S] && r.mode === 'limit').at(-1);
       const expected = Date.parse(lim.t) + resetSec * 1000;
       const text = (await timelineText(a.id)).filter((l) => /limit|quota|429/i.test(l)).join(' | ');
@@ -481,7 +486,7 @@ try {
     });
     const b = await mkAgent(`${S} tick`, S);
     await step(7, S, 'tick sends exactly one continue to the same agent', async () => {
-      await hit(b, S, S === 'codex' ? { mode: 'limit', resetInSec: resetSec } : { mode: 'limit', resetText: '2h' });
+      await hit(b, S, limitWith(S, resetSec));
       const n0 = await agentCount(), sent0 = continues(S).length;
       await editJob(b.id, { resetAt: iso(Date.now() - 120000), dueAt: iso(Date.now() - 60000) });
       await waitFor(async () => continues(S).length === sent0 + 1, 'tick continue', 240000, 1000);
@@ -492,6 +497,10 @@ try {
       assert.ok((await timelineText(b.id)).join('\n').includes(DEFAULT_MARK));
       return `1 continue, agent count ${n0} -> ${await agentCount()}, continue in the same agent timeline, row cleared`;
     });
+    if (!MIN) {
+      await checkProviderOff(S, S, `${S} provider off`);
+      await checkStartupScan(S, S, `${S} missed while disabled`);
+    }
   }
 
   // ---- 12. history RPC --------------------------------------------------------------------

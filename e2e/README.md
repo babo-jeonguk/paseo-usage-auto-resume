@@ -43,7 +43,7 @@ node e2e/e2e.mjs --label linux-0.13.2 --cli /tmp/paseo-0.13.2/node_modules/@getp
 | `--suites` | Any of `claude,codex,antigravity` |
 | `--from`, `--to` | Release installed first and rolled back to (default `v1.2.2`), and the ref under test (default `main`) |
 | `--source` | Plugin git source (default `git:babo-jeonguk/paseo-usage-auto-resume`) |
-| `--min 1` | Skips items 9–11 |
+| `--min 1` | Skips items 9–11 and the `--ui 1` phase |
 | `--ui 1` | Also runs `ui-steps.mjs` in the web app |
 | `--hold 1` | Pauses after item 3 until `<root>/release` exists |
 | `--path` | Extra `PATH` entries, such as the Windows npm prefix, MinGit and agy |
@@ -71,8 +71,9 @@ Each run writes `results.json` (one row per checked item), `daemon.log` and `mod
 | 12 | Recent activity and history |
 | 13 | Rolling back to `--from` |
 | 14 | No plugin errors in the daemon log |
+| 15 | The Auto Resume screen: day sections, a row's +10m, Change time, extra instructions, Open and switch, and Turn all off/on (`--ui 1`) |
 
-Codex and Antigravity run items 3, 6 and 7. The fake-request total and the refused connections are printed in the final `SUMMARY` line.
+Codex and Antigravity run items 3, 6, 7, 9 and 11. The fake-request total and the refused connections are printed in the final `SUMMARY` line.
 
 Time is advanced through the reschedule RPC, or by editing `jobs.json` to a past due time and letting the real tick fire. The tick cannot move a reservation earlier than its reset plus two minutes.
 
