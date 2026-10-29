@@ -293,10 +293,9 @@ test("a long answer followed by a separate Claude limit notice schedules and res
   await resumer.tick();
   await resumer.tick();
   assert.equal(sent.length, 1);
-  assert.match(sent[0]!.text, /resume or messaging tools/i);
-  assert.match(sent[0]!.text, /unfinished subagent.*usage limit/i);
-  assert.match(sent[0]!.text, /existing.*(?:ID|name)/i);
-  assert.match(sent[0]!.text, /completed work.*running subagents/i);
+  assert.match(sent[0]!.text, /subagent that stopped.*existing ID/i);
+  assert.match(sent[0]!.text, /saved progress/i);
+  assert.match(sent[0]!.text, /finished work.*still running/i);
 });
 
 test("startup scan also detects a separate limit notice after a long Claude answer", async () => {

@@ -6,6 +6,10 @@ test("without a custom prompt or a note, the built-in prompt is sent alone", () 
   assert.equal(continuePrompt({ custom: null }), DEFAULT_CONTINUE_PROMPT);
 });
 
+test("the built-in prompt does not talk about the limit, so the agent's answer to it does not echo one", () => {
+  assert.doesNotMatch(DEFAULT_CONTINUE_PROMPT, /limit|usage|reset/i);
+});
+
 test("a custom prompt replaces the built-in one", () => {
   assert.equal(continuePrompt({ custom: "Keep going." }), "Keep going.");
 });

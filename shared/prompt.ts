@@ -1,11 +1,9 @@
 /** The continue sent when the user has not written their own; Settings shows it as the starting text. */
 export const DEFAULT_CONTINUE_PROMPT =
-  "The provider usage limit should now be reset. Continue the unfinished work from the previous turn. " +
-  "Review the latest conversation, workspace state, and subagent/task status before acting. " +
-  "Use the provider's existing subagent resume or messaging tools to continue each unfinished subagent that stopped because of the usage limit, " +
-  "using its existing agent ID/name and prior instructions. Tell it to continue from its saved progress. " +
-  "Do not duplicate completed work or interrupt running subagents, and honor any user cancellation or pause. " +
-  "If an existing subagent cannot be resumed, report that blocker instead of silently abandoning its unfinished task.";
+  "Continue the unfinished work from where it stopped. " +
+  "Resume each subagent that stopped partway with its existing ID, and have it continue from its saved progress. " +
+  "Don't redo finished work, interrupt anything still running, or restart what the user canceled. " +
+  "If a subagent can't be resumed, say so.";
 
 /** Longest note for one reservation. */
 export const NOTE_MAX_CHARS = 2000;
