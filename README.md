@@ -23,7 +23,7 @@ Actual Paseo web interface with sample reservations. Each row shows what is sche
 | --- | --- |
 | Codex | Checks that your ChatGPT subscription has usage left. |
 | Claude | Checks that your claude.ai subscription has usage left. |
-| Antigravity | Follows the limit message; usage can't be checked. |
+| Antigravity | Checks the model's quota when available; otherwise follows the limit message. |
 
 Agents billed through an API key or another billing route are not resumed.
 

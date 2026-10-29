@@ -150,8 +150,8 @@ test("an uncaptured session is checked as the daemon and provider configuration 
   }
 });
 
-test("Antigravity follows the notice without probing agy, and its API routes stay excluded", async () => {
-  const read = createSubscriptionReader({ run: async () => { throw new Error("must not run agy"); } });
+test("Antigravity preserves its fallback when agy is unavailable, and its API routes stay excluded", async () => {
+  const read = createSubscriptionReader({ run: async () => { throw new Error("agy unavailable"); } });
   assert.deepEqual(await read(api(), agent("antigravity", "gemini-pro"), "antigravity", at, captureLaunch({ env: {} })), { auth: "subscription", status: "ready" });
   assert.equal((await read(api(), agent("antigravity", "gemini-pro"), "antigravity", at, captureLaunch({ env: { GEMINI_API_KEY: "key" } }))).auth, "api");
 });

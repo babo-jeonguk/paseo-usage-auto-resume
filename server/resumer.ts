@@ -11,6 +11,7 @@ import { captureLaunch, createSubscriptionReader, subscriptionModel, unknownChec
 import { RETRY_DELAYS_MS, rescheduleWindow } from "../shared/schedule";
 import { DEFAULT_PROVIDER_SETTINGS, DEFAULT_RESUME_SETTINGS, isProviderOn, type ProviderSettings, type ResumeSettings, type UsageSource } from "../shared/settings";
 import { cliFor } from "./providers";
+import { isExhausted } from "./quota";
 import { continuePrompt, DEFAULT_CONTINUE_PROMPT } from "../shared/prompt";
 
 /** Kept for callers that compare against the built-in prompt; sends go through `continuePrompt`. */
@@ -30,7 +31,7 @@ function log(message: string): void {
 const titleOf = (agent: Pick<PaseoAgent, "title">): string | null => agent.title?.trim() || null;
 
 function exhaustedReset(check: SubscriptionCheck, at: Date): Date | null {
-  const times = (check.windows ?? []).filter((w) => w.usedPct >= 100).map((w) => w.resetAt ? Date.parse(w.resetAt) : NaN);
+  const times = (check.windows ?? []).filter(isExhausted).map((w) => w.resetAt ? Date.parse(w.resetAt) : NaN);
   // Every applicable exhausted window must have a known future reset.
   return times.length && times.every((time) => Number.isFinite(time) && time > at.getTime()) ? new Date(Math.max(...times)) : null;
 }

@@ -1,0 +1,23 @@
+{
+  "status": "SUCCESS",
+  "num_turns": 0,
+  "conversation_id": "",
+  "command": {
+    "name": "usage",
+    "data": {
+      "groups": [
+        { "name": "Gemini Models", "buckets": [
+          { "id": "gemini-weekly", "window": "weekly", "remaining_fraction": 0.994, "reset_time": "2026-11-01T15:15:44Z" },
+          { "id": "gemini-5h", "window": "5h", "remaining_fraction": 0.998, "reset_time": "2026-10-28T09:43:56Z" }
+        ] },
+        { "name": "Claude and GPT models", "buckets": [
+          { "id": "3p-weekly", "window": "weekly", "remaining_fraction": 0, "reset_time": "2026-11-01T15:15:44Z" },
+          { "id": "3p-5h", "window": "5h", "remaining_fraction": 0.5, "reset_time": "2026-10-28T09:43:56Z" }
+        ] },
+        { "name": "Gemini 4 Argon", "buckets": [
+          { "id": "gemini-argon-wtu-weekly", "window": "weekly", "remaining_fraction": 0.555, "reset_time": "2026-10-31T00:58:30Z" }
+        ] }
+      ]
+    }
+  }
+}

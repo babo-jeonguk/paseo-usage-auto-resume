@@ -7,6 +7,8 @@ import type { UsageSource } from "../shared/settings";
 import { providerLaunch } from "./usage";
 import { createClaudeCredentialReader, type ClaudeCredentialReader } from "./claude-credentials";
 import { CLI_STOP_GRACE_MS, cliHome, runCli, spawnCli, stopProcessTree } from "./cli-launch";
+import { agyFallback, createAgyUsageReader } from "./agy-usage";
+import { isExhausted, type QuotaWindow } from "./quota";
 
 const TIMEOUT = 15_000;
 const AUTH_ENV = [
@@ -22,7 +24,6 @@ export interface LaunchContext {
   env: Record<string, string>;
   authEnv: Record<string, boolean>;
 }
-export interface QuotaWindow { id: string; usedPct: number; resetAt: string | null }
 export interface SubscriptionCheck {
   auth: "subscription" | "api" | "unknown";
   status: "ready" | "limited" | "unknown";
@@ -58,15 +59,17 @@ export function captureLaunch(request: Pick<PluginSessionOpenRequest, "env">): L
 
 /** Uses native status and read-only endpoints; never requests model turns or token refresh. */
 export function createSubscriptionReader(deps: {
-  run?: (command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }) => Promise<string>;
+  run?: typeof runCli;
+  now?: () => number;
   codex?: (command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }) => Promise<CodexSnapshot>;
   fetch?: typeof fetch;
   readClaudeCredentials?: ClaudeCredentialReader;
 } = {}): SubscriptionReader {
-  const run = deps.run ?? ((command, args, options) => runCli(command, args, { ...options, timeoutMs: TIMEOUT, maxBytes: 2_000_000 }));
+  const run = deps.run ?? runCli;
   const fetchApi = deps.fetch ?? fetch;
   const codex = deps.codex ?? codexSnapshot;
   const readClaudeCredentials = deps.readClaudeCredentials ?? createClaudeCredentialReader();
+  const readAgyUsage = createAgyUsageReader({ run: deps.run, now: deps.now });
 
   const json = async (url: string, headers: Record<string, string>) => {
     const controller = new AbortController();
@@ -90,10 +93,13 @@ export function createSubscriptionReader(deps: {
       // Status probes must not claim a running runtime proxy or inherit a parent Claude session.
       for (const key of Object.keys(env)) if (key.startsWith("RUNTIME_PROXY_") || ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT", "CLAUDE_AGENT_SDK_VERSION"].includes(key)) delete env[key];
       const apiCheck: SubscriptionCheck = { auth: "api", status: "unknown" };
-      // agy reports no account identity and Paseo has no Antigravity usage source, so its agents
-      // follow the notice's stated reset, as v1.2.0 did. Only API routes are excluded.
+      // Stated resets only request identity. agy has none; quota is read when planning without
+      // a reset and before delivery. The quota reader turns its own failures into the existing
+      // notice behavior; a route that cannot be classified waits for verification like any other.
       if (source === "antigravity") {
-        return env.GEMINI_API_KEY || env.AGY_ADC_AUTH || env.GOOGLE_GEMINI_BASE_URL ? apiCheck : { auth: "subscription", status: "ready" };
+        if (env.GEMINI_API_KEY || env.AGY_ADC_AUTH || env.GOOGLE_GEMINI_BASE_URL) return apiCheck;
+        if (mode === "identity") return agyFallback();
+        return await readAgyUsage({ command: runtime.command, cwd: agent.cwd, env }, subscriptionModel(agent), agent.id);
       }
       const model = subscriptionModel(agent);
       const options = { cwd: agent.cwd, env };
@@ -134,7 +140,7 @@ export function createSubscriptionReader(deps: {
 
       if (env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_BASE_URL || env.CLAUDE_CODE_OAUTH_TOKEN ||
         [env.CLAUDE_CODE_USE_BEDROCK, env.CLAUDE_CODE_USE_VERTEX, env.CLAUDE_CODE_USE_FOUNDRY].some((v) => v && v !== "0" && v !== "false")) return apiCheck;
-      const status = record(JSON.parse(await run(binary, ["auth", "status", "--json"], options)));
+      const status = record(JSON.parse(await run(binary, ["auth", "status", "--json"], { ...options, timeoutMs: TIMEOUT, maxBytes: 2_000_000 })));
       if (status.authMethod !== "claude.ai" || status.apiProvider !== "firstParty") {
         return status.loggedIn === true ? apiCheck : unknownCheck();
       }
@@ -166,7 +172,7 @@ function jwt(value: unknown): Record<string, unknown> {
 }
 function rolling(windows: QuotaWindow[], identity: string): SubscriptionCheck {
   if (!windows.length) return { auth: "subscription", status: "unknown", identity };
-  return { auth: "subscription", status: windows.some((w) => w.usedPct >= 100) ? "limited" : "ready", identity, windows };
+  return { auth: "subscription", status: windows.some(isExhausted) ? "limited" : "ready", identity, windows };
 }
 
 /**
