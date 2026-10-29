@@ -125,7 +125,8 @@ export function createResumer(options: {
     catch { return unknownCheck(); }
   };
 
-  function rememberSession(request: PluginSessionOpenRequest): void {
+  // Only the fields read here, so the request type can grow across Paseo versions.
+  function rememberSession(request: Pick<PluginSessionOpenRequest, "agentId" | "purpose" | "env">): void {
     if (request.purpose === "interactive") launches.set(request.agentId, captureLaunch(request));
   }
 
