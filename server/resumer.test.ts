@@ -13,6 +13,7 @@ import { createHistoryStore, type HistoryStore } from "./history";
 import { DEFAULT_PROVIDER_SETTINGS, DEFAULT_RESUME_SETTINGS, type ProviderSettings, type ResumeSettings } from "../shared/settings";
 import { continuePrompt } from "../shared/prompt";
 import { accountEmail } from "./usage";
+import { agyFallback, agyUsage } from "./agy-usage";
 import { createSubscriptionReader, unknownCheck, type SubscriptionCheck, type SubscriptionReader } from "./subscription";
 
 const START = new Date("2026-10-06T03:00:00.000Z");
@@ -185,7 +186,8 @@ function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOption
     },
   } as unknown as ResumerApi;
   const readSubscription: SubscriptionReader = options.readSubscription ?? (async (_api, agent, source, _at, _launch, mode) => {
-    if (source === "antigravity") return { auth: "subscription", status: "ready", identity: "fake-agy-account-model" };
+    // agy gives no account identity; without a quota read this is what its checks return.
+    if (source === "antigravity") return agyFallback();
     const email = await accountEmail((await api.config.get()).config, agent.provider, source);
     if (!email) return unknownCheck();
     const identity = `${source}:${email}`;
@@ -1413,8 +1415,8 @@ test("Antigravity limit without a reset in the notice retries the continue in 15
   assert.equal(job?.retries, 1);
 });
 
-test("Antigravity continues at the notice's reset even though agy reports no account", async () => {
-  const readSubscription = createSubscriptionReader({ run: async () => { throw new Error("must not run agy"); } });
+test("Antigravity continues at the notice's reset when its quota cannot be read", async () => {
+  const readSubscription = createSubscriptionReader({ run: async () => { throw new Error("agy unavailable"); } });
   const { api, sent, resumer } = await setup({ g1: { provider: "antigravity" } }, { readSubscription });
   await resumer.onTurnEnded(turnEnded("g1", "antigravity", failed(ANTIGRAVITY_LIMIT)), api);
   const [job] = await store.list();
@@ -2294,7 +2296,7 @@ test("Resume now that loses to a tick reports the continue as sending, or change
   }
 });
 
-test("Resume now sends an Antigravity continue before the notice's reset without reading usage", async () => {
+test("Resume now sends an Antigravity continue before the notice's reset when quota is unavailable", async () => {
   const usage = [{
     providerId: "antigravity", displayName: `Antigravity (${ANTIGRAVITY_EMAIL})`,
     windows: [{ id: "gemini-5h", label: "Session", usedPct: 100, resetsAt: "2026-10-06T09:00:00.000Z" }],
@@ -2307,6 +2309,40 @@ test("Resume now sends an Antigravity continue before the notice's reset without
   assert.deepEqual(await resumer.resumeNow(api, "g1", await pinOf(store, "g1", job!.dueAt)), { result: "sent" });
   assert.equal(sent.length, 1);
   assert.equal(usageReads(), 0);
+});
+
+test("Antigravity probes only without a stated reset, then holds tick and Resume now for the weekly bucket", async () => {
+  let probes = 0;
+  const weekly = "2026-10-09T03:00:00.000Z";
+  const usage = { status: "SUCCESS", num_turns: 0, command: { name: "usage", data: { groups: [{ buckets: [
+    { id: "gemini-5h", remaining_fraction: 0.5, reset_time: "2026-10-06T05:00:00Z" },
+    { id: "gemini-weekly", remaining_fraction: 0, reset_time: weekly },
+  ] }] } } };
+  const readSubscription: SubscriptionReader = async (_api, _agent, _source, _at, _launch, mode) => {
+    if (mode === "identity") return agyFallback();
+    probes++;
+    return agyUsage(usage, "gemini-3.8-flash-high");
+  };
+  const { api, sent, resumer } = await setup({ g1: { provider: "antigravity" }, g2: { provider: "antigravity" } }, { readSubscription });
+  await resumer.onTurnEnded(turnEnded("g1", "antigravity", failed(ANTIGRAVITY_LIMIT)), api);
+  assert.equal(probes, 0, "stated reset schedules without a usage probe");
+  const original = (await store.list()).find((job) => job.agentId === "g1")!;
+  assert.deepEqual(await resumer.resumeNow(api, "g1", { id: original.id, dueAt: original.dueAt }), { result: "used_up", until: weekly });
+  assert.deepEqual((await store.list()).find((job) => job.agentId === "g1"), original, "blocked Resume now does not change the reservation");
+  clock = new Date(original.dueAt);
+  await resumer.tick();
+  assert.equal(sent.length, 0);
+  assert.equal((await store.list()).find((job) => job.agentId === "g1")?.dueAt, "2026-10-09T03:02:00.000Z");
+  await resumer.onTurnEnded(turnEnded("g2", "antigravity", failed("Individual quota reached.")), api);
+  assert.equal((await store.list()).find((job) => job.agentId === "g2")?.dueAt, "2026-10-09T03:02:00.000Z");
+  clock = new Date("2026-10-09T03:02:00Z");
+  await resumer.tick();
+  assert.equal(sent.length, 0, "a stale reset does not establish recovery");
+  assert.equal((await store.list()).find((job) => job.agentId === "g1")?.dueAt, "2026-10-09T03:17:00.000Z");
+  usage.command.data.groups[0]!.buckets[1]!.remaining_fraction = 0.5;
+  clock = new Date("2026-10-09T03:17:00Z");
+  await resumer.tick();
+  assert.equal(sent.length, 2, "both agents resume once their applicable windows recover");
 });
 
 test("a limit hit again after Resume now is reserved like one after an automatic continue", async () => {
