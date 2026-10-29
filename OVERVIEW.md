@@ -1,4 +1,4 @@
-Usage Auto Resume asks the same Codex, Claude, or Antigravity agent to continue its unfinished work once a usage limit resets, so you don't have to come back just to send "continue". For Codex and Claude it first checks that your subscription has usage left.
+Usage Auto Resume asks the same Codex, Claude, or Antigravity agent to continue its unfinished work once a usage limit resets, so you don't have to come back just to send "continue". For Codex and Claude it first checks that your subscription has usage left. Antigravity also checks the model's quota when available, and otherwise follows the limit message.
 
 The Auto Resume screen in the sidebar lists upcoming resumes by day, with their conversation, provider and workspace. Skip a resume, delay it, pick another time, add instructions for that continue, or turn every shown resume off at once. Recent activity shows how resumes ended over the last 24 hours. A conversation with a resume also gets an Auto Resume button next to its message box, to manage it in place or resume right away when a limit lifts early.
 

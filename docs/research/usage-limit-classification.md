@@ -180,9 +180,9 @@ Paseo가 사용하는 것은 Google 공식 Antigravity CLI이며 이번 설치�
 | 버전 | 공식 릴리스 노트에서 확인된 차이 |
 | --- | --- |
 | 1.0.3 | AI credit overage 및 credit panel 도입 |
-| 1.1.11 | print-mode `/usage`, `/quota`, `/credits`가 모델 호출 없는 조회로 처리됨 |
+| 1.1.11 | print-mode `/usage`, `/quota`, `/credits`가 모델 호출 없는 조회로 처리됨; 나머지 interactive 전용 slash 명령은 프롬프트로 넘기지 않고 명시적으로 거부 |
+| 1.1.12 | print-mode `/permissions`, `/hooks`, `/help`, `/changelog`, `/config` 읽기 전용 응답 추가 |
 | 1.1.13 | 직접 Gemini API 키 경로 도입; banner/help에 credential 표시 |
-| 1.1.15 | print-mode `/help`, `/config` 읽기 전용 지원 |
 | 1.2.1 | transient 오류의 내부 재시도 추가 |
 | 1.2.10 | headless partial failure의 exit 3/`AGY_ERROR` 처리 |
 | 1.2.12–13 | API daily quota·spend cap·선불 소진 등에 대한 부적절한 재시도 수정 |
@@ -196,6 +196,14 @@ agy 1.3.6에서 실제 API 선불 잔액 소진이 최종적으로 어떤 한 �
 
 1.3.6에서 별도 `agy -p '/usage' --output-format json`은 문서상 모델 호출 없는 quota 조회이고 `/help`는 credential 분류의 보조 수단이다. 이번 조사에서는 이 조회를 실행하지 않았다. **구버전은 slash 문자열이 모델 프롬프트가 될 수 있으므로 반드시 버전 검사가 선행되어야 한다.** Paseo의 stream 프로세스는 `--disable-slash-commands`를 사용하므로 그 세션에 사용자 프롬프트로 보내는 방식과도 구분한다. [G2][G6]
 
+### 2026-10-28 구현 시 재확인
+
+공식 changelog의 `/usage`·`/quota`·`/credits` 비대화형 조회 도입은 **1.1.11**이다. 초기 PR4 핸드오프의 1.1.12 도입 설명과 달라 정정한다. 표에 1.1.15로 적었던 `/help`·`/config` 읽기 전용 응답도 실제로는 1.1.12 항목이어서 바로잡았다(1.1.15는 print mode의 `--input-format stream-json` 도입). 플러그인의 지원 하한은 보수적으로 **1.1.12**를 유지한다. [G2]
+
+별도 핸드오프에 기록된 agy 1.4.8/1.4.9 관찰은 `command.data.groups[].buckets[]`의 `id`, `remaining_fraction`, `reset_time`을 사용하며, `num_turns: 0`, 빈 conversation ID와 토큰 사용량 0을 보고했다. 매 조회에 agy 로그와 conversation-summary metadata 갱신이 관찰됐다. 이 관찰은 API 계약이나 파일 무변경 보장이 아니다. 테스트의 `agy-usage-synthetic.json`은 이 구조를 바탕으로 만든 **합성 소진 응답**이며 실제 소진 실측값이 아니다. 공식 plans 문서는 Argon 전용 bucket 부재 시의 공유 bucket 매핑을 확정하지 않으므로 추론하지 않는다. [G3]
+
+구현 중 이 호스트에서 agy **1.4.9**의 `--version`과 별도 `/usage`를 다시 실행했다. 합계 약 **9.4초**, `num_turns: 0`, `usage.total_tokens: 0`, 빈 conversation ID와 세 모델 그룹을 확인했다. `server/fixtures/agy-usage-1.4.9.json`은 이 응답에서 quota 필드와 읽기 전용 판정 필드만 추린 실측 fixture다. 실제 소진 응답과 Windows 실행은 이번 확인에 포함하지 않았다.
+
 ## 4. 현재 Paseo와 플러그인의 정보 손실
 
 설치된 Paseo 0.11.2와 이 플러그인을 읽어 확인했다. [P1][P2][P3][L1]
@@ -204,7 +212,7 @@ agy 1.3.6에서 실제 API 선불 잔액 소진이 최종적으로 어떤 한 �
 - Codex 어댑터의 turn 실패는 주로 `errorMessage` 문자열을 전달한다. raw quota 원인·active bucket·인증 메타데이터 전체가 lifecycle 오류로 보존되지는 않는다.
 - Codex usage source는 OAuth store에서 REST usage를 읽어 quota window를 정규화하지만, 응답 스키마가 `rate_limit_reached_type`과 spend-control readiness 등의 정보를 보존하지 않는다. `providers.listUsage()`의 window만으로 원래 차단 이유를 재구성할 수 없다.
 - Claude 어댑터는 진단에서 같은 provider environment로 `claude auth status`를 실행하는 수단이 있다. 그러나 이는 진단 문자열이지 Auto Resume의 정형화된 세션 인증 필드가 아니다. 확인한 stream mapping은 assistant content를 timeline으로 옮기며 최신 quota/auth 필드 전체를 전달하지 않는다.
-- agy 어댑터는 init의 model을 보존하지만 실제 인증 필드는 보존하지 않는다. result ERROR도 대부분 문자열 failure로 전달한다. 현재 플러그인은 Antigravity usage source가 없어서 `usage.ts`에서 조회를 건너뛴다.
+- agy 어댑터는 init의 model을 보존하지만 실제 인증 필드는 보존하지 않는다. result ERROR도 대부분 문자열 failure로 전달한다. 당시 플러그인은 Antigravity usage source가 없어서 `usage.ts`에서 조회를 건너뛰었다. 현재 구현은 별도 read-only CLI probe로 모델별 쿼터를 읽으며, provider의 turn 결과 해석은 바꾸지 않는다.
 - 플러그인의 `usage.ts`는 현재 계정 이메일로 legacy 사용량 항목을 찾는다. 같은 이메일의 다른 워크스페이스·동일 계정의 다른 meter를 구분하는 데 충분하지 않다.
 - `resumer.ts`는 사용량을 읽지 못한 경우와 소진 창이 없는 경우를 `null`로 합치며, 예약 시각에 조회가 실패해도 continue를 보낼 수 있다. 새 credit-blocked 경로에 이 동작을 그대로 적용하면 안 된다.
 
