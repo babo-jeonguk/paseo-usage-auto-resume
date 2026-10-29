@@ -93,8 +93,8 @@ test("version gate precedes usage and both commands run in a disposable cwd with
       cwd = options.cwd;
       assert.equal(options.maxBytes, 200_000);
       calls.push(args);
-      if (args[0] === "--version") { assert.equal(options.timeoutMs, 5_000); return version; }
-      assert.equal(options.timeoutMs, 20_000);
+      if (args[0] === "--version") { assert.equal(options.timeoutMs, 15_000); return version; }
+      assert.equal(options.timeoutMs, 60_000);
       return JSON.stringify(fixture);
     } });
     const check = await read(launchOf({}), flash, "a");

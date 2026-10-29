@@ -7,6 +7,10 @@ import { isExhausted, type QuotaWindow } from "./quota";
 import type { SubscriptionCheck } from "./subscription";
 
 const CACHE_MS = 60_000;
+// Sized for a busy host, where agy 1.4.10 took 6 s for --version and 33 s for /usage; a hung
+// agy is still ended. Waiting longer only delays a continue, while a cut-off probe loses the hold.
+const VERSION_TIMEOUT_MS = 15_000;
+const USAGE_TIMEOUT_MS = 60_000;
 const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
@@ -125,8 +129,8 @@ export function createAgyUsageReader(deps: {
     try {
       cwd = await mkdtemp(join(tmpdir(), "paseo-agy-usage-"));
       const options = { cwd, env, maxBytes: 200_000 };
-      if (!supportedVersion(await run(binary, ["--version"], { ...options, timeoutMs: 5_000 }))) return { reason: "unsupported_version" };
-      const usage: unknown = JSON.parse(await run(binary, ["-p", "/usage", "--output-format", "json"], { ...options, timeoutMs: 20_000 }));
+      if (!supportedVersion(await run(binary, ["--version"], { ...options, timeoutMs: VERSION_TIMEOUT_MS }))) return { reason: "unsupported_version" };
+      const usage: unknown = JSON.parse(await run(binary, ["-p", "/usage", "--output-format", "json"], { ...options, timeoutMs: USAGE_TIMEOUT_MS }));
       if (ranModelTurn(usage)) {
         disabled.add(key);
         return { reason: "model_turn_detected_probe_disabled" };
