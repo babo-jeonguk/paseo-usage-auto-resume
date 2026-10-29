@@ -237,6 +237,32 @@ const checkStartupScan = (S, provider, title) => step(11, S, 'startup scan: agen
   return `no job while disabled; after enable the scan created one: due ${job.dueAt} (resetAt ${job.resetAt})`;
 });
 
+// A stopped daemon closes every agent; Paseo 0.14 also closes one idle for an hour, which a run cannot wait for.
+const restartDaemon = async () => {
+  await client.close().catch(() => {});
+  await paseo('daemon', 'stop').catch(() => {});
+  await waitFor(async () => daemon.exitCode !== null, 'daemon exit', 60000, 500);
+  await startDaemon();
+};
+const checkClosedAgent = (S, provider, title) => step(16, S, 'a reservation whose agent a daemon restart closed is continued at its due time', async () => {
+  const k = await mkAgent(title, provider);
+  await hit(k, S, limitWith(S, 4 * 3600));
+  await restartDaemon();
+  // fetchAgent reads the stored record; reading the timeline here would reopen the agent.
+  const status = await agentStatus(k.id);
+  assert.equal(status, 'closed', 'agent status after the restart');
+  const sent0 = continues(S).length;
+  await editJob(k.id, { resetAt: iso(Date.now() - 120000), dueAt: iso(Date.now() - 60000) });
+  // The list RPC hands the restarted plugin the Paseo API its tick needs.
+  await waitFor(async () => { await rpc('auto-resume.list').catch(() => {}); return continues(S).length === sent0 + 1; }, 'continue to the closed agent', 240000, 3000);
+  await sleep(6000);
+  assert.equal(continues(S).length, sent0 + 1, 'more than one continue');
+  assert.equal((await readHistory()).find((h) => h.agentId === k.id && h.outcome !== 'continued')?.reason, undefined, 'canceled instead');
+  assert.ok((await readHistory()).some((h) => h.agentId === k.id && h.outcome === 'continued'), 'history continued');
+  assert.ok((await timelineText(k.id)).join('\n').includes(DEFAULT_MARK), 'continue not in the same agent timeline');
+  return `status ${status} after the restart; 1 continue reached the model in the same agent's timeline, history continued`;
+});
+
 // ==========================================================================================
 const ctx = { step, note, results, rpc, client: () => client, mkAgent, hit, setModel, setUsage, jobOf, editJob, readJobs, readHistory, writeJobs, continues, writeSettings, waitFor, sleep, origin, out, jobsFile, historyFile, root, API, DEFAULT_MARK, timelineText, home };
 try {
@@ -456,6 +482,8 @@ try {
       if (UI) { const m = await import(pathToFileURL(join(here, 'ui-steps.mjs'))); await m.uiPhase(ctx); }
       // 11
       await checkStartupScan(S, 'claude', 'Missed while disabled');
+      // 16
+      await checkClosedAgent(S, 'claude', 'Closed by a restart');
     }
   }
 
@@ -508,6 +536,7 @@ try {
     if (!MIN) {
       await checkProviderOff(S, S, `${S} provider off`);
       await checkStartupScan(S, S, `${S} missed while disabled`);
+      await checkClosedAgent(S, S, `${S} closed by a restart`);
     }
   }
 
