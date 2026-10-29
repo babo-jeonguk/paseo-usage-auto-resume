@@ -241,7 +241,6 @@ const checkStartupScan = (S, provider, title) => step(11, S, 'startup scan: agen
   return `no job while disabled; after enable the scan created one: due ${job.dueAt} (resetAt ${job.resetAt})`;
 });
 
-// Stands in for Paseo 0.14's one-hour idle close, which a run cannot wait for.
 const restartDaemon = async () => {
   await client.close().catch(() => {});
   await paseo('daemon', 'stop').catch(() => {});
@@ -251,6 +250,7 @@ const restartDaemon = async () => {
 const checkClosedAgent = (S, provider, title) => step(16, S, 'a reservation whose agent a daemon restart closed is continued at its due time', async () => {
   const k = await mkAgent(title, provider);
   await hit(k, S, limitWith(S, 4 * 3600));
+  // Stands in for Paseo 0.14's one-hour idle close, which a run cannot wait for.
   await restartDaemon();
   // Reading the timeline here would reopen the agent.
   const status = await agentStatus(k.id);
