@@ -224,14 +224,18 @@ const checkProviderOff = (S, provider, title) => step(9, S, 'turning the provide
 const checkStartupScan = (S, provider, title) => step(11, S, 'startup scan: agent stopped at a limit while the plugin was disabled gets a reservation after enabling', async () => {
   const h = await mkAgent(title, provider);
   await client.disablePlugin(PLUGIN);
-  assert.match(await paseo('plugin', 'ls', PLUGIN), /usage-auto-resume\s+\S+\s+no/, 'plugin not disabled');
-  await setModel(API[S], limitWith(S, 4 * 3600));
-  await client.sendAgentMessage(h.id, 'Work on the task.');
-  await waitFor(async () => (await agentStatus(h.id)) !== 'running' && (await timelineText(h.id)).some((l) => /limit|quota|429/i.test(l)), 'agent stopped at the limit', 240000, 1000);
-  await sleep(3000);
-  await setModel(API[S], { mode: 'text' });
-  assert.equal(await jobOf(h.id), undefined, 'reservation made while plugin disabled');
-  await client.enablePlugin(PLUGIN);
+  try {
+    assert.match(await paseo('plugin', 'ls', PLUGIN), /usage-auto-resume\s+\S+\s+no/, 'plugin not disabled');
+    await setModel(API[S], limitWith(S, 4 * 3600));
+    await client.sendAgentMessage(h.id, 'Work on the task.');
+    await waitFor(async () => (await agentStatus(h.id)) !== 'running' && (await timelineText(h.id)).some((l) => /limit|quota|429/i.test(l)), 'agent stopped at the limit', 240000, 1000);
+    await sleep(3000);
+    assert.equal(await jobOf(h.id), undefined, 'reservation made while plugin disabled');
+  } finally {
+    // A failure here must not leave the plugin off for the items after it.
+    await setModel(API[S], { mode: 'text' });
+    await client.enablePlugin(PLUGIN);
+  }
   // A connected app polls the plugin's list RPC, which hands the plugin the Paseo API the scan needs.
   const job = await waitFor(async () => { await rpc('auto-resume.list').catch(() => {}); const j = await jobOf(h.id); return j?.state === 'pending' ? j : null; }, 'scan reservation', 240000, 3000);
   return `no job while disabled; after enable the scan created one: due ${job.dueAt} (resetAt ${job.resetAt})`;
