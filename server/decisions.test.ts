@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { agentGate, turnAction, type TurnEvent } from "./decisions";
+import { agentGate, turnAction, type Gate, type TurnEvent } from "./decisions";
 import type { PaseoAgent } from "./paseo-types";
 import type { ResumeJob } from "./store";
 
@@ -75,17 +75,26 @@ test("due-time checks 3 to 8 run in the table's order", () => {
   assert.equal(gate(off, agent({ provider: "claude" })), "provider_changed");
   assert.equal(gate(job({ model: "gpt-a" }), agent({ model: "gpt-b" } as Partial<PaseoAgent>)), "model_changed");
   assert.equal(gate(off, agent({ lastUserMessageAt: LATER, status: "running" })), "new_message", "4 comes before a turn");
-  assert.equal(gate(off, agent({ status: "closed" })), "agent_busy");
-  assert.equal(gate(job(), agent({ archivedAt: LATER, lastUserMessageAt: LATER })), "archived", "3 before 4");
-  assert.equal(gate(job(), agent({ lastUserMessageAt: LATER, status: "closed" })), "new_message", "4 before 5");
-  assert.equal(gate(job(), agent({ status: "closed", attentionReason: "permission" })), "agent_busy", "5 before 6");
   assert.equal(gate(off, agent({ status: "initializing" })), "agent_busy");
+  assert.equal(gate(job(), agent({ archivedAt: LATER, lastUserMessageAt: LATER })), "archived", "3 before 4");
+  assert.equal(gate(job(), agent({ lastUserMessageAt: LATER, status: "initializing" })), "new_message", "4 before 5");
+  assert.equal(gate(job(), agent({ status: "initializing", attentionReason: "permission" })), "agent_busy", "5 before 6");
   assert.equal(gate(off, agent({ status: "running", attentionReason: "permission" })), "permission", "6 comes before a turn");
   assert.equal(gate(off, agent({ status: "running" })), "wait", "a reservation turned off waits for the turn too");
   assert.equal(gate(off, agent({ activeTurn: { turnId: "t", startedAt: null } })), "wait");
   assert.equal(gate(off, agent()), "skip");
   assert.equal(gate(off, agent({ status: "error" })), "skip");
   assert.equal(gate(job(), agent()), null);
+});
+
+test("a closed agent is resumed, not canceled: Paseo reopens its saved session on send", () => {
+  assert.equal(agentGate(job(), agent({ status: "closed" }), "auto"), null);
+  assert.equal(agentGate(job({ enabled: false }), agent({ status: "closed" }), "auto"), "skip");
+  assert.equal(agentGate(job(), agent({ status: "closed" }), "manual"), null);
+  const reason = (gate: Gate) => (gate && typeof gate === "object" ? gate.reason : gate);
+  assert.equal(reason(agentGate(job(), agent({ status: "closed", archivedAt: LATER }), "auto")), "archived");
+  assert.equal(reason(agentGate(job(), agent({ status: "closed", lastUserMessageAt: LATER }), "auto")), "new_message");
+  assert.equal(reason(agentGate(job(), agent({ status: "closed", attentionReason: "permission" }), "auto")), "permission");
 });
 
 test("Resume now never skips, and waits for a turn", () => {

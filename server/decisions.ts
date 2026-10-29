@@ -25,6 +25,9 @@ export const ACCOUNT_CHANGED = canceled("account_changed", "account or model cha
 export const API_ROUTE = canceled("api_route", "authentication uses API billing");
 const TURN_FINISHED = canceled("turn_finished", "a turn finished before the scheduled continue");
 
+/** Statuses a continue can be sent in when no turn is running. */
+const RESUMABLE = new Set<PaseoAgent["status"]>(["idle", "error", "closed"]);
+
 /** A turn is in progress. */
 export const inTurn = (agent: PaseoAgent) => !!agent.activeTurn || agent.status === "running";
 
@@ -82,7 +85,9 @@ export function agentGate(job: ResumeJob, agent: PaseoAgent | null, mode: "auto"
   if (agent.provider !== job.provider) return canceled("provider_changed", `provider changed to ${agent.provider}`);
   if (job.model !== undefined && subscriptionModel(agent) !== job.model) return canceled("model_changed", "model changed");
   if (hasNewMessage(agent, job)) return NEW_MESSAGE;
-  if (!inTurn(agent) && agent.status !== "idle" && agent.status !== "error") {
+  // Closed only means the runtime was released, after an idle hour or a daemon shutdown: the
+  // send reopens the saved session. Archiving, checked above, is how the user ends an agent.
+  if (!inTurn(agent) && !RESUMABLE.has(agent.status)) {
     return canceled("agent_busy", `agent is ${agent.status}`);
   }
   if (agent.pendingPermissions.length > 0 || agent.attentionReason === "permission") {
