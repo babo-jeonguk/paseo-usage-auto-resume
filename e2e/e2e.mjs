@@ -8,13 +8,15 @@
 //   [--min 1] [--ui 1] [--hold 1] [--claude <bin>] [--codex <bin>] [--agy <bin>] [--path <extra PATH dirs>]
 // --ui 1 reads Playwright from PW_ROOT and Chromium from CHROME (see ui-steps.mjs).
 import assert from 'node:assert/strict';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { closeSync, existsSync, openSync, readFileSync, appendFileSync } from 'node:fs';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { dirname, join, delimiter } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 import { patchEntry } from './patch-plugin.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -64,6 +66,8 @@ const daemonLog = join(root, 'daemon.log');
 
 // ---- results ------------------------------------------------------------------------------
 const results = [];
+// The longest stall of this process's event loop; anything near 45 s means the harness lost its daemon session (see paseo below).
+const loopDelay = monitorEventLoopDelay({ resolution: 100 }); loopDelay.enable();
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 const step = async (item, suite, name, fn) => {
   try { const ev = await fn(); results.push({ item, suite, ok: true, name, ev: String(ev ?? '') }); log(`OK   [${item}/${suite}] ${name} :: ${ev ?? ''}`); return true; }
@@ -104,7 +108,10 @@ const baseEnv = isWin ? {
 } : { HOME: join(root, 'home'), PATH: [dirname(nodeBin), ...extraPath, '/usr/local/bin', '/usr/bin', '/bin'].join(':') };
 if (!isWin) await mkdir(baseEnv.HOME, { recursive: true });
 const paseoBin = join(cliDir, 'bin', 'paseo');
-const paseo = (...a) => execFileSync(nodeBin, [paseoBin, ...a, '--home', home], { encoding: 'utf8', env: { ...baseEnv, PASEO_HOME: home }, timeout: 240000, windowsHide: true });
+// Must not block: the client below only keeps its session by sending a heartbeat from this event loop, and the daemon
+// closes a socket that sends nothing for 45 s. A CLI call (start + plugin update) under load can take longer than that.
+const run = promisify(execFile);
+const paseo = async (...a) => (await run(nodeBin, [paseoBin, ...a, '--home', home], { encoding: 'utf8', env: { ...baseEnv, PASEO_HOME: home }, timeout: 240000, windowsHide: true })).stdout;
 
 const proxyEnv = { HTTPS_PROXY: `http://127.0.0.1:${proxyPort}`, HTTP_PROXY: `http://127.0.0.1:${proxyPort}`, NO_PROXY: '127.0.0.1,localhost', https_proxy: `http://127.0.0.1:${proxyPort}`, http_proxy: `http://127.0.0.1:${proxyPort}`, no_proxy: '127.0.0.1,localhost' };
 const modelUrl = `http://127.0.0.1:${modelPort}`;
@@ -151,7 +158,7 @@ const startDaemon = async () => {
 };
 const stopAll = async () => {
   await client?.close().catch(() => {});
-  try { paseo('daemon', 'stop'); } catch {}
+  await paseo('daemon', 'stop').catch(() => {});
   await sleep(1500);
   if (daemon && daemon.exitCode === null) {
     if (isWin) { try { execFileSync('taskkill', ['/pid', String(daemon.pid), '/T', '/F'], { stdio: 'ignore' }); } catch {} }
@@ -162,11 +169,11 @@ const stopAll = async () => {
 
 // ---- plugin helpers -----------------------------------------------------------------------
 const rpc = (method, input = {}) => client.invokePluginRpc(PLUGIN, method, input);
-const pluginInfo = () => { const j = JSON.parse(paseo('plugin', 'ls', PLUGIN, '--json')); return Array.isArray(j) ? j.find((p) => p.id === PLUGIN) ?? j[0] : j; };
-const pluginDir = () => { const i = pluginInfo(); return i.path ?? i.directory ?? i.dir; };
-const pluginRevision = () => { const i = pluginInfo(); return i.installation?.currentRevision ?? i.commit ?? i.revision ?? ''; };
+const pluginInfo = async () => { const j = JSON.parse(await paseo('plugin', 'ls', PLUGIN, '--json')); return Array.isArray(j) ? j.find((p) => p.id === PLUGIN) ?? j[0] : j; };
+const pluginDir = async () => { const i = await pluginInfo(); return i.path ?? i.directory ?? i.dir; };
+const pluginRevision = async () => { const i = await pluginInfo(); return i.installation?.currentRevision ?? i.commit ?? i.revision ?? ''; };
 const patchInstalled = async () => {
-  const entry = join(pluginDir(), 'index.server.ts');
+  const entry = join(await pluginDir(), 'index.server.ts');
   await writeFile(entry, patchEntry(await readFile(entry, 'utf8'), usageFile));
   await client.reloadPlugin(PLUGIN);
   await waitFor(async () => (await rpc('auto-resume.list').catch(() => null))?.jobs, 'plugin answering after reload', 90000);
@@ -217,7 +224,7 @@ const checkProviderOff = (S, provider, title) => step(9, S, 'turning the provide
 const checkStartupScan = (S, provider, title) => step(11, S, 'startup scan: agent stopped at a limit while the plugin was disabled gets a reservation after enabling', async () => {
   const h = await mkAgent(title, provider);
   await client.disablePlugin(PLUGIN);
-  assert.match(paseo('plugin', 'ls', PLUGIN), /usage-auto-resume\s+\S+\s+no/, 'plugin not disabled');
+  assert.match(await paseo('plugin', 'ls', PLUGIN), /usage-auto-resume\s+\S+\s+no/, 'plugin not disabled');
   await setModel(API[S], limitWith(S, 4 * 3600));
   await client.sendAgentMessage(h.id, 'Work on the task.');
   await waitFor(async () => (await agentStatus(h.id)) !== 'running' && (await timelineText(h.id)).some((l) => /limit|quota|429/i.test(l)), 'agent stopped at the limit', 240000, 1000);
@@ -242,16 +249,16 @@ try {
 
   // ---- 1. install the older release from GitHub ------------------------------------------------------
   await step(1, 'claude', `install ${OLD_REF} through paseo plugin install (git source + ref)`, async () => {
-    paseo('plugin', 'install', GIT_SOURCE, '--ref', OLD_REF, '--json');
-    const ls = paseo('plugin', 'ls', PLUGIN);
+    await paseo('plugin', 'install', GIT_SOURCE, '--ref', OLD_REF, '--json');
+    const ls = await paseo('plugin', 'ls', PLUGIN);
     assert.match(ls, /usage-auto-resume\s+running/, ls);
-    const rev = pluginRevision();
+    const rev = await pluginRevision();
     assert.ok(rev, 'no revision reported');
     oldRevision = rev;
     assert.deepEqual(await rpc('auto-resume.list'), { jobs: [] });
     const provs = (await rpc('auto-resume.providers')).providers.map((p) => p.id);
     for (const s of suites) assert.ok(provs.includes(s), `${s} not discovered: ${provs}`);
-    const plog = paseo('plugin', 'logs', PLUGIN);
+    const plog = await paseo('plugin', 'logs', PLUGIN);
     assert.doesNotMatch(plog, /error|failed/i, plog.slice(0, 300));
     return `status running, revision ${rev}, providers ${provs.join(',')}, plugin logs clean`;
   });
@@ -290,9 +297,10 @@ try {
       const jobBefore = await jobOf(legacyAgent.id), histBefore = await readFile(historyFile, 'utf8');
       const listBefore = (await rpc('auto-resume.list')).jobs.find((j) => j.agentId === legacyAgent.id);
       assert.ok(listBefore, `${OLD_REF} lists the reservation`);
-      const upd = paseo('plugin', 'update', PLUGIN, '--ref', NEW_REF, '--yes');
+      const upd = await paseo('plugin', 'update', PLUGIN, '--ref', NEW_REF, '--yes');
       assert.match(upd, /updated/, upd);
-      assert.ok(pluginRevision() && pluginRevision() !== oldRevision, 'revision ' + pluginRevision());
+      const rev = await pluginRevision();
+      assert.ok(rev && rev !== oldRevision, 'revision ' + rev);
       await patchInstalled();
       const jobAfter = await jobOf(legacyAgent.id);
       assert.deepEqual(jobAfter, jobBefore, 'job changed by the update');
@@ -300,10 +308,10 @@ try {
       const histAfter = await readFile(historyFile, 'utf8');
       assert.equal(histAfter, histBefore, 'history.json changed by the update');
       assert.ok((await rpc('auto-resume.history')).entries.length >= JSON.parse(histBefore).entries.length, 'PR history RPC reads the earlier entries');
-      return `created on ${OLD_REF} ${seeded ? `(seeded jobs.json: ${OLD_REF} made no reservation on this Paseo)` : '(by the real hook)'}; updated to ${pluginRevision().slice(0, 7)} via plugin update --ref; job + history.json byte-identical, listed by the new version, its history RPC reads the ${JSON.parse(histBefore).entries.length} earlier entries (v1.2.2 itself has no history/resume-now/note RPCs)`;
+      return `created on ${OLD_REF} ${seeded ? `(seeded jobs.json: ${OLD_REF} made no reservation on this Paseo)` : '(by the real hook)'}; updated to ${rev.slice(0, 7)} via plugin update --ref; job + history.json byte-identical, listed by the new version, its history RPC reads the ${JSON.parse(histBefore).entries.length} earlier entries (v1.2.2 itself has no history/resume-now/note RPCs)`;
     });
   } else {
-    paseo('plugin', 'update', PLUGIN, '--ref', NEW_REF, '--yes'); await patchInstalled();
+    await paseo('plugin', 'update', PLUGIN, '--ref', NEW_REF, '--yes'); await patchInstalled();
   }
   if (legacyAgent) { await client.archiveAgent(legacyAgent.id).catch(() => {}); await sleep(1500); }
 
@@ -515,9 +523,10 @@ try {
   await step(13, 'claude', `roll back to ${OLD_REF}: loads and reads the newer data`, async () => {
     await sleep(5000);
     const histBefore = await readFile(historyFile, 'utf8');
-    const upd = paseo('plugin', 'update', PLUGIN, '--ref', OLD_REF, '--yes');
+    const upd = await paseo('plugin', 'update', PLUGIN, '--ref', OLD_REF, '--yes');
     assert.match(upd, /updated/, upd);
-    assert.equal(pluginRevision(), oldRevision, 'back on the revision first installed');
+    const rev = await pluginRevision();
+    assert.equal(rev, oldRevision, 'back on the revision first installed');
     await patchInstalled();
     const jobsBefore = await readFile(jobsFile, 'utf8');
     const list = (await rpc('auto-resume.list')).jobs;
@@ -527,7 +536,7 @@ try {
     await sleep(2000);
     const entriesAfter = JSON.parse(await readFile(historyFile, 'utf8')).entries, entriesBefore = JSON.parse(histBefore).entries;
     assert.deepEqual(entriesAfter.slice(0, entriesBefore.length), entriesBefore, 'history.json entries changed by rollback');
-    return `rev ${pluginRevision().slice(0, 7)} running; list RPC shows ${list.length} reservations from the newer jobs.json (${expectJobs} pending), providers RPC fine, history.json untouched (v1.2.2 has no history RPC)`;
+    return `rev ${rev.slice(0, 7)} running; list RPC shows ${list.length} reservations from the newer jobs.json (${expectJobs} pending), providers RPC fine, history.json untouched (v1.2.2 has no history RPC)`;
   });
 
   // ---- 14. daemon log -------------------------------------------------------------------
@@ -544,14 +553,14 @@ try {
   results.push({ item: 'fatal', suite: '-', ok: false, name: 'harness', ev: String(e?.stack ?? e).slice(0, 800) });
 } finally {
   const reqs = existsSync(modelLog) ? allRequests() : [];
-  const summary = { label, paseoVersion, platform: process.platform, node: process.version, suites, fakeRequestsTotal: reqs.length,
+  const summary = { label, paseoVersion, platform: process.platform, node: process.version, suites, eventLoopMaxMs: Math.round(loopDelay.max / 1e6), fakeRequestsTotal: reqs.length,
     fakeRequestsCounted: reqs.filter((r) => r.counted).length, byApi: Object.fromEntries(['claude', 'codex', 'agy', 'other'].map((k) => [k, reqs.filter((r) => r.api === k).length])),
     proxyBlockedConnects: readFileSync(proxyLog, 'utf8').split('\n').filter(Boolean).length,
     proxyHosts: [...new Set(readFileSync(proxyLog, 'utf8').split('\n').filter(Boolean))].slice(0, 12), results };
   await writeFile(join(out, 'results.json'), JSON.stringify(summary, null, 2));
   await writeFile(join(out, 'daemon.log'), await readFile(daemonLog, 'utf8').catch(() => '')).catch(() => {});
   await writeFile(join(out, 'model.jsonl'), await readFile(modelLog, 'utf8').catch(() => '')).catch(() => {});
-  console.log('SUMMARY ' + JSON.stringify({ label, fake: summary.fakeRequestsTotal, byApi: summary.byApi, blocked: summary.proxyBlockedConnects, hosts: summary.proxyHosts }));
+  console.log('SUMMARY ' + JSON.stringify({ label, loopMaxMs: summary.eventLoopMaxMs, fake: summary.fakeRequestsTotal, byApi: summary.byApi, blocked: summary.proxyBlockedConnects, hosts: summary.proxyHosts }));
   await stopAll();
   console.log('DONE root=' + root);
 }
