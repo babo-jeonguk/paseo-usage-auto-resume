@@ -46,7 +46,7 @@ A stop at a limit makes no reservation while provider settings cannot be read or
 2. The provider is off, or no longer runs a supported CLI: cancel.
 3. The agent is gone or archived, or its provider or model changed: cancel.
 4. A new message: cancel.
-5. The agent is closed or starting: cancel.
+5. The agent is starting: cancel. A closed agent goes on, and the continue reopens its saved session. Paseo closes an agent's runtime when, for example, the daemon stops or crashes, even mid-turn, or, by default from 0.14, the agent has been idle for an hour. A continue whose reopen fails is recorded as could not be sent.
 6. The agent awaits permission or input: cancel.
 7. The agent is in a turn: wait for it to end, without a usage lookup. A reservation that is turned off waits too, so the turn's end decides it.
 8. The reservation is turned off: skip it.
@@ -91,9 +91,9 @@ Settings are per daemon. Hosts upgrading from the earlier one-ID-per-CLI setting
 
 Reservations survive daemon and plugin restarts. Paseo supplies its plugin API inside lifecycle hooks and RPC requests, so due-job checks wait until one of these connects it after startup. A connected app supplies the API through composer directory polling, as does opening **Auto Resume**. A connected daemon continues checking without keeping the app open; the daemon host must stay running and awake.
 
-The startup scan searches up to 200 idle/error agents active in the preceding 12 hours for missed limit stops. Existing persisted reservations can wait longer, including for weekly resets. Codex and Antigravity recovery checks error notices; Claude also checks notices in its latest 20 timeline items, and an agent whose timeline cannot be read is logged and skipped. A missed stop is scheduled unless the agent already has a reservation that is pending or being sent; after a sent continue it counts as one more automatic continue.
+The startup scan searches up to 200 idle/error agents active in the preceding 12 hours for missed limit stops. Existing persisted reservations can wait longer, including for weekly resets. Codex and Antigravity recovery checks error notices; Claude also checks notices in its latest 20 timeline items, and an agent whose timeline cannot be read is logged and skipped. A missed stop is scheduled unless the agent already has a reservation that is pending or being sent; after a sent continue it counts as one more automatic continue. Closed agents are not searched, so a stop is missed when the agent was closed before the plugin started again, as every agent is after a daemon restart.
 
-At session open, the plugin captures non-secret launch paths, credential-store selectors, the OS username used for Keychain lookup, and credential-presence flags. These survive restarts with the reservation. For a session opened before the plugin loaded, account checks use the daemon environment plus provider configuration; environment values added by other plugins at session open are not available. Unrecognized quota shapes and custom launchers with multiple command arguments wait for verification. Known one-command launchers can use native account/status protocols.
+At session open, the plugin captures non-secret launch paths, credential-store selectors, the OS username used for Keychain lookup, and credential-presence flags. These survive restarts with the reservation. For a session opened before the plugin loaded, account checks use the daemon environment plus provider configuration; environment values added by other plugins at session open are not available. Unrecognized quota shapes and custom launchers with multiple command arguments wait for verification. Known one-command launchers can use native account/status protocols. Because the plugin reads session opens, Paseo 0.14 and later reopen the session of each open agent before its next prompt whenever the plugin starts, stops or reloads, including on install and update. A continue whose reopen fails is recorded as could not be sent.
 
 ## Data access and storage
 

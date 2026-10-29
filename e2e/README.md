@@ -43,7 +43,7 @@ node e2e/e2e.mjs --label linux-0.13.2 --cli /tmp/paseo-0.13.2/node_modules/@getp
 | `--suites` | Any of `claude,codex,antigravity` |
 | `--from`, `--to` | Release installed first and rolled back to (default `v1.2.2`), and the ref under test (default `main`) |
 | `--source` | Plugin git source (default `git:babo-jeonguk/paseo-usage-auto-resume`) |
-| `--min 1` | Skips items 9–11 and the `--ui 1` phase |
+| `--min 1` | Skips items 9–11, 16 and the `--ui 1` phase |
 | `--ui 1` | Also runs `ui-steps.mjs` in the web app |
 | `--hold 1` | Pauses after item 3 until `<root>/release` exists |
 | `--path` | Extra `PATH` entries, such as the Windows npm prefix, MinGit and agy |
@@ -72,8 +72,9 @@ Each run writes `results.json` (one row per checked item), `daemon.log` and `mod
 | 13 | Rolling back to `--from` |
 | 14 | No plugin errors in the daemon log |
 | 15 | The Auto Resume screen: day sections, a row's +10m, Change time, extra instructions, Open and switch, and Turn all off/on (`--ui 1`) |
+| 16 | A reservation whose agent a daemon restart closed is continued at its due time |
 
-Codex and Antigravity run items 3, 6, 7, 9 and 11. The fake-request total, the refused connections and the harness's longest event-loop stall (`loopMaxMs`) are printed in the final `SUMMARY` line. The harness keeps one daemon session open for the whole run, and the daemon closes a session that sends nothing for 45 seconds, so the harness must not block its event loop: it runs the `paseo` CLI asynchronously.
+Codex and Antigravity run items 3, 6, 7, 9, 11 and 16. The fake-request total, the refused connections and the harness's longest event-loop stall (`loopMaxMs`) are printed in the final `SUMMARY` line. The harness keeps one daemon session open for the whole run, and the daemon closes a session that sends nothing for 45 seconds, so the harness must not block its event loop: it runs the `paseo` CLI asynchronously.
 
 Time is advanced through the reschedule RPC, or by editing `jobs.json` to a past due time and letting the real tick fire. The tick cannot move a reservation earlier than its reset plus two minutes.
 

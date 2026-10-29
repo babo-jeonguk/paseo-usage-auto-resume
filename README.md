@@ -39,7 +39,7 @@ paseo plugin install github:babo-jeonguk/paseo-usage-auto-resume
 2. Keep using your agents as usual. When one stops at its limit, a resume appears in the list.
 3. At the scheduled time, the agent is asked to continue in the same conversation.
 
-Sending your own message to the agent, or archiving it, cancels its resume. So does the agent being closed or waiting for your permission when the resume is due.
+Sending your own message to the agent, or archiving it, cancels its resume. So does the agent waiting for your permission when the resume is due.
 
 In the list, each resume has:
 

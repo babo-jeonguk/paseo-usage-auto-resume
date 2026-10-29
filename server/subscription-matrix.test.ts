@@ -297,9 +297,7 @@ test("Claude synthetic: an expired Pro token waits without refreshing credential
 
 test("Codex synthetic: native account selection disambiguates OPENAI_API_KEY and removes a job on API login", async (t) => {
   const h = await harness(t, "codex", "plus");
-  h.resumer.rememberSession({ agentId: h.agent.id, provider: h.agent.provider, cwd: h.agent.cwd,
-    workspaceId: null, reason: "create", purpose: "interactive", env: { OPENAI_API_KEY: "unused-fixture-key" },
-  });
+  h.resumer.rememberSession({ agentId: h.agent.id, purpose: "interactive", env: { OPENAI_API_KEY: "unused-fixture-key" } });
   await h.resumer.onTurnEnded(h.event, h.api);
   assert.ok((await h.store.list())[0]?.identity, "native ChatGPT auth, rather than key presence, selects the subscription route");
   const fetches = h.state.fetches;

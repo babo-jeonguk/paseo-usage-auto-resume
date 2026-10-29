@@ -571,7 +571,7 @@ test("the agent is read again after the usage lookup, before anything is claimed
     ["model_changed", { model: "gpt-b" }],
     ["provider_changed", { provider: "claude" }],
     ["new_message", { lastUserMessageAt: "2026-10-06T05:01:00.000Z" }],
-    ["agent_busy", { status: "closed" }],
+    ["agent_busy", { status: "initializing" }],
     ["permission", { attentionReason: "permission" }],
     ["busy", { status: "running" }],
   ];
@@ -874,11 +874,11 @@ test("a newer message seen only at fire time cancels the schedule", async () => 
   assert.deepEqual(await recorded(), ["a1 canceled/new_message"]);
 });
 
-test("an agent waiting for permission or closed is left alone", async () => {
+test("an agent waiting for permission or starting is left alone", async () => {
   for (const state of [
     { pendingPermissions: [{ id: "p1" }] },
     { attentionReason: "permission" },
-    { status: "closed" },
+    { status: "initializing" },
   ] as Array<Partial<PaseoAgent>>) {
     const { api, sent, resumer, agents } = await setup({ a1: { provider: "codex" } });
     await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
@@ -889,6 +889,20 @@ test("an agent waiting for permission or closed is left alone", async () => {
     clock = START;
   }
   assert.deepEqual(await recorded(), ["a1 canceled/permission", "a1 canceled/permission", "a1 canceled/agent_busy"]);
+});
+
+// Paseo 0.14 releases an idle runtime after an hour and stores the agent as closed; a send
+// reopens its saved session. A daemon shutdown leaves agents closed the same way.
+test("a closed agent is continued at its reset", async () => {
+  const { api, sent, resumer, agents } = await setup({ a1: { provider: "codex" }, m1: { provider: "claude" } });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  await resumer.onTurnEnded(turnEnded("m1", "claude", { kind: "completed" }, claudeNotice(CLAUDE_LIMIT)), api);
+  agents.set("a1", { provider: "codex", status: "closed" });
+  agents.set("m1", { provider: "claude", status: "closed" });
+  clock = new Date("2026-10-06T06:02:00.000Z");
+  await resumer.tick();
+  assert.deepEqual(sent.map((message) => message.agentId).sort(), ["a1", "m1"]);
+  assert.deepEqual((await recorded()).sort(), ["a1 continued", "m1 continued"]);
 });
 
 test("context-limit and ordinary errors are not scheduled", async () => {
@@ -1973,7 +1987,7 @@ test("Business raw response goes through auth, exact-model reset, persisted rest
     })),
   });
   const { api, resumer, sent } = await setup({ a1: { provider: "codex", model: "gpt-6-astra" } }, { readSubscription });
-  resumer.rememberSession({ agentId: "a1", workspaceId: null, provider: "codex", cwd: "/repo", reason: "create", purpose: "interactive", env: { CODEX_HOME: home } });
+  resumer.rememberSession({ agentId: "a1", purpose: "interactive", env: { CODEX_HOME: home } });
   await resumer.onTurnEnded(turnEnded("a1", "codex", failed("Your workspace is out of credits. Ask your workspace owner to refill in order to continue.")), api);
   const [job] = await store.list();
   assert.equal(job?.resetAt, "2026-10-06T04:00:22.000Z");
@@ -2031,7 +2045,7 @@ test("a reservation switched back on while its skip is being decided is kept and
 test("history keeps result codes, not the log's wording", async () => {
   const { api, resumer, agents } = await setup({ a1: { provider: "codex" } });
   await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
-  agents.set("a1", { provider: "codex", status: "closed" });
+  agents.set("a1", { provider: "codex", status: "initializing" });
   advance(3 * 60 * MINUTE);
   await resumer.tick();
   const saved = JSON.parse(await readFile(join(dir, "history.json"), "utf8")) as { entries: Array<Record<string, unknown>> };
@@ -2121,7 +2135,7 @@ test("Resume now sends a reservation that is turned off or waiting for verificat
 test("Resume now cancels on the same safety checks as an automatic continue", async () => {
   for (const [reason, change] of [
     ["new_message", { lastUserMessageAt: "2026-10-06T04:00:00.000Z" }],
-    ["agent_busy", { status: "closed" }],
+    ["agent_busy", { status: "initializing" }],
     ["permission", { pendingPermissions: [{}] }],
     ["model_changed", { model: "gpt-b" }],
   ] as Array<[string, Partial<PaseoAgent>]>) {

@@ -224,17 +224,47 @@ const checkProviderOff = (S, provider, title) => step(9, S, 'turning the provide
 const checkStartupScan = (S, provider, title) => step(11, S, 'startup scan: agent stopped at a limit while the plugin was disabled gets a reservation after enabling', async () => {
   const h = await mkAgent(title, provider);
   await client.disablePlugin(PLUGIN);
-  assert.match(await paseo('plugin', 'ls', PLUGIN), /usage-auto-resume\s+\S+\s+no/, 'plugin not disabled');
-  await setModel(API[S], limitWith(S, 4 * 3600));
-  await client.sendAgentMessage(h.id, 'Work on the task.');
-  await waitFor(async () => (await agentStatus(h.id)) !== 'running' && (await timelineText(h.id)).some((l) => /limit|quota|429/i.test(l)), 'agent stopped at the limit', 240000, 1000);
-  await sleep(3000);
-  await setModel(API[S], { mode: 'text' });
-  assert.equal(await jobOf(h.id), undefined, 'reservation made while plugin disabled');
-  await client.enablePlugin(PLUGIN);
+  try {
+    assert.match(await paseo('plugin', 'ls', PLUGIN), /usage-auto-resume\s+\S+\s+no/, 'plugin not disabled');
+    await setModel(API[S], limitWith(S, 4 * 3600));
+    await client.sendAgentMessage(h.id, 'Work on the task.');
+    await waitFor(async () => (await agentStatus(h.id)) !== 'running' && (await timelineText(h.id)).some((l) => /limit|quota|429/i.test(l)), 'agent stopped at the limit', 240000, 1000);
+    await sleep(3000);
+    assert.equal(await jobOf(h.id), undefined, 'reservation made while plugin disabled');
+  } finally {
+    // A failure here must not leave the plugin off for the items after it.
+    await setModel(API[S], { mode: 'text' });
+    await client.enablePlugin(PLUGIN);
+  }
   // A connected app polls the plugin's list RPC, which hands the plugin the Paseo API the scan needs.
   const job = await waitFor(async () => { await rpc('auto-resume.list').catch(() => {}); const j = await jobOf(h.id); return j?.state === 'pending' ? j : null; }, 'scan reservation', 240000, 3000);
   return `no job while disabled; after enable the scan created one: due ${job.dueAt} (resetAt ${job.resetAt})`;
+});
+
+const restartDaemon = async () => {
+  await client.close().catch(() => {});
+  await paseo('daemon', 'stop').catch(() => {});
+  await waitFor(async () => daemon.exitCode !== null, 'daemon exit', 60000, 500);
+  await startDaemon();
+};
+const checkClosedAgent = (S, provider, title) => step(16, S, 'a reservation whose agent a daemon restart closed is continued at its due time', async () => {
+  const k = await mkAgent(title, provider);
+  await hit(k, S, limitWith(S, 4 * 3600));
+  // Stands in for Paseo 0.14's one-hour idle close, which a run cannot wait for.
+  await restartDaemon();
+  // Reading the timeline here would reopen the agent.
+  const status = await agentStatus(k.id);
+  assert.equal(status, 'closed', 'agent status after the restart');
+  const sent0 = continues(S).length;
+  await editJob(k.id, { resetAt: iso(Date.now() - 120000), dueAt: iso(Date.now() - 60000) });
+  // The list RPC hands the restarted plugin the Paseo API its tick needs.
+  await waitFor(async () => { await rpc('auto-resume.list').catch(() => {}); return continues(S).length === sent0 + 1; }, 'continue to the closed agent', 240000, 3000);
+  await sleep(6000);
+  assert.equal(continues(S).length, sent0 + 1, 'more than one continue');
+  const outcomes = (await readHistory()).filter((h) => h.agentId === k.id).map((h) => `${h.outcome}${h.reason ? '/' + h.reason : ''}`);
+  assert.deepEqual(outcomes, ['continued'], 'history');
+  assert.ok((await timelineText(k.id)).join('\n').includes(DEFAULT_MARK), 'continue not in the same agent timeline');
+  return `status ${status} after the restart; 1 continue reached the model in the same agent's timeline, history continued`;
 });
 
 // ==========================================================================================
@@ -456,6 +486,8 @@ try {
       if (UI) { const m = await import(pathToFileURL(join(here, 'ui-steps.mjs'))); await m.uiPhase(ctx); }
       // 11
       await checkStartupScan(S, 'claude', 'Missed while disabled');
+      // 16
+      await checkClosedAgent(S, 'claude', 'Closed by a restart');
     }
   }
 
@@ -508,6 +540,7 @@ try {
     if (!MIN) {
       await checkProviderOff(S, S, `${S} provider off`);
       await checkStartupScan(S, S, `${S} missed while disabled`);
+      await checkClosedAgent(S, S, `${S} closed by a restart`);
     }
   }
 
