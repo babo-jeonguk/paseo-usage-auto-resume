@@ -29,6 +29,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "tsx --test client/*.test.ts server/*.test.ts shared/*.test.ts",
+    "test:focus": "tsx --test",
     "test:native": "tsx --test server/native-cli.integration.ts",
     "check": "npm run typecheck && npm test"
   },

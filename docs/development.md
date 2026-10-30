@@ -4,6 +4,8 @@
 
 ## Local development
 
+Use `npm run test:focus -- <test files>` for focused runs (for example, `shared/prompt.test.ts`); see [verification rules](../AGENTS.md) for the development workflow. Type checking caches results in `.cache/typescript/`; delete that directory to reset the cache.
+
 ```bash
 npm ci
 npm run check
