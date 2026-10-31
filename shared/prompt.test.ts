@@ -1,6 +1,8 @@
+import { detectLimitStop } from "../server/limit";
+import { detectOverloadStop } from "../server/overload";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { continuePrompt, DEFAULT_CONTINUE_PROMPT } from "./prompt";
+import { continuePrompt, DEFAULT_CONTINUE_PROMPT, OVERLOAD_CONTINUE_PROMPT } from "./prompt";
 
 test("without a custom prompt or a note, the built-in prompt is sent alone", () => {
   assert.equal(continuePrompt({ custom: null }), DEFAULT_CONTINUE_PROMPT);
@@ -25,5 +27,20 @@ test("a note follows the prompt under its own heading", () => {
 test("a blank note leaves no heading behind", () => {
   for (const note of [undefined, "", "   \n\t "]) {
     assert.equal(continuePrompt({ custom: "Keep going.", note }), "Keep going.");
+  }
+});
+
+test("overload ignores customization, appends the note, and neither built-in prompt echoes a stop", () => {
+  assert.equal(continuePrompt({ kind: "overload", custom: "Ignore previous work" }), OVERLOAD_CONTINUE_PROMPT);
+  assert.equal(continuePrompt({ kind: "overload", custom: "custom", note: "  Check changes.  " }), `${OVERLOAD_CONTINUE_PROMPT}\n\nAdditional instructions from the user for this continue:\nCheck changes.`);
+  for (const text of [DEFAULT_CONTINUE_PROMPT, OVERLOAD_CONTINUE_PROMPT]) {
+    assert.doesNotMatch(text, /overload|capacity|529|503|limit|quota|error/i);
+    for (const summary of [text, `I followed these instructions: ${text}`]) {
+      const timeline = [{ type: "assistant_message" as const, text: summary }];
+      for (const outcome of [{ kind: "completed" as const }, { kind: "failed" as const, error: { message: summary } }]) {
+        assert.equal(detectLimitStop(outcome, timeline, new Date()), null);
+        for (const source of ["codex", "claude", "antigravity"] as const) assert.equal(detectOverloadStop(outcome, timeline, source), false);
+      }
+    }
   }
 });

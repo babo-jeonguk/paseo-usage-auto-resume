@@ -101,3 +101,16 @@ test("Resume now never skips, and waits for a turn", () => {
   assert.equal(agentGate(job({ enabled: false }), agent(), "manual"), null);
   assert.equal(agentGate(job({ enabled: false }), agent({ status: "running" }), "manual"), "wait");
 });
+
+test("overload events keep pending rows, schedule after sends, and yield to a new user message", () => {
+  for (const kind of [undefined, "overload"] as const) {
+    const pending = job({ kind });
+    assert.deepEqual(turnAction(pending, agent(), "overload"), { schedules: false });
+    const newer = turnAction(pending, agent({ lastUserMessageAt: LATER }), "overload");
+    assert.equal(reason(newer), "new_message");
+    assert.equal(newer.schedules, true);
+    assert.deepEqual(turnAction(pending, agent(), "limit"), { schedules: true });
+    for (const state of ["sending", "sent"] as const) assert.deepEqual(turnAction({ ...pending, state }, agent(), "overload"), { schedules: true });
+  }
+  assert.deepEqual(turnAction(null, agent(), "overload"), { schedules: true });
+});

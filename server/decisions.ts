@@ -41,11 +41,11 @@ export const isLater = (message: string | null | undefined, baseline: string | n
   message != null && (baseline === null || Date.parse(message) > Date.parse(baseline));
 
 /** How a turn event reads in the table: a stop is `limit` only when a limit notice ended it. */
-export type TurnEvent = "started" | "finished" | "failed" | "stopped" | "limit";
+export type TurnEvent = "started" | "finished" | "failed" | "stopped" | "limit" | "overload";
 
 /** A turn's end, as the table reads it. */
-export const turnEventOf = (outcome: "completed" | "failed" | "canceled", limited: boolean): TurnEvent =>
-  outcome === "canceled" ? "stopped" : limited ? "limit" : outcome === "completed" ? "finished" : "failed";
+export const turnEventOf = (outcome: "completed" | "failed" | "canceled", limited: boolean, overloaded = false): TurnEvent =>
+  outcome === "canceled" ? "stopped" : limited ? "limit" : overloaded ? "overload" : outcome === "completed" ? "finished" : "failed";
 
 export interface TurnAction {
   /** Cancels the pending reservation with this reason. */
@@ -61,11 +61,11 @@ export interface TurnAction {
  * a turn the agent started on its own, failed or was stopped leaves it to the due time.
  */
 export function turnAction(row: ResumeJob | null, agent: PaseoAgent | null, event: TurnEvent): TurnAction {
-  const schedules = event === "limit";
+  const schedules = event === "limit" || event === "overload";
   if (row?.state === "pending") {
     if (agent && hasNewMessage(agent, row)) return { cancel: NEW_MESSAGE, schedules };
     if (event === "finished") return { cancel: TURN_FINISHED };
-    return { schedules };
+    return { schedules: event === "overload" ? false : schedules };
   }
   // A continue still being sent keeps its claim, which guards against sending it twice.
   if (row?.state === "sent" && event === "finished") return { clearSent: true };

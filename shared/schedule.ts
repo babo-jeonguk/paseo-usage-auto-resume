@@ -22,3 +22,12 @@ export function rescheduleWindow(resetAt: string | null, now: number): { earlies
     latest: now + MAX_AHEAD_MS,
   };
 }
+
+/** Wait after each final capacity failure; each stage is sampled once and persisted. */
+export const OVERLOAD_DELAYS_MS = [3, 10, 25].map((minutes) => minutes * 60_000);
+export const OVERLOAD_JITTER = 0.2;
+export type OverloadStep = 1 | 2 | 3;
+
+export function overloadDue(at: Date, step: OverloadStep, random: () => number): string {
+  return new Date(at.getTime() + OVERLOAD_DELAYS_MS[step - 1]! * (1 + (random() * 2 - 1) * OVERLOAD_JITTER)).toISOString();
+}

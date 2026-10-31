@@ -4,7 +4,7 @@ import { discoverProviders } from "./server/providers";
 import { createResumer } from "./server/resumer";
 import { createJobStore } from "./server/store";
 import { listHistoryRpc, listProvidersRpc, listScheduledRpc, rescheduleRpc, resumeNowRpc, setAllEnabledRpc, setEnabledRpc, setNoteRpc } from "./shared/rpc";
-import { DEFAULT_RESUME_SETTINGS, providerSettings, resumeSettings } from "./shared/settings";
+import { providerSettings, resumeSettings } from "./shared/settings";
 
 const TICK_MS = 30_000;
 
@@ -22,8 +22,7 @@ export default function contribute(server: PluginServerContext) {
       console.error("[usage-auto-resume] settings unreadable; automatic resumes are waiting", current.error);
       return null;
     },
-    // Unlike the provider switches, unreadable values here never hold a resume: the built-in
-    // prompt is a safe thing to send.
+    // Unreadable values still send the built-in prompt; overload retries wait for them.
     readResumeSettings: async () => {
       const current = await promptSettings.read().catch((error: unknown) => ({ status: "invalid" as const, error: String(error) }));
       if (current.status === "ready") {
@@ -31,10 +30,10 @@ export default function contribute(server: PluginServerContext) {
         return current.values;
       }
       if (current.error !== resumeError) {
-        console.error("[usage-auto-resume] continue prompt settings unreadable; sending the built-in prompt", current.error);
+        console.error("[usage-auto-resume] resume settings unreadable; sending the built-in prompt, overload retries waiting", current.error);
       }
       resumeError = current.error;
-      return DEFAULT_RESUME_SETTINGS;
+      return null;
     },
   });
   const report = (error: unknown) => console.error("[usage-auto-resume] hook failed", String(error));
@@ -44,6 +43,7 @@ export default function contribute(server: PluginServerContext) {
   const stops = [
     server.before("agent.session_open", ({ request }) => resumer.rememberSession(request)),
     settings.subscribe(() => void resumer.reconcileProviders().catch(report)),
+    promptSettings.subscribe(() => void resumer.reconcileOverload().catch(report)),
     server.on("agent.turn_started", (event, { paseo }) => {
       void resumer.attach(paseo);
       void resumer.onTurnStarted(event.agent.id, paseo).catch(report);

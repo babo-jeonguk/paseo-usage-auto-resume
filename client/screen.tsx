@@ -223,9 +223,9 @@ function JobRow(props: {
   // The row offers only the first delay; the composer offers all of them.
   const bump = delayChoices(job, now)[0]!;
   const bumpUnavailable = busy || !!bump.problem;
-  const countdown = job.resetAt ? relativeLabel(job.dueAt, now) : `${relativeLabel(job.dueAt, now)} · reset unknown`;
+  const countdown = job.kind === "overload" ? `Retry ${relativeLabel(job.dueAt, now)}` : job.resetAt ? relativeLabel(job.dueAt, now) : `${relativeLabel(job.dueAt, now)} · reset unknown`;
   const status = busy ? "Continuing…" : on ? waitingLabel(job) ?? countdown : "Skipped";
-  const resetSpoken = job.resetAt ? `limit resets at ${clockLabel(job.resetAt)}` : "reset time unknown, checks again";
+  const resetSpoken = job.kind === "overload" ? "overload retry" : job.resetAt ? `limit resets at ${clockLabel(job.resetAt)}` : "reset time unknown, checks again";
   // Beside the other controls on wide layouts; on a phone it ends the title line instead, so
   // the time and title keep the width they had.
   const noteButton = (

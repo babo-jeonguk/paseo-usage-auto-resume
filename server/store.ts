@@ -7,6 +7,13 @@ import { NOTE_MAX_CHARS } from "../shared/prompt";
 
 const JobSchema = z.object({
   /**
+   * What stopped the turn; absent for a usage limit. A kind this version does not know reads as
+   * a limit, the way older versions read an overload.
+   */
+  kind: z.literal("overload").optional().catch(undefined),
+  /** Reserved retry stage, retained through sending and verification waits. A damaged one gives up at the next overload after it is sent. */
+  overloadStep: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional().catch(undefined),
+  /**
    * Names one reservation for its whole life: kept when it is moved, switched, noted or planned
    * again, new when a reservation replaces it. Rows saved before it existed get one on reading.
    */
@@ -18,7 +25,7 @@ const JobSchema = z.object({
   dueAt: z.string(),
   /** The agent's `lastUserMessageAt` when its limited turn ended; any later message cancels. */
   baseline: z.string().nullable(),
-  /** Consecutive automatic continues that hit a limit again. */
+  /** Consecutive automatic continues that stopped again, at a limit or an overload. */
   attempts: z.number().int().nonnegative(),
   state: z.enum(["pending", "sending", "sent"]),
   /** Unchecked in the Auto Resume screen: the due time passes without a continue. */
@@ -45,7 +52,8 @@ type StoredJob = z.infer<typeof JobSchema>;
 /** A stored reservation as read: it always has an id. */
 export type ResumeJob = StoredJob & { id: string };
 
-const FileSchema = z.object({ version: z.literal(1), jobs: z.array(JobSchema) });
+// Rows are checked one by one: a row this version cannot read costs only its own reservation.
+const FileSchema = z.object({ version: z.literal(1), jobs: z.array(z.unknown()) });
 
 export function defaultStorePath(): string {
   const home = process.env.PASEO_HOME || join(homedir(), ".paseo");
@@ -61,16 +69,30 @@ export function createJobStore(path = defaultStorePath()) {
     tail = next.catch(() => undefined);
     return next;
   };
+  // Each problem is reported once, not on every 30-second read until the next write.
+  const reported = new Set<string>();
+  const report = (problem: string, detail?: string) => {
+    if (reported.has(problem)) return;
+    reported.add(problem);
+    console.error(`[usage-auto-resume] ${problem}`, ...(detail ? [detail] : []));
+  };
 
   async function read(): Promise<ResumeJob[]> {
     try {
       const parsed = FileSchema.safeParse(JSON.parse(await readFile(path, "utf8")));
-      // Stable until the first write stores it: only a write can change `dueAt`.
-      if (parsed.success) return parsed.data.jobs.map((job) => ({ ...job, id: job.id ?? `${job.agentId}@${job.dueAt}` }));
-      console.error("[usage-auto-resume] job file failed validation; starting empty");
+      if (parsed.success) {
+        const jobs = parsed.data.jobs.flatMap((row) => {
+          const checked = JobSchema.safeParse(row);
+          return checked.success ? [checked.data] : [];
+        });
+        if (jobs.length < parsed.data.jobs.length) report("skipped job rows that failed validation");
+        // Stable until the first write stores it: only a write can change `dueAt`.
+        return jobs.map((job) => ({ ...job, id: job.id ?? `${job.agentId}@${job.dueAt}` }));
+      }
+      report("job file failed validation; starting empty");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        console.error("[usage-auto-resume] could not read job file; starting empty", String(error));
+        report("could not read job file; starting empty", String(error));
       }
     }
     return [];

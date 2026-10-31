@@ -1,0 +1,27 @@
+{
+  "provenance": {
+    "kind": "real-cli-fake-model-api",
+    "paseoVersion": "0.13.2",
+    "cliVersion": "codex-cli 0.165.0",
+    "platform": "linux"
+  },
+  "source": "codex",
+  "outcome": {
+    "kind": "failed",
+    "error": {
+      "message": "Selected model is at capacity. Please try a different model."
+    }
+  },
+  "timeline": [
+    {
+      "type": "user_message",
+      "text": "Reply with Done.",
+      "clientMessageId": "bed99d54-2810-47ae-8dc2-6d624a2a8309",
+      "messageId": "bed99d54-2810-47ae-8dc2-6d624a2a8309"
+    },
+    {
+      "type": "assistant_message",
+      "text": "[System Error] Selected model is at capacity. Please try a different model."
+    }
+  ]
+}

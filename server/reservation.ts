@@ -1,5 +1,5 @@
 import type { Waiting } from "../shared/rpc";
-import { GRACE_MS, MAX_ATTEMPTS, MIN_DELAY_MS, RETRY_DELAYS_MS } from "../shared/schedule";
+import { GRACE_MS, MAX_ATTEMPTS, MIN_DELAY_MS, RETRY_DELAYS_MS, overloadDue, type OverloadStep } from "../shared/schedule";
 import { ACCOUNT_CHANGED, isLater, NEW_MESSAGE, type Outcome } from "./decisions";
 import type { ResumeJob } from "./store";
 
@@ -29,7 +29,7 @@ export function pinned(current: ResumeJob | null, pin: Pin): "pending" | "sendin
 export const isSameJob = (left: ResumeJob | null, right: ResumeJob) =>
   left !== null && left.id === right.id && left.state === right.state && left.dueAt === right.dueAt &&
   left.resetAt === right.resetAt && left.identity === right.identity && left.model === right.model &&
-  left.retries === right.retries && left.waiting === right.waiting && left.baseline === right.baseline;
+  left.kind === right.kind && left.overloadStep === right.overloadStep && left.retries === right.retries && left.waiting === right.waiting && left.baseline === right.baseline;
 
 const UNKNOWN_RECHECK_MS = 15 * 60_000;
 
@@ -94,7 +94,7 @@ export function replan(current: ResumeJob | null, stop: Stop): Replan {
     retries = retry ? Math.max(kept.retries, 1) : 0;
   } else {
     attempts = previous ? previous.attempts + 1 : 0;
-    if (attempts >= MAX_ATTEMPTS) return { end: { outcome: "gave_up", reason: "attempts", detail: `${attempts} automatic continues hit a limit again` } };
+    if (attempts >= MAX_ATTEMPTS) return { end: { outcome: "gave_up", reason: "attempts", detail: `${attempts} automatic continues stopped again` } };
     const done = retry ? (previous?.retries ?? 0) : 0;
     if (done >= RETRY_DELAYS_MS.length) return { end: { outcome: "gave_up", reason: "retries", detail: `${done} continues stopped again while its usage windows were not used up` } };
     retries = retry ? done + 1 : 0;
@@ -120,7 +120,7 @@ export function replan(current: ResumeJob | null, stop: Stop): Replan {
     note: kept?.note,
     userChosenTime: keepTime || undefined,
   };
-  if (kept && unchanged(kept, job)) return null;
+  if (kept && !kept.kind && unchanged(kept, job)) return null;
   return { write: job, end: superseded ? NEW_MESSAGE : undefined };
 }
 
@@ -132,14 +132,15 @@ const unchanged = (stored: ResumeJob, job: ResumeJob) =>
  * A due reservation that usage holds, moved to when it renews or can be checked again. The time
  * is no longer the user's; a renewal starts the retry sequence over.
  */
-export function postponed(current: ResumeJob, hold: { renewsAt: Date | null; waiting?: Waiting; identity?: string; at: Date }): ResumeJob {
+export function postponed(current: ResumeJob, hold: { renewsAt: Date | null; waiting?: Waiting; identity?: string; at: Date; usedUp?: boolean }): ResumeJob {
   return {
     ...current,
+    ...(hold.usedUp && current.kind === "overload" ? { kind: undefined, overloadStep: undefined } : {}),
     resetAt: hold.renewsAt ? hold.renewsAt.toISOString() : current.resetAt,
     dueAt: dueFor(hold.renewsAt, hold.at),
     waiting: hold.renewsAt ? undefined : hold.waiting,
     identity: current.identity ?? hold.identity,
-    retries: hold.renewsAt ? 0 : current.retries,
+    retries: hold.renewsAt || hold.usedUp && current.kind === "overload" ? 0 : current.retries,
     userChosenTime: undefined,
   };
 }
@@ -158,3 +159,25 @@ export const claimed = (current: ResumeJob, identity?: string): ResumeJob => ({ 
 
 /** Sent: the record stays until a turn finishes; what the user set for this continue is gone with it. */
 export const sent = (current: ResumeJob): ResumeJob => ({ ...current, state: "sent", note: undefined, userChosenTime: undefined });
+
+/** A final capacity failure: pending jobs win, otherwise reserve the next bounded stage, which neither advances nor restarts the limit retry sequence. */
+export function replanOverload(current: ResumeJob | null, stop: Omit<Stop, "plan">, random: () => number): Replan {
+  const superseded = current?.state === "pending" && isLater(stop.baseline, current.baseline);
+  if (current?.state === "pending" && !superseded) return null;
+  const previous = superseded ? null : current;
+  const attempts = previous ? previous.attempts + 1 : 0;
+  if (attempts >= MAX_ATTEMPTS) return { end: { outcome: "gave_up", reason: "attempts", detail: "automatic continue bound reached" } };
+  const done = previous?.kind === "overload" ? previous.overloadStep ?? 3 : 0;
+  if (done >= 3) return { end: { outcome: "gave_up", reason: "overload_retries", detail: "three retries ended in another capacity failure" } };
+  const overloadStep = (done + 1) as OverloadStep;
+  return {
+    end: superseded ? NEW_MESSAGE : undefined,
+    write: {
+      id: stop.id, agentId: stop.agentId, provider: stop.provider,
+      kind: "overload", overloadStep, attempts, retries: previous?.retries ?? 0,
+      dueAt: overloadDue(stop.at, overloadStep, random), resetAt: null,
+      baseline: stop.baseline, identity: stop.identity, model: stop.model, launch: stop.launch,
+      state: "pending", enabled: true,
+    },
+  };
+}
