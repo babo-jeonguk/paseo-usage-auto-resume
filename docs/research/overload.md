@@ -1,0 +1,44 @@
+# Final capacity failures: implementation evidence
+
+Collected on 2026-10-30 and 2026-10-31, Linux, Paseo 0.13.2. The model responses were fake and no real account or remote model was used. Each fixture in `server/fixtures/overload-*.json` states its provenance: the Codex, Claude and Antigravity fixtures were captured through Paseo, with real CLIs, provider adapters, lifecycle outcomes and timeline messages; `overload-claude-repeated.json` pairs a CLI-alone capture's text with the Paseo shape of the Claude fixture. The Paseo e2e sets `CLAUDE_CODE_MAX_RETRIES=0` only in its isolated Claude environment, which reaches one of Claude Code's overload end paths; `e2e/claude-overload-capture.mjs` runs the CLI alone through each of them.
+
+| CLI | Fake model response | Observed final result |
+|---|---|---|
+| Codex 0.165.0 | Responses SSE `response.failed`, code `server_is_overloaded` | `failed`, message `Selected model is at capacity. Please try a different model.`, no code |
+| Claude Code 2.1.312 | HTTP 529, `overloaded_error` / `Overloaded` | `completed`, last assistant message starts `API Error: 529 Overloaded.`, includes advice and the local inference gateway address |
+| agy 1.4.11 | Gemini HTTP 503, `UNAVAILABLE`, ErrorInfo reason `MODEL_CAPACITY_EXHAUSTED` | `failed`, message starts `agent executor error: generating and executing: Error 503,` and retains the reason in `Details`, no code |
+
+Generic 503/UNAVAILABLE is insufficient for Antigravity; the capacity reason is required.
+
+## Claude Code's overload end paths
+
+Claude Code 2.1.312 classifies an error as an overload when its status is 529 or its message carries `"type":"overloaded_error"`, and separately when it is its own `Repeated 529 Overloaded errors` give-up. It renders a final API error as `API Error: <detail>`. After three consecutive 529s it stops retrying when one of these holds: a fallback model is set, the undocumented `FALLBACK_FOR_ALL_PRIMARY_MODELS` is set, or the account is not a claude.ai subscriber (an OAuth login with claude.ai scopes) and the model is in the Opus, Fable or Mythos families. With a fallback model it then switches to that model. Otherwise, outside `IS_SANDBOX` and without `CLAUDE_CODE_RETRY_WATCHDOG`, it ends with the repeated-529 error. This was traced in the CLI; the [environment-variable reference](https://code.claude.com/docs/en/env-vars) documents the API-key Opus case under `CLAUDE_CODE_MAX_RETRIES`, and the captures below confirm both sides: an OAuth login on Opus spent all ten retries, an API key on Opus stopped at the third 529. This plugin resumes subscription accounts only, so without a fallback model their final notice is the 529 one; the repeated-529 form reaches them only through `FALLBACK_FOR_ALL_PRIMARY_MODELS`. It is detected because it is one of the CLI's overload classes.
+
+| Case in `e2e/claude-overload-capture.mjs` | Requests | Final assistant message |
+|---|---|---|
+| `529-no-retries`: 529, Sonnet, OAuth, no retries | 1 | `API Error: 529 Overloaded. This is a server-side issue, usually temporary — try again in a moment. …` |
+| `529-default-retries`: 529, Opus, OAuth, default retries | 11 | the same |
+| `stream-overload`: `overloaded_error` inside an HTTP 200 stream, no retries | 2 | the same: the CLI repeats the request without streaming and ends on its 529 |
+| `stream-overload-default-retries`: the same with default retries | 11 | the same |
+| `repeated-529`: 529, Opus, API key, default retries | 3 | `API Error: Repeated 529 Overloaded errors. The API is at capacity — this is usually temporary. Try again in a moment. …` |
+
+In every case the CLI reports a successful result whose last assistant message is the notice; the Paseo capture of the no-retries case shows such a turn ending as completed, with the notice reaching the timeline unchanged. Detection therefore mirrors the CLI's classes over its rendered prefix: `API Error: ` followed by a 529 status, the repeated-529 give-up, or an `overloaded_error` body, in a final message of at most 300 characters. The status-less body form was not observed as a final message, since the CLI retries it without streaming, but it is one of the CLI's overload classes. The CLI's model-specific notices, `Opus is experiencing high load, please use /model to switch to Sonnet` and its shorter `… Switch to Sonnet.` wording, with Fable forms, are classified apart as a request to switch models; they carry no `API Error:` prefix and are not detected. No Antigravity output guard is included, per the explicit design decision to assume upstream F1 is fixed.
+
+## Source checks
+
+- [Codex error display at f752c97](https://github.com/openai/codex/blob/f752c97f7d0be0cbef5cece327f52a16ad6fb1c6/codex-rs/protocol/src/error.rs#L169-L174) and [wire mapping tests](https://github.com/openai/codex/blob/f752c97f7d0be0cbef5cece327f52a16ad6fb1c6/codex-rs/codex-api/src/sse/responses_error_tests.rs): capacity is distinct from policy capacity and Flex capacity. The tests map the SSE failure code used by the harness. GitHub web retrieval missed these files; the pinned raw files were fetched instead.
+- [Codex capacity report #43337](https://github.com/openai/codex/issues/43337): remaining account usage does not imply service capacity has recovered.
+- [Claude API errors](https://platform.claude.com/docs/en/api/errors): 529 identifies overload. The [environment-variable page](https://code.claude.com/docs/en/env-vars) documents `CLAUDE_CODE_MAX_RETRIES` (default 10), the early stop at the third 529 for an API key on Opus, the fallback-model switch and `CLAUDE_CODE_RETRY_WATCHDOG`. An earlier check missed this row because only the first part of the long page was read; the installed CLI was exercised as well.
+- [Google capacity report](https://discuss.ai.google.dev/t/our-servers-are-experiencing-high-traffic-right-now-please-try-again-in-a-minute/137785): the reported 503 includes `MODEL_CAPACITY_EXHAUSTED`. This is a user report on the IDE path, not proof of CLI formatting; the fixture establishes the CLI formatting independently.
+- [agy changelog](https://github.com/google-antigravity/antigravity-cli/blob/main/CHANGELOG.md): 1.2.1 documents internal retries and preservation of completed tool outputs for transient failures. The plugin acts on final turn-end events only.
+- [Paseo adapter at v0.13.2](https://github.com/getpaseo/paseo/blob/v0.13.2/plugins/antigravity-provider/server/internal/session.ts): a result with `status: ERROR` ends the turn as failed, except an interrupted result, which is canceled. The error passes through `diagnostic`.
+- [OpenAI error codes](https://developers.openai.com/api/docs/guides/error-codes) distinguishes overload from usage/billing errors. [Paseo settings reference](https://paseo.sh/docs/plugins/reference#settings-screens), [retry precedent](https://github.com/azumag/opencode-rate-limit-fallback), and [PR #29](https://github.com/babo-jeonguk/paseo-usage-auto-resume/pull/29) were also checked. The implementation retains this repository's fixed staged policy, subscription checks and settings API.
+- Local commit `813d5c9` explains why prompts avoid detector wording: agents previously echoed limit instructions into a closing summary that was classified as another stop.
+
+## Upstream assumption and observed limitation
+
+[agy #1048](https://github.com/google-antigravity/antigravity-cli/issues/1048), [agy #969](https://github.com/google-antigravity/antigravity-cli/issues/969), and [Paseo #7425](https://github.com/getpaseo/paseo/issues/7425) describe historical error replay. F1 is an upstream precondition, not a fix supplied by this plugin.
+
+The isolated end-to-end overload run of 2026-10-30 had 8 passing checks and 1 failed upstream completion check. It passed Labs-off detection for all three CLIs and the full schedule → Resume now → normal completion → cleanup path for Claude and Codex. Antigravity scheduled and sent the fixed prompt with its note, received `Done.` from the fake server, then reported the old 503 again. Its completion assertion failed on agy 1.4.11. The harness saves this resumed outcome and timeline and exits nonzero; this limitation is not converted into a passing check. All three CLIs also passed a real settings-RPC check that disabling Labs immediately cancels an individually disabled pending retry and re-enabling does not restore it. Pending retries are canceled by turning Labs off during suite cleanup.
+
+The subscription/usage reader is replaced in these e2e runs because fake model routes are correctly classified as API billing by the production reader. Unit/integration tests separately cover identity-only planning, fresh delivery verification, used-up conversion, unknown verification, API exclusion, setting changes, restart, and concurrent claims. Real provider outages and Windows overload paths have not been exercised.

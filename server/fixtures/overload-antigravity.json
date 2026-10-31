@@ -1,0 +1,32 @@
+{
+  "provenance": {
+    "kind": "real-cli-fake-model-api",
+    "paseoVersion": "0.13.2",
+    "cliVersion": "1.4.11",
+    "platform": "linux"
+  },
+  "source": "antigravity",
+  "outcome": {
+    "kind": "failed",
+    "error": {
+      "message": "agent executor error: generating and executing: Error 503, Message: No capacity available for model on the server, Status: UNAVAILABLE, Details: [map[@type:type.googleapis.com/google.rpc.ErrorInfo domain:cloudcode-pa.googleapis.com reason:MODEL_CAPACITY_EXHAUSTED]]"
+    }
+  },
+  "timeline": [
+    {
+      "type": "notification",
+      "level": "warning",
+      "message": "Antigravity is running with full access\nAntigravity's CLI cannot ask for permission when another app drives it, so Paseo starts it with --dangerously-skip-permissions. Every tool call, including shell commands, runs without asking."
+    },
+    {
+      "type": "user_message",
+      "text": "Reply with Done.",
+      "clientMessageId": "f01dcd29-74c9-40c4-a630-4f15040ab585",
+      "messageId": "f01dcd29-74c9-40c4-a630-4f15040ab585"
+    },
+    {
+      "type": "assistant_message",
+      "text": "[System Error] agent executor error: generating and executing: Error 503, Message: No capacity available for model on the server, Status: UNAVAILABLE, Details: [map[@type:type.googleapis.com/google.rpc.ErrorInfo domain:cloudcode-pa.googleapis.com reason:MODEL_CAPACITY_EXHAUSTED]]"
+    }
+  ]
+}

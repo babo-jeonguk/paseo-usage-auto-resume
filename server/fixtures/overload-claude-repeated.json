@@ -1,0 +1,26 @@
+{
+  "provenance": {
+    "kind": "real-cli-text-fake-model-api",
+    "paseoVersion": "0.13.2",
+    "cliVersion": "2.1.312 (Claude Code)",
+    "platform": "linux",
+    "note": "Text from e2e/claude-overload-capture.mjs case repeated-529 (API key on Opus, 3 requests). The Paseo shape (completed outcome, user message, closing assistant message and its messageId) is copied from overload-claude.json; only the assistant text differs."
+  },
+  "source": "claude",
+  "outcome": {
+    "kind": "completed"
+  },
+  "timeline": [
+    {
+      "type": "user_message",
+      "text": "Reply with Done.",
+      "clientMessageId": "2b8db898-a467-4195-972a-b98d4e202159",
+      "messageId": "2b8db898-a467-4195-972a-b98d4e202159"
+    },
+    {
+      "type": "assistant_message",
+      "text": "API Error: Repeated 529 Overloaded errors. The API is at capacity — this is usually temporary. Try again in a moment. If it persists, check your inference gateway (127.0.0.1:39979).",
+      "messageId": "01365a33-f4ed-4bce-9583-452ac5fbcf39"
+    }
+  ]
+}
