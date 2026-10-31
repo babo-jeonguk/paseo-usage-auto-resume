@@ -211,8 +211,10 @@ test("every recorded result reads as one line", () => {
     ["send_failed", undefined, "Couldn’t send the continue"],
     ["skipped", undefined, "Skipped · turned off"],
     ["interrupted", undefined, "Dropped · interrupted by a restart"],
-    ["gave_up", "attempts", "Gave up · limit hit 24 times in a row"],
+    ["gave_up", "attempts", "Gave up · stopped 24 times in a row"],
     ["gave_up", "retries", "Gave up · stopped again after 3 retries"],
+    ["gave_up", "overload_retries", "Gave up · overload retries exhausted"],
+    ["canceled", "overload_off", "Canceled · overload retry turned off"],
     ["gave_up", undefined, "Gave up"],
     ["canceled", "turn_started", "Canceled · turn started"],
     ["canceled", "new_message", "Canceled · a newer message"],
@@ -231,7 +233,7 @@ test("every recorded result reads as one line", () => {
   ];
   for (const [outcome, reason, label] of cases) assert.equal(historyLabel({ outcome, reason }), label, `${outcome}/${reason}`);
   const canceledReasons = new Set(cases.filter(([outcome, reason]) => outcome === "canceled" && reason).map(([, reason]) => reason));
-  const gaveUpReasons = new Set(["attempts", "retries"]);
+  const gaveUpReasons = new Set(["attempts", "retries", "overload_retries"]);
   for (const reason of HistoryReasonSchema.options) {
     assert.ok(canceledReasons.has(reason) || gaveUpReasons.has(reason), `${reason} has a label`);
   }
@@ -282,4 +284,14 @@ test("a note preview is one line, cut with an ellipsis", () => {
 test("a refused note says why", () => {
   assert.equal(noteRefusal("changed"), "This reservation already ran, was canceled or was replaced, so these extra instructions can’t be saved.");
   assert.match(noteRefusal("sending"), /being sent/);
+});
+
+test("overload labels identify retries while sending, disabled, and verification states still win", () => {
+  const dueAt = new Date(2026, 9, 6, 14, 3).toISOString();
+  const row = job({ kind: "overload", dueAt });
+  assert.equal(composerLabel(row, Date.parse(dueAt)), "Retry 14:03");
+  assert.equal(composerLabel({ ...row, waiting: "usage" }, Date.parse(dueAt)), "Check 14:03");
+  assert.equal(composerLabel({ ...row, enabled: false }, Date.parse(dueAt)), "Resume off");
+  assert.equal(composerLabel({ ...row, sending: true }, Date.parse(dueAt)), "Resuming…");
+  assert.equal(historyLabel({ kind: "overload", outcome: "continued", trigger: "manual" }), "Continued · after overload · Resume now");
 });

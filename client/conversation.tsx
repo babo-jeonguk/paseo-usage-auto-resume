@@ -136,7 +136,7 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
               </Pressable>
             </View>
             <Text style={muted}>{job.sending ? "Continuing…" : !job.enabled ? "Off"
-              : waitingLabel(job) ?? `Continues ${relativeLabel(job.dueAt, now)}`}</Text>
+              : waitingLabel(job) ?? `${job.kind === "overload" ? "Retries" : "Continues"} ${relativeLabel(job.dueAt, now)}`}</Text>
             {job.waiting ? <Text style={muted}>Next check {relativeLabel(job.dueAt, now)}</Text> : null}
             <View style={{ flexDirection: "row", gap: 6, marginTop: 6 }}>
               {delayChoices(job, now).map((choice) => {

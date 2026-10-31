@@ -177,7 +177,19 @@ function ContinuePromptSettings({ theme }: { theme: Theme }) {
         <Text style={mutedText(colors)}>Sent to the agent when its reservation continues.</Text>
       </View>
       {settings.status === "ready" ? (
-        <PromptEditor settings={settings} theme={theme} />
+        <>
+          <PromptEditor settings={settings} theme={theme} />
+          <SettingsSection title="Labs">
+            <SettingsCard>
+              <SettingsSwitch
+                label="Retry after a provider overload"
+                value={settings.values.overloadRetry}
+                disabled={settings.saving}
+                onValueChange={(overloadRetry) => void settings.save({ ...settings.values, overloadRetry }, settings.revision)}
+              />
+            </SettingsCard>
+          </SettingsSection>
+        </>
       ) : settings.status === "loading" ? (
         <Text style={{ color: colors.foreground }}>Loading the continue prompt…</Text>
       ) : (

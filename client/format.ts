@@ -119,6 +119,7 @@ export function composerLabel(job: ScheduledJob, now: number): string {
   if (!job.enabled) return "Resume off";
   const time = clockLabel(job.dueAt);
   if (job.waiting) return `Check ${time}`;
+  if (job.kind === "overload") return `Retry ${[shortDay(job.dueAt, now), time].filter(Boolean).join(" ")}`;
   return `${shortDay(job.dueAt, now) ?? "Resume"} ${time}`;
 }
 
@@ -227,18 +228,19 @@ const CANCEL_REASONS: Partial<Record<HistoryReason, string>> = {
   api_route: "API billing route",
   provider_off: "provider turned off",
   unsupported_cli: "unsupported CLI",
+  overload_off: "overload retry turned off",
 };
 
 /** One line for how a reservation ended, e.g. "Canceled · a newer message", naming Resume now when it started it. */
-export function historyLabel(entry: Pick<HistoryEntry, "outcome" | "reason" | "trigger">): string {
+export function historyLabel(entry: Pick<HistoryEntry, "outcome" | "reason" | "trigger" | "kind">): string {
   const label = outcomeLabel(entry);
   return entry.trigger === "manual" ? `${label} · Resume now` : label;
 }
 
-function outcomeLabel(entry: Pick<HistoryEntry, "outcome" | "reason">): string {
+function outcomeLabel(entry: Pick<HistoryEntry, "outcome" | "reason" | "kind">): string {
   switch (entry.outcome) {
     case "continued":
-      return "Continued";
+      return entry.kind === "overload" ? "Continued · after overload" : "Continued";
     case "send_failed":
       return "Couldn’t send the continue";
     case "skipped":
@@ -246,7 +248,9 @@ function outcomeLabel(entry: Pick<HistoryEntry, "outcome" | "reason">): string {
     case "interrupted":
       return "Dropped · interrupted by a restart";
     case "gave_up":
-      if (entry.reason === "attempts") return `Gave up · limit hit ${MAX_ATTEMPTS} times in a row`;
+      if (entry.reason === "overload_retries") return "Gave up · overload retries exhausted";
+      // The bound counts limit and overload stops alike, so the label names neither.
+      if (entry.reason === "attempts") return `Gave up · stopped ${MAX_ATTEMPTS} times in a row`;
       if (entry.reason === "retries") return `Gave up · stopped again after ${RETRY_DELAYS_MS.length} retries`;
       return "Gave up";
     case "canceled": {
