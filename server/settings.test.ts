@@ -42,12 +42,12 @@ test("a damaged version 1 file or an unknown version stays unreadable", async ()
 });
 
 test("the continue prompt is the built-in one until the user saves their own", () => {
-  assert.deepEqual(DEFAULT_RESUME_SETTINGS, { continuePrompt: null });
-  assert.deepEqual(ResumeSettingsSchema.parse({ continuePrompt: null }), { continuePrompt: null });
+  assert.deepEqual(DEFAULT_RESUME_SETTINGS, { continuePrompt: null, overloadRetry: false });
+  assert.deepEqual(ResumeSettingsSchema.parse({ continuePrompt: null, overloadRetry: false }), { continuePrompt: null, overloadRetry: false });
 });
 
 test("a saved prompt is trimmed, and a blank or overlong one cannot be stored", () => {
-  assert.deepEqual(ResumeSettingsSchema.parse({ continuePrompt: "  Keep going.\n" }), { continuePrompt: "Keep going." });
+  assert.deepEqual(ResumeSettingsSchema.parse({ continuePrompt: "  Keep going.\n" }), { continuePrompt: "Keep going.", overloadRetry: false });
   assert.equal(ResumeSettingsSchema.parse({ continuePrompt: "x".repeat(PROMPT_MAX_CHARS) }).continuePrompt?.length, PROMPT_MAX_CHARS);
   for (const continuePrompt of ["", "   \n ", "x".repeat(PROMPT_MAX_CHARS + 1), 3]) {
     assert.equal(ResumeSettingsSchema.safeParse({ continuePrompt }).success, false);
@@ -70,4 +70,11 @@ test("a provider's CLI is found by following extends to a supported built-in", (
   assert.equal(cliFor(config, "claude-deep"), "claude");
   assert.equal(cliFor(config, "codex-reserve"), "codex");
   for (const id of ["opencode", "opencode-work", "loop", "claude-unknown"]) assert.equal(cliFor(config, id), null);
+});
+
+
+test("legacy resume settings leave Labs off, and only a boolean can enable it", () => {
+  assert.equal(ResumeSettingsSchema.parse({ continuePrompt: null }).overloadRetry, false);
+  assert.equal(ResumeSettingsSchema.parse({ overloadRetry: true }).overloadRetry, true);
+  assert.equal(ResumeSettingsSchema.safeParse({ overloadRetry: "true" }).success, false);
 });

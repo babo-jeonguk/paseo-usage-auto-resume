@@ -44,6 +44,8 @@ export function isProviderOn(provider: string, settings: ProviderSettings): bool
 export const PROMPT_MAX_CHARS = 4000;
 
 export const ResumeSettingsSchema = z.object({
+  /** Labs: bounded retries after a provider capacity failure. */
+  overloadRetry: z.boolean().default(false),
   /** Null sends the built-in prompt, so its later improvements reach everyone who never changed it. */
   continuePrompt: z.string().trim().min(1).max(PROMPT_MAX_CHARS).nullable().default(null),
 });
@@ -52,7 +54,7 @@ export type ResumeSettings = z.output<typeof ResumeSettingsSchema>;
 export const DEFAULT_RESUME_SETTINGS = ResumeSettingsSchema.parse({});
 
 /**
- * What a continue says. Kept apart from the provider switches: when this cannot be read, the
- * built-in prompt is sent instead of holding resumes.
+ * Prompt and Labs settings. Unreadable values still send the built-in prompt; the Labs switch is
+ * unknown then, so overload retries are neither made nor canceled by it.
  */
 export const resumeSettings = defineSettings({ id: "resume", scope: "host", version: 1, schema: ResumeSettingsSchema });

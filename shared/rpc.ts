@@ -8,6 +8,7 @@ export const WaitingSchema = z.enum(["auth", "usage"]);
 export type Waiting = z.infer<typeof WaitingSchema>;
 
 export const ScheduledJobSchema = z.object({
+  kind: z.literal("overload").optional(),
   /** The reservation, kept while it is moved, switched or planned again; a replacement has another. */
   id: z.string(),
   agentId: z.string(),
@@ -113,9 +114,9 @@ export const HistoryReasonSchema = z.enum([
   // canceled
   "turn_started", "new_message", "turn_finished", "agent_missing", "archived",
   "provider_changed", "model_changed", "agent_busy", "permission",
-  "account_changed", "api_route", "provider_off", "unsupported_cli",
+  "account_changed", "api_route", "provider_off", "unsupported_cli", "overload_off",
   // gave_up
-  "attempts", "retries",
+  "attempts", "retries", "overload_retries",
 ]);
 
 export type HistoryReason = z.infer<typeof HistoryReasonSchema>;
@@ -151,6 +152,7 @@ export const resumeNowRpc = defineRpc({
 });
 
 export const HistoryEntrySchema = z.object({
+  kind: z.literal("overload").optional(),
   id: z.string(),
   /** When the result was recorded. */
   at: z.string(),

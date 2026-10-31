@@ -5,14 +5,20 @@ export const DEFAULT_CONTINUE_PROMPT =
   "Don't redo finished work, interrupt anything still running, or restart what the user canceled. " +
   "If a subagent can't be resumed, say so.";
 
+/** Fixed during Labs; neutral wording cannot echo a provider stop notice. */
+export const OVERLOAD_CONTINUE_PROMPT =
+  "The previous turn ended early because of a temporary service interruption. " +
+  "Review existing edits, tool results, and subagent progress before continuing. " +
+  DEFAULT_CONTINUE_PROMPT;
+
 /** Longest note for one reservation. */
 export const NOTE_MAX_CHARS = 2000;
 
 const NOTE_HEADING = "Additional instructions from the user for this continue:";
 
 /** The text sent to the agent: the custom or built-in prompt, then the reservation's note. */
-export function continuePrompt(input: { custom: string | null; note?: string }): string {
-  const body = input.custom ?? DEFAULT_CONTINUE_PROMPT;
+export function continuePrompt(input: { custom: string | null; note?: string; kind?: "overload" }): string {
+  const body = input.kind === "overload" ? OVERLOAD_CONTINUE_PROMPT : input.custom ?? DEFAULT_CONTINUE_PROMPT;
   const note = input.note?.trim();
   return note ? `${body}\n\n${NOTE_HEADING}\n${note}` : body;
 }

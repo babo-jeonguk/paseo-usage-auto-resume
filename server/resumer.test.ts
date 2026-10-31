@@ -87,7 +87,7 @@ interface FakeOptions {
   claudeConfigDir?: string;
   claudeAliasEnv?: Record<string, string>;
   readSettings?: () => Promise<ProviderSettings | null>;
-  readResumeSettings?: () => Promise<ResumeSettings>;
+  readResumeSettings?: () => Promise<ResumeSettings | null>;
 }
 
 /** Daemon stand-in: agent snapshots by ID, recorded sends, and no way to create agents. */
@@ -2362,7 +2362,7 @@ test("a custom continue prompt is sent by the tick and by Resume now", async () 
     clock = START;
     const { api, sent, resumer } = await setup({ a1: { provider: "codex" } }, {
       readSubscription: async () => ready,
-      readResumeSettings: async () => ({ continuePrompt: custom }),
+      readResumeSettings: async () => ({ ...DEFAULT_RESUME_SETTINGS, continuePrompt: custom }),
     });
     await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
     if (manual) {
@@ -2378,8 +2378,8 @@ test("a custom continue prompt is sent by the tick and by Resume now", async () 
 
 test("prompt settings that cannot be read send the built-in prompt and hold nothing", async () => {
   const unreadable = [
-    // index.server.ts answers an invalid file with the defaults.
-    async () => DEFAULT_RESUME_SETTINGS,
+    // index.server.ts answers an invalid file with null.
+    async () => null,
     async (): Promise<ResumeSettings> => { throw new Error("EACCES"); },
   ];
   for (const readResumeSettings of unreadable) {
@@ -2399,7 +2399,7 @@ test("unreadable provider switches still hold resumes while the prompt settings 
   const { api, sent, resumer } = await setup({ a1: { provider: "codex" } }, {
     readSubscription: async () => ready,
     readSettings: async () => providers,
-    readResumeSettings: async () => ({ continuePrompt: "Keep going." }),
+    readResumeSettings: async () => ({ ...DEFAULT_RESUME_SETTINGS, continuePrompt: "Keep going." }),
   });
   await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
   providers = null;
@@ -2432,7 +2432,7 @@ test("a note follows the continue prompt once, and the sent row drops it", async
 test("Resume now sends the note and the custom prompt together", async () => {
   const { api, sent, resumer } = await setup({ a1: { provider: "codex" } }, {
     readSubscription: async () => ready,
-    readResumeSettings: async () => ({ continuePrompt: "Keep going." }),
+    readResumeSettings: async () => ({ ...DEFAULT_RESUME_SETTINGS, continuePrompt: "Keep going." }),
   });
   await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
   await resumer.setNote("a1", await pinOf(store, "a1"), NOTE);
@@ -2595,4 +2595,337 @@ test("a damaged note is dropped alone and the reservation is kept", async () => 
   await writeFile(join(dir, "jobs.json"), JSON.stringify({ version: 1, jobs: [job, { ...job, agentId: "a2", note: 7 }] }));
   const rows = await store.list();
   assert.deepEqual(rows.map((row) => [row.agentId, row.note]), [["a1", undefined], ["a2", undefined]]);
+});
+
+test("an overload field this version cannot read degrades alone, and a damaged row costs only itself", async () => {
+  const job = { agentId: "a1", provider: "codex", resetAt: null, dueAt: CODEX_DUE, baseline: null, attempts: 0, state: "pending" };
+  await writeFile(join(dir, "jobs.json"), JSON.stringify({ version: 1, jobs: [
+    { ...job, kind: "outage", overloadStep: 4 },
+    { ...job, agentId: "a2", kind: "overload", overloadStep: 2 },
+    { ...job, agentId: "a3", attempts: "many" },
+  ] }));
+  const errors: unknown[][] = [];
+  const original = console.error;
+  console.error = (...line: unknown[]) => { errors.push(line); };
+  try {
+    const rows = await store.list();
+    await store.list();
+    assert.deepEqual(rows.map((row) => [row.agentId, row.kind, row.overloadStep]), [["a1", undefined, undefined], ["a2", "overload", 2]]);
+  } finally {
+    console.error = original;
+  }
+  assert.equal(errors.length, 1, "a skipped row is reported once, not on every read");
+});
+
+const CAPACITY = "Selected model is at capacity. Please try a different model.";
+const labs = { ...DEFAULT_RESUME_SETTINGS, overloadRetry: true };
+
+test("Labs is off by default, on read failure, and at startup; API billing and provider off never schedule", async () => {
+  for (const readResumeSettings of [undefined, async () => { throw Error("unreadable"); }]) {
+    const { resumer, api } = await setup({ a: { provider: "codex" } }, { readResumeSettings });
+    await resumer.onTurnEnded(turnEnded("a", "codex", failed(CAPACITY)), api);
+    assert.deepEqual(await store.list(), []);
+  }
+  const enabled = await setup({ a: { provider: "codex", status: "error", lastError: CAPACITY } }, { readResumeSettings: async () => labs });
+  assert.deepEqual(await store.list(), [], "startup never detects overload");
+  await enabled.resumer.scan(enabled.api);
+  assert.deepEqual(await store.list(), []);
+  for (const options of [
+    { readSubscription: async () => ({ auth: "api", status: "unknown" } as const) },
+    { readSettings: async () => ({ disabledProviders: ["codex"] }) },
+  ]) {
+    const { resumer, api } = await setup({ a: { provider: "codex" } }, { ...options, readResumeSettings: async () => labs });
+    await resumer.onTurnEnded(turnEnded("a", "codex", failed(CAPACITY)), api);
+    assert.deepEqual(await store.list(), []);
+  }
+});
+
+test("overload reserves three stages, verifies before each send, and records one terminal give-up", async () => {
+  const modes: unknown[] = [];
+  const { resumer, api, sent } = await setup({ a: { provider: "codex" } }, {
+    readResumeSettings: async () => ({ ...labs, continuePrompt: "CUSTOM" }),
+    readSubscription: async (_api, _agent, _source, _at, _launch, mode) => {
+      modes.push(mode); return { auth: "subscription", status: "ready", identity: "account" };
+    },
+  });
+  await resumer.onTurnEnded(turnEnded("a", "codex", failed(CAPACITY)), api);
+  assert.deepEqual(modes, ["identity"]);
+  for (const [index, minutes] of [3, 10, 25].entries()) {
+    const job = (await store.list())[0]!;
+    assert.deepEqual([job.kind, job.overloadStep, job.attempts], ["overload", index + 1, index]);
+    const delay = Date.parse(job.dueAt) - clock.getTime();
+    assert.ok(delay >= minutes * MINUTE * 0.8 && delay <= minutes * MINUTE * 1.2);
+    if (!index) await resumer.setNote("a", { id: job.id }, "Remember the edited file.");
+    clock = new Date(job.dueAt);
+    await resumer.tick();
+    assert.equal(sent.length, index + 1);
+    assert.equal(sent[index]!.text.includes("CUSTOM"), false);
+    assert.equal(sent[index]!.text, continuePrompt({ kind: "overload", custom: "CUSTOM", note: index ? undefined : "Remember the edited file." }));
+    await resumer.onTurnEnded(turnEnded("a", "codex", failed(CAPACITY)), api);
+  }
+  assert.deepEqual(await store.list(), []);
+  assert.deepEqual(modes, ["identity", undefined, "identity", undefined, "identity", undefined, "identity"]);
+  const entries = await history.list();
+  assert.equal(entries.filter(e => e.outcome === "continued").length, 3);
+  assert.equal(entries.filter(e => e.reason === "overload_retries").length, 1);
+  assert.ok(entries.every(e => e.kind === "overload"));
+});
+
+test("Resume now consumes an overload stage and completion clears it; sent notes are not carried forward", async () => {
+  const { resumer, api, sent } = await setup({ a: { provider: "codex" } }, { readResumeSettings: async () => labs });
+  await resumer.onTurnEnded(turnEnded("a", "codex", failed(CAPACITY)), api);
+  const job = (await store.list())[0]!;
+  await resumer.setNote("a", { id: job.id }, "one-time note");
+  assert.deepEqual(await resumer.resumeNow(api, "a", { id: job.id, dueAt: job.dueAt }), { result: "sent" });
+  assert.ok(sent[0]!.text.includes("one-time note"));
+  await resumer.onTurnEnded(turnEnded("a", "codex", failed(CAPACITY)), api);
+  const next = (await store.list())[0]!;
+  assert.equal(next.overloadStep, 2);
+  assert.equal(next.note, undefined);
+  await resumer.resumeNow(api, "a", { id: next.id, dueAt: next.dueAt });
+  await resumer.onTurnEnded(turnEnded("a", "codex", { kind: "completed" }), api);
+  assert.deepEqual(await store.list(), []);
+});
+
+test("Resume now leaves a held overload unchanged; the tick converts confirmed exhaustion even without reset", async () => {
+  let check: SubscriptionCheck = { auth: "subscription", status: "ready", identity: "account" };
+  const { resumer, api, sent } = await setup({ a: { provider: "codex" } }, {
+    readResumeSettings: async () => labs, readSubscription: async () => check,
+  });
+  for (const resetAt of [null, new Date(START.getTime() + 3600000).toISOString()]) {
+    await store.update("a", () => null);
+    check = { auth: "subscription", status: "ready", identity: "account" };
+    await resumer.onTurnEnded(turnEnded("a", "codex", failed(CAPACITY)), api);
+    const job = (await store.list())[0]!;
+    check = { auth: "subscription", status: "limited", identity: "account", windows: [{ id: "five_hour", usedPct: 100, resetAt }] };
+    assert.equal((await resumer.resumeNow(api, "a", { id: job.id, dueAt: job.dueAt })).result, "used_up");
+    assert.deepEqual((await store.list())[0], job);
+    clock = new Date(job.dueAt);
+    await resumer.tick();
+    const next = (await store.list())[0]!;
+    assert.deepEqual([next.kind, next.overloadStep, next.attempts], [undefined, undefined, 0]);
+    assert.equal(next.waiting, resetAt ? undefined : "usage");
+  }
+  assert.equal(sent.length, 0);
+});
+
+test("unknown verification postpones overload without consuming a stage, and disabling Labs cancels it without restoration", async () => {
+  let settings = labs;
+  let check: SubscriptionCheck = { auth: "subscription", status: "ready" };
+  const { resumer, api, sent } = await setup({ a: { provider: "codex" } }, {
+    readResumeSettings: async () => settings, readSubscription: async () => check,
+  });
+  await resumer.onTurnEnded(turnEnded("a", "codex", failed(CAPACITY)), api);
+  const job = (await store.list())[0]!;
+  check = unknownCheck();
+  assert.equal((await resumer.resumeNow(api, "a", { id: job.id, dueAt: job.dueAt })).result, "unverified");
+  assert.deepEqual((await store.list())[0], job);
+  clock = new Date(job.dueAt);
+  await resumer.tick();
+  assert.deepEqual([(await store.list())[0]!.kind, (await store.list())[0]!.overloadStep], ["overload", 1]);
+  settings = { ...labs, overloadRetry: false };
+  await resumer.reconcileOverload();
+  assert.deepEqual(await store.list(), []);
+  assert.equal((await history.list())[0]!.reason, "overload_off");
+  settings = labs;
+  await resumer.reconcileOverload();
+  await resumer.tick();
+  assert.deepEqual(await store.list(), []);
+  assert.equal(sent.length, 0);
+});
+
+test("Labs is rechecked after usage and never cancels an already claimed send", async () => {
+  let settings = labs;
+  let duringUsage = async () => {};
+  const { resumer, api, sent } = await setup({ a: { provider: "codex" } }, {
+    readResumeSettings: async () => settings,
+    readSubscription: async (_api, _agent, _source, _at, _launch, mode) => {
+      if (mode !== "identity") await duringUsage();
+      return { auth: "subscription", status: "ready" };
+    },
+  });
+  await resumer.onTurnEnded(turnEnded("a", "codex", failed(CAPACITY)), api);
+  duringUsage = async () => { settings = { ...labs, overloadRetry: false }; };
+  assert.deepEqual(await resumer.resumeNow(api, "a", await pinOf(store, "a")), { result: "canceled", reason: "overload_off" });
+  assert.equal(sent.length, 0);
+  settings = labs; duringUsage = async () => {};
+  await resumer.onTurnEnded(turnEnded("a", "codex", failed(CAPACITY)), api);
+  overrideSend(api, async (text, original) => {
+    settings = { ...labs, overloadRetry: false };
+    await resumer.reconcileOverload();
+    assert.equal((await store.list())[0]!.state, "sending");
+    await original(text);
+  });
+  await resumer.resumeNow(api, "a", await pinOf(store, "a"));
+  assert.equal(sent.length, 1);
+});
+
+test("a fast overload failure while send is resolving keeps its next reservation", async () => {
+  const { resumer, api } = await setup({ a: { provider: "codex" } }, { readResumeSettings: async () => labs });
+  await resumer.onTurnEnded(turnEnded("a", "codex", failed(CAPACITY)), api);
+  const first = (await store.list())[0]!;
+  overrideSend(api, async (text, original) => {
+    await original(text);
+    await resumer.onTurnEnded(turnEnded("a", "codex", failed(CAPACITY)), api);
+  });
+  await resumer.resumeNow(api, "a", { id: first.id, dueAt: first.dueAt });
+  const next = (await store.list())[0]!;
+  assert.deepEqual([next.state, next.overloadStep, next.attempts], ["pending", 2, 1]);
+  assert.notEqual(next.id, first.id);
+});
+
+test("limit detection wins and pending limit reservations ignore overloads", async () => {
+  const { resumer, api } = await setup({ a: { provider: "codex" } }, { readResumeSettings: async () => labs });
+  await resumer.onTurnEnded(turnEnded("a", "codex", failed(CAPACITY), [{ type: "error", message: CODEX_LIMIT }]), api);
+  const job = (await store.list())[0]!;
+  assert.equal(job.kind, undefined);
+  await resumer.onTurnEnded(turnEnded("a", "codex", failed(CAPACITY)), api);
+  assert.deepEqual((await store.list())[0], job);
+});
+
+test("capacity detection uses the configured CLI, including Claude completed notices and Antigravity partial output", async () => {
+  const rows = [
+    { provider: "claude-sub", outcome: { kind: "completed" } as const, timeline: claudeNotice("API Error: 529 Overloaded.") },
+    { provider: "antigravity-fast", outcome: failed("agent executor error: generating and executing: Error 503, Message: unavailable, Status: UNAVAILABLE, Details: [map[reason:MODEL_CAPACITY_EXHAUSTED]]"), timeline: claudeNotice("Partial work done.") },
+  ];
+  for (const row of rows) {
+    await store.update("a", () => null);
+    const { resumer, api } = await setup({ a: { provider: row.provider } }, { readResumeSettings: async () => labs });
+    await resumer.onTurnEnded(turnEnded("a", row.provider, row.outcome, row.timeline), api);
+    assert.equal((await store.list())[0]!.kind, "overload");
+  }
+});
+
+test("a saved overload keeps its stage and due time across restart and competes for one claim", async () => {
+  const { resumer, api, readSubscription, sent } = await setup({ a: { provider: "codex" } }, { readResumeSettings: async () => labs });
+  await resumer.onTurnEnded(turnEnded("a", "codex", failed(CAPACITY)), api);
+  const pending = (await store.list())[0]!;
+  const restarted = createResumer({ store, history, now: () => clock, readSubscription, readResumeSettings: async () => labs });
+  await restarted.recover();
+  await restarted.attach(api);
+  assert.deepEqual((await store.list())[0], pending);
+  clock = new Date(pending.dueAt);
+  await Promise.all([restarted.tick(), restarted.resumeNow(api, "a", { id: pending.id, dueAt: pending.dueAt })]);
+  assert.equal(sent.length, 1);
+});
+
+test("a limit conversion during verification prevents the stale overload claim", async () => {
+  let replace = false;
+  const { resumer, api, sent } = await setup({ a: { provider: "codex" } }, {
+    readResumeSettings: async () => labs,
+    readSubscription: async (_api, _agent, _source, _at, _launch, mode) => {
+      if (replace && mode !== "identity") await store.update("a", current => current ? { ...current, kind: undefined, overloadStep: undefined } : undefined);
+      return { auth: "subscription", status: "ready" };
+    },
+  });
+  await resumer.onTurnEnded(turnEnded("a", "codex", failed(CAPACITY)), api);
+  replace = true;
+  assert.equal((await resumer.resumeNow(api, "a", await pinOf(store, "a"))).result, "changed");
+  assert.equal(sent.length, 0);
+  assert.equal((await store.list())[0]!.kind, undefined);
+});
+
+test("unreadable resume settings neither make nor cancel overload retries; they wait until Labs reads again", async () => {
+  let settings: ResumeSettings | null = labs;
+  let throws = false;
+  const { resumer, api, sent } = await setup({ a: { provider: "codex" } }, {
+    readResumeSettings: async () => { if (throws) throw Error("EACCES"); return settings; },
+  });
+  await resumer.onTurnEnded(turnEnded("a", "codex", failed(CAPACITY)), api);
+  const job = (await store.list())[0]!;
+  for (const unreadable of [() => { settings = null; }, () => { settings = labs; throws = true; }]) {
+    unreadable();
+    await resumer.reconcileOverload();
+    clock = new Date(job.dueAt);
+    await resumer.tick();
+    assert.deepEqual(await resumer.resumeNow(api, "a", { id: job.id, dueAt: job.dueAt }), { result: "unavailable" });
+    assert.deepEqual(await store.list(), [job]);
+    throws = false;
+  }
+  await store.update("a", () => null);
+  settings = null;
+  await resumer.onTurnEnded(turnEnded("a", "codex", failed(CAPACITY)), api);
+  assert.deepEqual(await store.list(), [], "no new retry while Labs cannot be read");
+  assert.deepEqual([sent.length, (await history.list()).length], [0, 0]);
+  await store.update("a", () => job);
+  settings = labs;
+  await resumer.tick();
+  assert.equal(sent[0]!.text, continuePrompt({ kind: "overload", custom: null }));
+});
+
+test("an overload check that cannot read the CLI leaves the turn event Labs off would see", async () => {
+  const { resumer, api } = await setup({ a: { provider: "claude-sub" } }, { readResumeSettings: async () => labs });
+  await resumer.onTurnEnded(turnEnded("a", "claude-sub", { kind: "completed" }, claudeNotice(CLAUDE_LIMIT)), api);
+  assert.equal((await store.list()).length, 1);
+  api.config.get = async () => { throw Error("daemon config unavailable"); };
+  await resumer.onTurnEnded(turnEnded("a", "claude-sub", { kind: "completed" }, claudeNotice("API Error: 529 Overloaded.")), api);
+  assert.deepEqual(await store.list(), []);
+  assert.equal((await history.list())[0]!.reason, "turn_finished");
+});
+
+test("history names the kind of the reservation a plan ended", async () => {
+  let identity = "first";
+  const { resumer, api } = await setup({ a: { provider: "codex" } }, {
+    readResumeSettings: async () => labs,
+    readSubscription: async () => ({ auth: "subscription", status: "ready", identity }),
+  });
+  await resumer.onTurnEnded(turnEnded("a", "codex", failed(CAPACITY)), api);
+  identity = "second";
+  await resumer.onTurnEnded(turnEnded("a", "codex", failed(CODEX_LIMIT)), api);
+  const [entry] = await history.list();
+  assert.deepEqual([entry!.outcome, entry!.reason, entry!.kind], ["canceled", "account_changed", "overload"]);
+});
+
+test("a restart with Labs off retires persisted overload retries and keeps limit reservations", async () => {
+  const { resumer, api, readSubscription } = await setup({ a: { provider: "codex" }, b: { provider: "codex" } }, { readResumeSettings: async () => labs });
+  await resumer.onTurnEnded(turnEnded("a", "codex", failed(CAPACITY)), api);
+  await resumer.onTurnEnded(turnEnded("b", "codex", failed(CODEX_LIMIT)), api);
+  const restarted = createResumer({ store, history, now: () => clock, readSubscription, readResumeSettings: async () => DEFAULT_RESUME_SETTINGS });
+  await restarted.attach(api);
+  assert.deepEqual((await store.list()).map(job => [job.agentId, job.kind]), [["b", undefined]]);
+  assert.deepEqual((await history.list()).map(e => [e.agentId, e.reason, e.kind]), [["a", "overload_off", "overload"]]);
+});
+
+test("with Labs off a Claude overload notice is a finished turn, as before Labs existed", async () => {
+  const { resumer, api } = await setup({ a: { provider: "claude-sub" } });
+  await resumer.onTurnEnded(turnEnded("a", "claude-sub", { kind: "completed" }, claudeNotice(CLAUDE_LIMIT)), api);
+  assert.equal((await store.list()).length, 1);
+  await resumer.onTurnEnded(turnEnded("a", "claude-sub", { kind: "completed" }, claudeNotice("API Error: Repeated 529 Overloaded errors. The API is at capacity — this is usually temporary.")), api);
+  assert.deepEqual(await store.list(), []);
+  assert.equal((await history.list())[0]!.reason, "turn_finished");
+});
+
+test("a switch turned off after planning read it retires the overload retry just written, judged by the row stored then", async () => {
+  // Labs is read by the overload check, before and after usage, and once more after the write;
+  // provider settings by the turn event, by planning and once more after the write.
+  const run = async (agentId: string, labsAfter: (() => Promise<boolean | null>) | null, providerOff = false, outcome = failed(CAPACITY)) => {
+    let labsReads = 0, providerReads = 0;
+    const { resumer, api } = await setup({ [agentId]: { provider: "codex" } }, {
+      readResumeSettings: async () => {
+        if (++labsReads < 4 || !labsAfter) return labs;
+        const on = await labsAfter();
+        return on === null ? null : { ...labs, overloadRetry: on };
+      },
+      readSettings: async () => (++providerReads < 3 || !providerOff ? DEFAULT_PROVIDER_SETTINGS : { disabledProviders: ["codex"] }),
+    });
+    labsReads = 0; providerReads = 0;
+    await resumer.onTurnEnded(turnEnded(agentId, "codex", outcome), api);
+    const row = (await store.list()).find(job => job.agentId === agentId);
+    const ended = (await history.list()).filter(e => e.agentId === agentId).map(e => [e.reason, e.kind ?? null]);
+    return { row, ended };
+  };
+  assert.deepEqual((await run("off", async () => false)).ended, [["overload_off", "overload"]]);
+  const provider = await run("provider", null, true);
+  assert.deepEqual([provider.row, provider.ended], [undefined, [["provider_off", "overload"]]]);
+  // Planned again as a limit before the re-check: a limit reservation is not Labs' to cancel.
+  const converted = await run("converted", async () => {
+    await store.update("converted", current => current ? { ...current, kind: undefined, overloadStep: undefined } : undefined);
+    return false;
+  });
+  assert.deepEqual([converted.row?.kind, converted.ended], [undefined, []]);
+  const unreadable = await run("unreadable", async () => null);
+  assert.deepEqual([unreadable.row?.kind, unreadable.ended], ["overload", []]);
+  // A limit reservation keeps the behavior it had before Labs: its due time checks the provider.
+  const limit = await run("limit", null, true, failed(CODEX_LIMIT));
+  assert.deepEqual([limit.row?.kind, limit.row?.state, limit.ended], [undefined, "pending", []]);
 });

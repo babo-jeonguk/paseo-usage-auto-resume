@@ -1,3 +1,4 @@
+import { replanOverload } from "./reservation";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { isSameJob, noted, pinned, postponed, replan, rescheduled, sent, switched, type Plan, type Stop } from "./reservation";
@@ -124,4 +125,46 @@ test("a postponement makes the time the plan's again, and a renewal starts the r
 test("a sent continue keeps its id and drops what the user set for it", () => {
   const done = sent(job({ state: "sending", note: "x", userChosenTime: true }));
   assert.deepEqual([done.id, done.state, done.note, done.userChosenTime], ["r1", "sent", undefined, undefined]);
+});
+
+test("capacity stages keep pending jobs, advance only after sending, and share the total bound", () => {
+  const first = written(replanOverload(null, reset, () => 0.5));
+  assert.deepEqual([first.kind, first.overloadStep, first.attempts, first.dueAt], ["overload", 1, 0, "2026-10-06T03:03:00.000Z"]);
+  for (const current of [job(), first]) assert.equal(replanOverload(current, reset, () => { throw Error("no resampling"); }), null);
+  for (const state of ["sent", "sending"] as const) {
+    const second = written(replanOverload({ ...first, state }, reset, () => 0.5));
+    const third = written(replanOverload({ ...second, state }, reset, () => 0.5));
+    assert.deepEqual([second.overloadStep, second.attempts, second.dueAt], [2, 1, "2026-10-06T03:10:00.000Z"]);
+    assert.deepEqual([third.overloadStep, third.attempts, third.dueAt], [3, 2, "2026-10-06T03:25:00.000Z"]);
+    assert.equal(ended(replanOverload({ ...third, state }, reset, () => 0.5)), "overload_retries");
+    assert.equal(ended(replanOverload({ ...first, state, attempts: 23 }, reset, () => 0.5)), "attempts");
+    const fromLimit = written(replanOverload(job({ state, attempts: 6, retries: 3 }), reset, () => 0.5));
+    assert.deepEqual([fromLimit.overloadStep, fromLimit.attempts, fromLimit.retries], [1, 7, 3]);
+    assert.equal(ended(replan({ ...fromLimit, state }, retry)), "retries");
+    const midLimit = written(replanOverload(job({ state, attempts: 1, retries: 1 }), reset, () => 0.5));
+    assert.equal(written(replan({ ...midLimit, state }, retry)).retries, 2);
+    const toLimit = written(replan({ ...third, state }, retry));
+    assert.deepEqual([toLimit.kind, toLimit.overloadStep, toLimit.attempts, toLimit.retries], [undefined, undefined, 3, 1]);
+  }
+});
+
+test("a pending overload becomes a limit without consuming a continue and preserves user choices", () => {
+  const pending = { ...written(replanOverload(null, reset, () => 0.5)), note: "remember", enabled: false, userChosenTime: true as const, dueAt: "2026-10-06T09:00:00.000Z" };
+  const next = written(replan(pending, reset));
+  assert.deepEqual([next.id, next.kind, next.overloadStep, next.attempts, next.note, next.enabled, next.dueAt],
+    [pending.id, undefined, undefined, 0, "remember", false, pending.dueAt]);
+  assert.equal(isSameJob(next, pending), false);
+  assert.equal(isSameJob({ ...pending, overloadStep: 2 }, pending), false);
+  const replaced = written(replanOverload(pending, { ...reset, baseline: LATER }, () => 0.5));
+  assert.deepEqual([replaced.note, replaced.enabled, replaced.overloadStep], [undefined, true, 1]);
+});
+
+test("capacity postponement preserves its stage unless usage is confirmed exhausted, even without a reset", () => {
+  const pending = written(replanOverload(null, reset, () => 0.5));
+  const unknown = postponed(pending, { renewsAt: null, waiting: "auth", at: AT });
+  assert.deepEqual([unknown.kind, unknown.overloadStep], ["overload", 1]);
+  for (const renewsAt of [null, RESET]) {
+    const next = postponed(pending, { renewsAt, waiting: "usage", at: AT, usedUp: true });
+    assert.deepEqual([next.kind, next.overloadStep, next.attempts, next.retries], [undefined, undefined, 0, 0]);
+  }
 });

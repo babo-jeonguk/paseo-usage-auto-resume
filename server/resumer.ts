@@ -2,7 +2,8 @@ import type { AgentTimelineItem, PaseoAgent, PaseoApi } from "./paseo-types";
 import type { PluginLifecycleEvents, PluginSessionOpenRequest } from "@getpaseo/plugin/server";
 import { randomUUID } from "node:crypto";
 import { ACCOUNT_CHANGED, agentGate, API_ROUTE, canceled, turnAction, turnEventOf, type Cancellation, type Gate, type Outcome, type TurnEvent } from "./decisions";
-import { claimed, isSameJob, noted, pinned, postponed, replan, rescheduled, sent, switched, type Pin, type Plan } from "./reservation";
+import { claimed, isSameJob, noted, pinned, postponed, replan, replanOverload, rescheduled, sent, switched, type Pin, type Plan } from "./reservation";
+import { detectOverloadStop } from "./overload";
 import { detectLimitStop } from "./limit";
 import type { HistoryRow, RescheduleResult, ResumeNowResult, ScheduledJob, SetNoteResult, Waiting } from "../shared/rpc";
 import type { HistoryStore } from "./history";
@@ -106,17 +107,27 @@ export function createResumer(options: {
   /** Where final results are recorded; without one nothing is kept. */
   history?: HistoryStore;
   now?: () => Date;
+  random?: () => number;
   /** Null means unreadable settings: wait instead of enabling the public defaults. */
   readSettings?: () => Promise<ProviderSettings | null>;
-  /** What a continue says. Never holds a resume: anything unreadable sends the built-in prompt. */
-  readResumeSettings?: () => Promise<ResumeSettings>;
+  /**
+   * Null means unreadable settings. A continue still goes with the built-in prompt; overload
+   * retries are neither made nor canceled until the Labs switch can be read.
+   */
+  readResumeSettings?: () => Promise<ResumeSettings | null>;
   readSubscription?: SubscriptionReader;
 }) {
   const { store } = options;
   const history: HistoryStore = options.history ?? { list: async () => [], append: async () => {} };
   const now = options.now ?? (() => new Date());
   const readSettings = options.readSettings ?? (async () => DEFAULT_PROVIDER_SETTINGS);
-  const readResumeSettings = options.readResumeSettings ?? (async () => DEFAULT_RESUME_SETTINGS);
+  const readResumeSettings = async (): Promise<ResumeSettings | null> => {
+    try { return await (options.readResumeSettings?.() ?? DEFAULT_RESUME_SETTINGS); }
+    catch { return null; }
+  };
+  /** The Labs overload switch; null while it cannot be read. */
+  const overloadRetry = async () => (await readResumeSettings())?.overloadRetry ?? null;
+  const random = options.random ?? Math.random;
   let paseo: ResumerApi | null = null;
   let ticking = false;
   const launches = new Map<string, LaunchContext>();
@@ -145,12 +156,30 @@ export function createResumer(options: {
     const { outcome } = event;
     const observedAt = now();
     let stop = null;
+    let overloaded = false;
     if (outcome.kind !== "canceled") {
       // The event's own timeline is deprecated and empty from Paseo 0.13, so it is never read.
-      stop = detectLimitStop(outcome, await timelineTail(api, event.agent.id), observedAt);
+      const timeline = await timelineTail(api, event.agent.id);
+      stop = detectLimitStop(outcome, timeline, observedAt);
+      if (!stop) overloaded = await isOverloadStop(api, event, timeline);
     }
-    const kind = turnEventOf(outcome.kind, !!stop);
-    await onTurn(api, event.agent.id, kind, stop ? { resetAt: stop.resetAt, observedAt } : undefined);
+    const kind = turnEventOf(outcome.kind, !!stop, overloaded);
+    await onTurn(api, event.agent.id, kind, stop || overloaded ? { resetAt: stop?.resetAt ?? null, observedAt } : undefined);
+  }
+
+  /**
+   * Overload is read on top of the turn event Labs off would see, so anything it cannot read
+   * leaves that event: a finished turn still cancels and clears as without Labs.
+   */
+  async function isOverloadStop(api: ResumerApi, event: TurnEnded, timeline: readonly AgentTimelineItem[]): Promise<boolean> {
+    try {
+      if (!(await overloadRetry())) return false;
+      const source = cliFor((await api.config.get()).config, event.agent.provider);
+      return !!source && detectOverloadStop(event.outcome, timeline, source);
+    } catch (error) {
+      console.error(`[usage-auto-resume] could not check ${event.agent.id} for an overload`, String(error));
+      return false;
+    }
   }
 
   function onTurnStarted(agentId: string, api: ResumerApi): Promise<void> {
@@ -165,7 +194,7 @@ export function createResumer(options: {
   async function onTurn(api: ResumerApi, agentId: string, event: TurnEvent, stop?: { resetAt: Date | null; observedAt: Date }): Promise<void> {
     const row = (await store.list()).find((job) => job.agentId === agentId) ?? null;
     // An agent that cannot be read only loses the message check; a finished turn still clears.
-    const agent = row?.state === "pending" || event === "limit" ? await loadAgent(api, agentId).catch(() => null) : null;
+    const agent = row?.state === "pending" || event === "limit" || event === "overload" ? await loadAgent(api, agentId).catch(() => null) : null;
     const action = turnAction(row, agent, event);
     // A reservation that replaced the one read is not this event's.
     const stillSeen = (current: ResumeJob | null, state: ResumeJob["state"]) => !!current && !!row && current.id === row.id && current.state === state;
@@ -175,7 +204,7 @@ export function createResumer(options: {
     if (!action.schedules || !agent || !stop) return;
     const settings = await readSettings();
     const source = settings && (await resumableSource(api, agent.provider, settings));
-    if (source) await schedule(api, agent, source, stop.resetAt, stop.observedAt, { onlyIfNone: false });
+    if (source) await schedule(api, agent, source, stop.resetAt, stop.observedAt, { onlyIfNone: false, overload: event === "overload" });
   }
 
   async function schedule(
@@ -184,8 +213,9 @@ export function createResumer(options: {
     source: UsageSource,
     stated: Date | null,
     observedAt: Date,
-    options: { onlyIfNone: boolean },
+    options: { onlyIfNone: boolean; overload?: boolean },
   ): Promise<void> {
+    if (options.overload && !(await overloadRetry())) return;
     const previous = (await store.list()).find((job) => job.agentId === agent.id);
     // A missed stop is planned unless a reservation is still waiting or being sent; after a sent
     // continue it counts as one more.
@@ -193,8 +223,8 @@ export function createResumer(options: {
     if (options.onlyIfNone && waits(previous)) return;
     const launch = launches.get(agent.id) ?? previous?.launch;
     const at = now();
-    // A notice supplies the schedule; only bind identity here, leaving usage until delivery.
-    const check = await inspect(api, agent, source, at, launch, stated ? "identity" : "usage");
+    // A notice or capacity failure supplies the schedule; bind identity without reading usage.
+    const check = await inspect(api, agent, source, at, launch, stated || options.overload ? "identity" : "usage");
     if (check.auth === "api") {
       // Only a reservation still waiting is canceled; a continue already sent was reported.
       launches.delete(agent.id);
@@ -205,27 +235,51 @@ export function createResumer(options: {
     const plan: Plan = stated ? { kind: "reset", resetAt: stated } : planFor(check, at);
     const settings = await readSettings();
     if (!settings || !isProviderOn(agent.provider, settings)) return;
+    if (options.overload && !(await overloadRetry())) return;
     const stop = {
       id: randomUUID(),
-      agentId: agent.id, provider: agent.provider, plan, at, baseline: agent.lastUserMessageAt ?? null,
+      agentId: agent.id, provider: agent.provider, plan, at: options.overload ? observedAt : at, baseline: agent.lastUserMessageAt ?? null,
       identity: check.identity, model: subscriptionModel(agent), launch,
     };
-    let ended = null as Outcome | null;
+    // Assigned inside the callback, which TypeScript does not follow.
+    let ended = null as { row: ResumeJob; outcome: Outcome } | null;
+    let written = null as ResumeJob | null;
     await store.update(agent.id, (current) => {
       if (options.onlyIfNone && waits(current)) return undefined;
-      const next = replan(current, stop);
+      const next = options.overload ? replanOverload(current, stop, random) : replan(current, stop);
       if (!next) return undefined;
-      if (next.end) {
+      // A plan only ends the row it found.
+      if (next.end && current) {
         log(`${next.end.outcome} ${agent.id}: ${next.end.detail}`);
-        ended = next.end;
+        ended = { row: current, outcome: next.end };
       }
       const job = next.write;
       if (!job) return null;
-      log(`scheduled ${agent.id} (${agent.provider}) for ${job.dueAt}; ${plan.kind === "retry" ? `retry ${job.retries} of ${RETRY_DELAYS_MS.length}` : `reset ${job.resetAt ?? "unknown"}`}`);
+      log(`scheduled ${agent.id} (${agent.provider}) for ${job.dueAt}; ${job.kind === "overload" ? `overload retry ${job.overloadStep} of 3` : plan.kind === "retry" ? `retry ${job.retries} of ${RETRY_DELAYS_MS.length}` : `reset ${job.resetAt ?? "unknown"}`}`);
+      written = job;
       return job;
     });
     // Recorded outside the update so the job file is never held waiting on the history file.
-    if (ended) await record(agent.id, agent.provider, { ...ended, title: titleOf(agent) });
+    if (ended) await record(ended.row, { ...ended.outcome, title: titleOf(agent) });
+    if (written) await retireIfSwitchedOff(written);
+  }
+
+  /**
+   * The switches were read before the write, and turning one off sweeps only the reservations
+   * stored when it runs. Reading them again after the write closes that gap for an overload
+   * retry: a sweep that ran first is seen here as the switch being off, and one that runs later
+   * finds the row. The row stored now decides, as in the sweeps, so a retry planned again as a
+   * limit meanwhile is left alone. Limit reservations keep the behavior they had before Labs.
+   */
+  async function retireIfSwitchedOff(job: ResumeJob): Promise<void> {
+    if (job.kind !== "overload") return;
+    const retry = (current: ResumeJob) => current.id === job.id && current.state === "pending" && current.kind === "overload";
+    const settings = await readSettings();
+    if (settings && !isProviderOn(job.provider, settings)) {
+      await retire(job.agentId, (current) => retry(current) && !isProviderOn(current.provider, settings), providerOff(job.provider));
+      return;
+    }
+    if ((await overloadRetry()) === false) await retire(job.agentId, retry, canceled("overload_off", "overload retry turned off"));
   }
 
   /** The agent's latest timeline items, oldest first; none, and a log line, when they cannot be read. */
@@ -281,9 +335,13 @@ export function createResumer(options: {
     }
   }
 
-  /** Adds a final result to the history; a failed write is logged and never stops a resume. */
-  async function record(agentId: string, provider: string, outcome: Outcome): Promise<void> {
-    await history.append({ agentId, provider, outcome: outcome.outcome, reason: outcome.reason, title: outcome.title ?? null, trigger: outcome.trigger })
+  /**
+   * Adds how a reservation ended to the history, described by that row; a failed write is logged
+   * and never stops a resume.
+   */
+  async function record(row: Pick<ResumeJob, "agentId" | "provider" | "kind">, outcome: Outcome): Promise<void> {
+    const { agentId, provider, kind } = row;
+    await history.append({ agentId, provider, ...(kind ? { kind } : {}), outcome: outcome.outcome, reason: outcome.reason, title: outcome.title ?? null, trigger: outcome.trigger })
       .catch((error) => console.error("[usage-auto-resume] could not record history", String(error)));
   }
 
@@ -305,7 +363,7 @@ export function createResumer(options: {
     });
     if (!removed) return false;
     log(outcome.outcome === "interrupted" ? `dropped interrupted continue for ${agentId}` : `${outcome.outcome} ${agentId}: ${outcome.detail}`);
-    await record(agentId, removed.provider, outcome);
+    await record(removed, outcome);
     return true;
   }
 
@@ -326,7 +384,7 @@ export function createResumer(options: {
     if (hold.kind === "ready" && !renewsAt) return false;
     const waiting = hold.kind === "unverified" ? hold.waiting : "usage";
     await store.update(job.agentId, (current) => current && isSameJob(current, job) && current.enabled
-      ? postponed(current, { renewsAt, waiting, identity: check.identity, at }) : undefined);
+      ? postponed(current, { renewsAt, waiting, identity: check.identity, at, usedUp: hold.kind === "used_up" }) : undefined);
     return true;
   }
 
@@ -344,6 +402,14 @@ export function createResumer(options: {
     const same = (current: ResumeJob) => isSameJob(current, job);
     const cancel = async (outcome: Cancellation): Promise<Delivery> =>
       await retire(job.agentId, same, { ...outcome, trigger }) ? { result: "canceled", reason: outcome.reason } : { result: "changed" };
+    const labsGate = async (): Promise<Delivery | null> => {
+      if (job.kind !== "overload") return null;
+      const on = await overloadRetry();
+      if (on === null) return { result: "unavailable" };
+      return on ? null : cancel(canceled("overload_off", "overload retry turned off"));
+    };
+    const labs = await labsGate();
+    if (labs) return labs;
     const settings = await readSettings();
     if (!settings) return { result: "unavailable" };
     if (!isProviderOn(job.provider, settings)) return cancel(providerOff(job.provider));
@@ -389,6 +455,8 @@ export function createResumer(options: {
     // tell: a row another attempt already claimed comes back unchanged, also as `sending`.
     // The note is taken from the claimed row, not `job`: one saved while the agent was being
     // checked must go with it, and `isSameJob` ignores notes so that saving one never fails a claim.
+    const latestLabs = await labsGate();
+    if (latestLabs) return latestLabs;
     let won = false as boolean;
     let note: string | undefined;
     const latest = await store.update(job.agentId, (current) => {
@@ -400,21 +468,21 @@ export function createResumer(options: {
     if (!won) return staleResult(latest);
     // Read once claimed, so a prompt saved while the agent was being checked is the one sent. A
     // failure here must not leave the claim behind, so it falls back to the built-in prompt.
-    const { continuePrompt: custom } = await readResumeSettings().catch(() => DEFAULT_RESUME_SETTINGS);
+    const custom = (await readResumeSettings())?.continuePrompt ?? null;
     try {
       // A turn that starts after the last check is steered, not replaced, where the provider can.
-      await api.agents.ref(job.agentId).send(continuePrompt({ custom, note }), { activeTurnBehavior: "steer" });
+      await api.agents.ref(job.agentId).send(continuePrompt({ custom, note, kind: job.kind }), { activeTurnBehavior: "steer" });
     } catch (error) {
       await store.update(job.agentId, (current) => (current?.state === "sending" && current.id === job.id ? null : undefined));
       console.error(`[usage-auto-resume] could not continue ${job.agentId}`, String(error));
-      await record(job.agentId, job.provider, { outcome: "send_failed", title, trigger });
+      await record(job, { outcome: "send_failed", title, trigger });
       return { result: "send_failed" };
     }
     // The sent row stays until the agent's next turn ends, which clears it without a report. The
     // note went with the continue, so the user's text is not kept any longer.
     await store.update(job.agentId, (current) => (current?.state === "sending" && current.id === job.id ? sent(current) : undefined));
     log(`continued ${job.agentId}${manual ? " on request" : ""}`);
-    await record(job.agentId, job.provider, { outcome: "continued", title, trigger });
+    await record(job, { outcome: "continued", title, trigger });
     return { result: "sent" };
   }
 
@@ -440,6 +508,16 @@ export function createResumer(options: {
     }
   }
 
+  /** Labs off retires pending capacity retries; enabling never restores them, and unreadable settings keep them. */
+  async function reconcileOverload(): Promise<void> {
+    if ((await overloadRetry()) !== false) return;
+    for (const job of await store.list()) {
+      if (job.kind !== "overload" || job.state !== "pending") continue;
+      await retire(job.agentId, (current) => current.state === "pending" && current.kind === "overload",
+        canceled("overload_off", "overload retry turned off"));
+    }
+  }
+
   async function tick(): Promise<void> {
     const api = paseo;
     if (!api || ticking) return;
@@ -462,7 +540,7 @@ export function createResumer(options: {
     const first = paseo === null;
     paseo = api;
     if (!first) return Promise.resolve();
-    return reconcileProviders().then(() => scan(api))
+    return reconcileProviders().then(reconcileOverload).then(() => scan(api))
       .catch((error) => console.error("[usage-auto-resume] startup scan failed", String(error)))
       .then(tick);
   }
@@ -485,6 +563,7 @@ export function createResumer(options: {
           .refresh()
           .catch(() => null);
         return {
+          ...(job.kind ? { kind: job.kind } : {}),
           id: job.id,
           agentId: job.agentId,
           provider: job.provider,
@@ -622,5 +701,6 @@ export function createResumer(options: {
     setNote,
     resumeNow,
     reconcileProviders,
+    reconcileOverload,
   };
 }
