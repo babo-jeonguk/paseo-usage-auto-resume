@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict';
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { closeSync, existsSync, openSync, readFileSync, appendFileSync } from 'node:fs';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
@@ -123,7 +123,7 @@ const paseo = async (...a) => (await run(nodeBin, [paseoBin, ...a, '--home', hom
 const proxyEnv = { HTTPS_PROXY: `http://127.0.0.1:${proxyPort}`, HTTP_PROXY: `http://127.0.0.1:${proxyPort}`, NO_PROXY: '127.0.0.1,localhost', https_proxy: `http://127.0.0.1:${proxyPort}`, http_proxy: `http://127.0.0.1:${proxyPort}`, no_proxy: '127.0.0.1,localhost' };
 const modelUrl = `http://127.0.0.1:${modelPort}`;
 const claudeEnv = (dir) => ({ CLAUDE_CODE_OAUTH_TOKEN: 'e2e-fixture-only', ANTHROPIC_BASE_URL: modelUrl, CLAUDE_CONFIG_DIR: join(root, dir),
-  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_TELEMETRY: '1', DISABLE_AUTOUPDATER: '1', DISABLE_ERROR_REPORTING: '1', ...proxyEnv });
+  ...(args.overload ? { CLAUDE_CODE_MAX_RETRIES: '0' } : {}), CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_TELEMETRY: '1', DISABLE_AUTOUPDATER: '1', DISABLE_ERROR_REPORTING: '1', ...proxyEnv });
 const codexHome = join(root, 'codex-home'), agyHome = join(root, 'agy-home');
 const providers = {};
 const withCmd = (bin) => bin ? { command: [bin] } : {};
@@ -284,6 +284,14 @@ try {
   log(`daemon up (Paseo ${paseoVersion}) at ${target}; suites=${suites}; ui=${UI}; min=${MIN}`);
   workspace = (await client.createWorkspace({ source: { kind: 'directory', path: work }, title: 'UAR E2E' })).workspace;
 
+  if (args.overload) {
+    const source = join(root, 'source');
+    await cp(dirname(here), source, { recursive: true, filter: p => !['node_modules', '.git', '.scratch', '.cache'].includes(p.split(/[\\/]/).at(-1)) });
+    await client.installPluginSource({ source });
+    await patchInstalled();
+    const { runOverload } = await import('./overload.mjs');
+    await runOverload({ ...ctx, suites, paseoVersion, daemonLog, binaries: { claude: args.claude, codex: args.codex, antigravity: args.agy }, run, baseEnv });
+  } else {
   // ---- 1. install the older release from GitHub ------------------------------------------------------
   await step(1, 'claude', `install ${OLD_REF} through paseo plugin install (git source + ref)`, async () => {
     await paseo('plugin', 'install', GIT_SOURCE, '--ref', OLD_REF, '--json');
@@ -581,13 +589,14 @@ try {
 
   // ---- 14. daemon log -------------------------------------------------------------------
   await step(14, 'log', 'daemon log has no plugin errors apart from intended ones', async () => {
-    const lines = (await pluginLogLines()).filter((l) => !l.includes('e2e-probe'));
+    const lines = (await pluginLogLines()).filter((l) => !/e2e-(probe|outcome)/.test(l));
     const bad = lines.filter((l) => /(failed|could not|error|unreadable)/i.test(l)).map((l) => l.replace(/^\{.*?"msg":"/, '').slice(0, 260));
     const all = (await readFile(daemonLog, 'utf8')).split(/\r?\n/).filter((l) => /"level":(50|60)/.test(l)).map((l) => { try { const j = JSON.parse(l); return `${j.module ?? ''}: ${String(j.msg ?? '').slice(0, 160)}`; } catch { return l.slice(0, 160); } });
     results.push({ item: 14, suite: 'log-detail', ok: null, name: 'plugin log lines / level>=50 lines', ev: JSON.stringify({ pluginLines: lines.length, bad, level50: all.slice(0, 20) }) });
     assert.equal(bad.length, 0, 'plugin error lines: ' + bad.join(' || '));
     return `${lines.length} [usage-auto-resume] lines (excluding probe), 0 error lines; level>=50 daemon lines: ${all.length}`;
   });
+  }
 } catch (e) {
   log('FATAL', e?.stack ?? e);
   results.push({ item: 'fatal', suite: '-', ok: false, name: 'harness', ev: String(e?.stack ?? e).slice(0, 800) });
@@ -603,4 +612,5 @@ try {
   console.log('SUMMARY ' + JSON.stringify({ label, loopMaxMs: summary.eventLoopMaxMs, fake: summary.fakeRequestsTotal, byApi: summary.byApi, blocked: summary.proxyBlockedConnects, hosts: summary.proxyHosts }));
   await stopAll();
   console.log('DONE root=' + root);
+  if (results.some(r => r.ok === false)) process.exitCode = 1;
 }
