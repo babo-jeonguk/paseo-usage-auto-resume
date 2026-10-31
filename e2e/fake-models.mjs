@@ -2,7 +2,7 @@
 // streamGenerateContent, on ONE port. Every request is logged (JSONL) so the harness can count them.
 // Control file (JSON, re-read per request), one section per API:
 //   { "claude": {"mode":"limit","resetInSec":5400}, "codex": {"mode":"limit","resetInSec":7200}, "agy": {"mode":"limit"} }
-//   mode: "text" (default, reply c.text||"Done.") | "limit" | "notice" (claude only: notice text as a normal reply)
+//   mode: "text" (default, reply c.text||"Done.") | "limit" | "overload" | "overload-stream" (claude only: overloaded_error after HTTP 200) | "notice" (claude only)
 // usage: node fake-models.mjs <port> <controlFile> <logFile>
 import { createServer } from 'node:http';
 import { readFileSync, appendFileSync } from 'node:fs';
@@ -36,6 +36,16 @@ createServer((req, res) => {
     const sse = (events) => { res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' }); for (const [ev, data] of events) res.write((ev ? `event: ${ev}\n` : '') + `data: ${JSON.stringify(data)}\n\n`); res.end(); };
 
     if (api === 'claude') {
+      // The API can also report an overload inside a stream that began with HTTP 200; requests
+      // without a stream get the status, as the API answers them.
+      if (mode === 'overload' || (mode === 'overload-stream' && !parsed.stream)) return json(529, {}, { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } });
+      if (mode === 'overload-stream') {
+        const id = 'msg_fixture_' + Date.now(), usage = { input_tokens: 10, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+        return sse([
+          ['message_start', { type: 'message_start', message: { id, type: 'message', role: 'assistant', model: parsed.model ?? 'claude-fixture', content: [], stop_reason: null, stop_sequence: null, usage } }],
+          ['error', { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } }],
+        ]);
+      }
       if (mode === 'limit') {
         const reset = Math.floor(Date.now() / 1000) + (c.resetInSec ?? 5400);
         return json(429, {
@@ -62,6 +72,7 @@ createServer((req, res) => {
       ]);
     }
     if (api === 'codex') {
+      if (mode === 'overload') return sse([['response.failed', { type: 'response.failed', response: { error: { code: 'server_is_overloaded', message: 'Server is overloaded' } } }]]);
       if (mode === 'limit') {
         const resetIn = c.resetInSec ?? 7200;
         return json(429, {}, { error: { type: 'usage_limit_reached', message: 'The usage limit has been reached', plan_type: 'plus', resets_at: Math.floor(Date.now() / 1000) + resetIn, resets_in_seconds: resetIn } });
@@ -76,6 +87,7 @@ createServer((req, res) => {
       ]);
     }
     // agy / Gemini
+    if (mode === 'overload') return json(503, {}, { error: { code: 503, message: 'No capacity available for model on the server', status: 'UNAVAILABLE', details: [{ '@type': 'type.googleapis.com/google.rpc.ErrorInfo', domain: 'cloudcode-pa.googleapis.com', reason: 'MODEL_CAPACITY_EXHAUSTED' }] } });
     if (mode === 'limit') {
       const h = c.resetText ?? '2h';
       return json(429, {}, { error: { code: 429, message: `Individual quota reached. Resets in ${h}.`, status: 'RESOURCE_EXHAUSTED' } });
