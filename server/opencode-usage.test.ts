@@ -45,11 +45,14 @@ const goBody = (rolling = goWindow("ok", 10, "2026-11-06T05:00:00.000Z"), weekly
 /** An OpenCode data directory with the two tables the reader uses, shaped like opencode v2.2.5's. */
 async function openCodeData(t: TestContext) {
   const root = await mkdtemp(join(tmpdir(), "opencode-usage-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
   const dir = join(root, "opencode");
   await mkdir(dir);
   const db = new DatabaseSync(join(dir, "opencode.db"));
-  t.after(() => { try { db.close(); } catch { /* closed */ } });
+  // Close before removing: Windows cannot delete a database file that is still open.
+  t.after(async () => {
+    try { db.close(); } catch { /* closed */ }
+    await rm(root, { recursive: true, force: true });
+  });
   db.exec(`
     CREATE TABLE credential (id TEXT PRIMARY KEY, integration_id TEXT NOT NULL, label TEXT, value TEXT,
       connector_id TEXT NOT NULL DEFAULT '', method_id TEXT NOT NULL DEFAULT '', active INTEGER, time_created INTEGER, time_updated INTEGER);
