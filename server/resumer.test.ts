@@ -389,14 +389,14 @@ test("a structured limit code uses the existing usage-window fallback", async ()
   assert.equal((await store.list())[0]?.dueAt, "2026-10-06T04:02:00.000Z");
 });
 
-test("every provider built on Claude, Codex, or Antigravity resumes by default; other CLIs never do", async () => {
+test("every provider built on Claude, Codex, Antigravity, or OpenCode resumes by default; other CLIs never do", async () => {
   const { api, sent, resumer } = await setup({
-    s1: { provider: "claude-sub" }, m1: { provider: "claude-main" }, r1: { provider: "codex-reserve" }, o1: { provider: "opencode" },
+    s1: { provider: "claude-sub" }, m1: { provider: "claude-main" }, r1: { provider: "codex-reserve" }, o1: { provider: "pi" },
   });
   await resumer.onTurnEnded(turnEnded("m1", "claude-main", { kind: "completed" }, claudeNotice(CLAUDE_LIMIT)), api);
   await resumer.onTurnEnded(turnEnded("s1", "claude-sub", { kind: "completed" }, claudeNotice(CLAUDE_LIMIT)), api);
   await resumer.onTurnEnded(turnEnded("r1", "codex-reserve", failed(CODEX_LIMIT)), api);
-  await resumer.onTurnEnded(turnEnded("o1", "opencode", failed(CODEX_LIMIT)), api);
+  await resumer.onTurnEnded(turnEnded("o1", "pi", failed(CODEX_LIMIT)), api);
 
   assert.deepEqual((await store.list()).map((job) => job.agentId).sort(), ["m1", "r1", "s1"]);
   advance(24 * 60 * MINUTE);
@@ -1289,7 +1289,7 @@ test("a reservation whose provider no longer runs a supported CLI is canceled at
   const config = api.config.get;
   api.config.get = async () => {
     const current = await config();
-    return { ...current, config: { ...current.config, providers: { ...current.config.providers, "codex-reserve": { extends: "opencode" } } } } as Awaited<ReturnType<typeof config>>;
+    return { ...current, config: { ...current.config, providers: { ...current.config.providers, "codex-reserve": { extends: "pi" } } } } as Awaited<ReturnType<typeof config>>;
   };
   advance(24 * 60 * MINUTE);
   await resumer.tick();
@@ -2192,7 +2192,7 @@ test("Resume now cancels a reservation whose provider is off or no longer runs a
   const config = api.config.get;
   api.config.get = async () => {
     const current = await config();
-    return { ...current, config: { ...current.config, providers: { ...current.config.providers, "codex-reserve": { extends: "opencode" } } } } as Awaited<ReturnType<typeof config>>;
+    return { ...current, config: { ...current.config, providers: { ...current.config.providers, "codex-reserve": { extends: "pi" } } } } as Awaited<ReturnType<typeof config>>;
   };
 
   assert.deepEqual(await resumer.resumeNow(api, "m1", await pinOf(store, "m1", m1.dueAt)), { result: "canceled", reason: "provider_off" });

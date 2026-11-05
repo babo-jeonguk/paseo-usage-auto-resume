@@ -8,6 +8,7 @@ import { providerLaunch } from "./usage";
 import { createClaudeCredentialReader, type ClaudeCredentialReader } from "./claude-credentials";
 import { CLI_STOP_GRACE_MS, cliHome, runCli, spawnCli, stopProcessTree } from "./cli-launch";
 import { agyFallback, createAgyUsageReader } from "./agy-usage";
+import { createOpenCodeUsageReader } from "./opencode-usage";
 import { isExhausted, type QuotaWindow } from "./quota";
 
 const TIMEOUT = 15_000;
@@ -70,6 +71,7 @@ export function createSubscriptionReader(deps: {
   const codex = deps.codex ?? codexSnapshot;
   const readClaudeCredentials = deps.readClaudeCredentials ?? createClaudeCredentialReader();
   const readAgyUsage = createAgyUsageReader({ run: deps.run, now: deps.now });
+  const readOpenCodeUsage = createOpenCodeUsageReader({ fetch: deps.fetch });
 
   const json = async (url: string, headers: Record<string, string>) => {
     const controller = new AbortController();
@@ -93,6 +95,15 @@ export function createSubscriptionReader(deps: {
       // Status probes must not claim a running runtime proxy or inherit a parent Claude session.
       for (const key of Object.keys(env)) if (key.startsWith("RUNTIME_PROXY_") || ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT", "CLAUDE_AGENT_SDK_VERSION"].includes(key)) delete env[key];
       const apiCheck: SubscriptionCheck = { auth: "api", status: "unknown" };
+      // OpenCode routes by its selected model and reads its own SQLite data; the API-key checks
+      // below describe the other CLIs' environments, not this one.
+      if (source === "opencode") {
+        return await readOpenCodeUsage(
+          { env },
+          { id: agent.id, model: subscriptionModel(agent), sessionId: agent.runtimeInfo?.sessionId ?? null },
+          at, mode,
+        );
+      }
       // Stated resets only request identity. agy has none; quota is read when planning without
       // a reset and before delivery. The quota reader turns its own failures into the existing
       // notice behavior; a route that cannot be classified waits for verification like any other.

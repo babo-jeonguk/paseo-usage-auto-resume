@@ -93,7 +93,7 @@ async function codexEmail(codexHome: string): Promise<string | null> {
 }
 
 /** The account an agent of this provider runs under, read from the same home its CLI uses. */
-async function accountIn(config: DaemonConfig, provider: string, source: Exclude<UsageSource, "antigravity">): Promise<Account> {
+async function accountIn(config: DaemonConfig, provider: string, source: Exclude<UsageSource, "antigravity" | "opencode">): Promise<Account> {
   const env = providerEnv(config, provider);
   if (source === "codex") {
     const codexHome = envValue(env, "CODEX_HOME") ?? join(homedir(), ".codex");
@@ -108,5 +108,7 @@ export async function accountEmail(
   provider: string,
   source: Exclude<UsageSource, "antigravity">,
 ): Promise<string | null> {
+  // OpenCode keeps no email next to its credentials for this plugin to read.
+  if (source === "opencode") return null;
   return (await accountIn(config, provider, source)).email;
 }

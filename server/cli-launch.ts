@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess, type ChildProcessByStdio } from "node:child_process";
+import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { win32 } from "node:path";
@@ -151,6 +152,20 @@ export async function stopProcessTree(
     killer.on("error", () => { child.kill(); resolve(); });
     killer.on("exit", () => resolve());
   });
+}
+
+/**
+ * Names the executable and the account data it reads: a CLI keeps its data under HOME (USERPROFILE
+ * on Windows) or XDG directories, and a bare command name is found through PATH. A digest is only
+ * a cache selector, never account identity.
+ */
+export function launchKey(binary: string, env: NodeJS.ProcessEnv): string {
+  const bare = !/[\\/]/.test(binary);
+  const selectors = Object.entries(env).filter(([key]) => {
+    const name = key.toUpperCase();
+    return name === "HOME" || name === "USERPROFILE" || name.startsWith("XDG_") || (bare && name === "PATH");
+  }).map(([key, value]) => [key.toUpperCase(), value]).sort(([a], [b]) => a!.localeCompare(b!));
+  return createHash("sha256").update(JSON.stringify([binary, selectors])).digest("hex");
 }
 
 /** The home a CLI uses when nothing overrides it: the user profile on Windows, HOME elsewhere. */

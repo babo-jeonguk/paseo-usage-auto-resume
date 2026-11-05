@@ -214,3 +214,27 @@ test("discussion of limits is not a limit stop", () => {
     null,
   );
 });
+
+// OpenCode 2.2.2+ display messages, which Paseo 0.15 forwards as the turn's error message and
+// stores in the timeline as "[System Error] <message>". None states a reset; the reader supplies it.
+const OPENCODE_GO_LIMIT = "OpenCode Go 5 hour usage limit reached. Switch to a free model, or turn on Extra Usage on the Go page in OpenCode Console to keep going.";
+const OPENCODE_GO_LIMIT_UNNAMED = "OpenCode Go usage limit reached. Switch to a free model, or turn on Extra Usage on the Go page in OpenCode Console to keep going.";
+// Verbatim from the 2026-11-02 opencode v2.2.5 session records.
+const OPENCODE_FREE_LIMIT = "Free usage limit reached. Connect a provider or subscribe to OpenCode Go to keep going, or switch models.";
+
+test("OpenCode Go and free limit messages are limit stops without a stated reset", () => {
+  for (const message of [OPENCODE_GO_LIMIT, OPENCODE_GO_LIMIT_UNNAMED, OPENCODE_FREE_LIMIT]) {
+    assert.deepEqual(detectLimitStop(failed(message), [prompt], observedAt), { resetAt: null }, message);
+    assert.deepEqual(
+      detectLimitStop(completed, [prompt, { type: "assistant_message", text: `[System Error] ${message}` }], observedAt),
+      { resetAt: null },
+      `stored timeline: ${message}`,
+    );
+  }
+});
+
+test("OpenCode credit and model spend messages are not limit stops", () => {
+  for (const message of ["Credit limit exceeded.", "You've reached the spend limit for this model. Switch models to keep going."]) {
+    assert.equal(detectLimitStop(failed(message), [prompt], observedAt), null, message);
+  }
+});

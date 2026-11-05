@@ -414,7 +414,7 @@ export function createResumer(options: {
     if (!settings) return { result: "unavailable" };
     if (!isProviderOn(job.provider, settings)) return cancel(providerOff(job.provider));
     const source = cliFor((await api.config.get()).config, job.provider);
-    if (!source) return cancel(canceled("unsupported_cli", `${job.provider} no longer runs Claude, Codex, or Antigravity`));
+    if (!source) return cancel(canceled("unsupported_cli", `${job.provider} no longer runs Claude, Codex, Antigravity, or OpenCode`));
     const gated = async (gate: Exclude<Gate, null>, title: string | null): Promise<Delivery> => {
       // A turn holds the continue without reading usage; the tick tries again after it.
       if (gate === "wait") return { result: "busy" };

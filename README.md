@@ -2,7 +2,7 @@
 
 **Let Auto Resume handle the wait for usage limits to reset.**
 
-A [Paseo](https://paseo.sh) plugin that automatically asks the same Codex, Claude, or Antigravity agent to continue unfinished work after a usage limit resets. Step away without coming back just to send “continue.”
+A [Paseo](https://paseo.sh) plugin that automatically asks the same Codex, Claude, Antigravity, or OpenCode agent to continue unfinished work after a usage limit resets. Step away without coming back just to send “continue.”
 
 [한국어](README.ko.md)
 
@@ -18,12 +18,14 @@ Actual Paseo web interface with sample reservations. Each row shows what is sche
 
 - **Paseo daemon and app 0.11.0 or later**, with plugins enabled in **Settings → Plugins**.
 - The provider CLI already signed in on the daemon host, and the host kept awake.
+- **OpenCode 2.2.2 or later** for OpenCode agents.
 
 | Provider | Before sending |
 | --- | --- |
 | Codex | Checks that your ChatGPT subscription has usage left. |
 | Claude | Checks that your claude.ai subscription has usage left. |
 | Antigravity | Checks the model's quota when available; otherwise follows the limit message. |
+| OpenCode | Go: checks the Go usage windows. Free models: waits for the reset time OpenCode recorded with the free-usage limit. |
 
 Agents billed through an API key or another billing route are not resumed.
 
@@ -81,8 +83,9 @@ This also deletes the plugin's settings. Reservations and recent activity stay i
 
 ## Your data
 
-- The plugin reads your agents' state, their recent limit messages and your provider CLI sign-ins on the daemon host.
-- Codex and Claude usage checks contact the provider's account service and don't use any model turns. Sign-in tokens are never saved or logged.
+- The plugin reads your agents' state, their recent limit messages, your provider CLI sign-ins and OpenCode's local database on the daemon host.
+- Codex, Claude and OpenCode Go usage checks contact the provider's account service and don't use any model turns. Sign-in tokens and OpenCode's Go key are never saved or logged.
+- Free OpenCode models use the limit time OpenCode recorded in its local database.
 - Reservations, extra instructions and a changed continue prompt are stored on the daemon host. Extra instructions are deleted once sent.
 - The continue message goes through Paseo to your existing agent, like a message you send yourself.
 
