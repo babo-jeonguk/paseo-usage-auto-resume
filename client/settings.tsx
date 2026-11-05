@@ -167,50 +167,56 @@ function PromptEditor({ settings, theme }: { settings: ReadyResumeSettings; them
 }
 
 /** Read apart from the provider switches, so either one can fail without the other. */
-function ContinuePromptSettings({ theme }: { theme: Theme }) {
+function ResumeSettings({ theme }: { theme: Theme }) {
   const settings = useSettings(resumeSettings);
   const { colors } = theme;
   return (
-    <View style={{ gap: 8 }}>
-      <View style={{ gap: 4 }}>
-        <Text accessibilityRole="header" style={headingText(colors)}>Continue prompt</Text>
-        <Text style={mutedText(colors)}>Sent to the agent when its reservation continues.</Text>
+    <View style={{ gap: 16 }}>
+      <View style={{ gap: 8 }}>
+        <View style={{ gap: 4 }}>
+          <Text accessibilityRole="header" style={headingText(colors)}>Continue prompt</Text>
+          <Text style={mutedText(colors)}>Sent to the agent when its reservation continues.</Text>
+        </View>
+        {settings.status === "ready" ? (
+          <PromptEditor settings={settings} theme={theme} />
+        ) : settings.status === "loading" ? (
+          <Text style={{ color: colors.foreground }}>Loading the continue prompt…</Text>
+        ) : (
+          <SettingsCard>
+            <SettingsAction
+              label="The continue prompt could not be read"
+              hint={`${settings.error}\nContinues send the default prompt until this is fixed.`}
+              actionLabel="Retry"
+              onPress={() => void settings.reload()}
+            />
+            {settings.status === "invalid" ? (
+              <SettingsAction
+                label="Reset the continue prompt"
+                hint="Goes back to the default prompt."
+                actionLabel="Reset"
+                disabled={settings.saving}
+                onPress={() => void settings.reset()}
+              />
+            ) : null}
+          </SettingsCard>
+        )}
       </View>
       {settings.status === "ready" ? (
-        <>
-          <PromptEditor settings={settings} theme={theme} />
-          <SettingsSection title="Labs">
-            <SettingsCard>
-              <SettingsSwitch
-                label="Retry after a provider overload"
-                value={settings.values.overloadRetry}
-                disabled={settings.saving}
-                onValueChange={(overloadRetry) => void settings.save({ ...settings.values, overloadRetry }, settings.revision)}
-              />
-            </SettingsCard>
-          </SettingsSection>
-        </>
-      ) : settings.status === "loading" ? (
-        <Text style={{ color: colors.foreground }}>Loading the continue prompt…</Text>
-      ) : (
-        <SettingsCard>
-          <SettingsAction
-            label="The continue prompt could not be read"
-            hint={`${settings.error}\nContinues send the default prompt until this is fixed.`}
-            actionLabel="Retry"
-            onPress={() => void settings.reload()}
-          />
-          {settings.status === "invalid" ? (
-            <SettingsAction
-              label="Reset the continue prompt"
-              hint="Goes back to the default prompt."
-              actionLabel="Reset"
+        <View style={{ gap: 8 }}>
+          <View style={{ gap: 4 }}>
+            <Text accessibilityRole="header" style={headingText(colors)}>Labs</Text>
+            <Text style={mutedText(colors)}>Experimental automatic resumes still being tested.</Text>
+          </View>
+          <SettingsCard>
+            <SettingsSwitch
+              label="Retry after a provider overload"
+              value={settings.values.overloadRetry}
               disabled={settings.saving}
-              onPress={() => void settings.reset()}
+              onValueChange={(overloadRetry) => void settings.save({ ...settings.values, overloadRetry }, settings.revision)}
             />
-          ) : null}
-        </SettingsCard>
-      )}
+          </SettingsCard>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -252,7 +258,7 @@ export function ProviderSettingsScreen({ theme, host }: PluginSurfaceProps) {
           </SettingsCard>
         </SettingsSection>
       )}
-      <ContinuePromptSettings theme={theme} />
+      <ResumeSettings theme={theme} />
     </ScrollView>
   );
 }
