@@ -40,5 +40,7 @@ export function detectOverloadStop(outcome: PluginTurnOutcome, timeline: readonl
     case "antigravity":
       return outcome.kind === "failed" && (code === "MODEL_CAPACITY_EXHAUSTED" ||
         /^agent executor error: generating and executing: Error 503,/.test(text) && /\breason:MODEL_CAPACITY_EXHAUSTED\b/.test(text));
+    case "opencode":
+      return false;
   }
 }

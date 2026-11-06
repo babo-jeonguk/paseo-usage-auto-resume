@@ -18,7 +18,7 @@ export function cliFor(config: DaemonConfig, provider: string): UsageSource | nu
   }
 }
 
-/** Every provider the daemon knows that runs Claude, Codex, or Antigravity, with the account it signs in as. */
+/** Every provider the daemon knows that runs Claude, Codex, Antigravity, or OpenCode, with the account it signs in as. */
 export async function discoverProviders(api: ProvidersApi): Promise<DiscoveredProvider[]> {
   const [{ entries }, { config }] = await Promise.all([api.providers.snapshot(), api.config.get()]);
   const found = entries.flatMap((entry) => {
@@ -31,7 +31,7 @@ export async function discoverProviders(api: ProvidersApi): Promise<DiscoveredPr
       label: entry.label ?? entry.provider,
       cli,
       paseoEnabled: entry.enabled !== false,
-      account: cli === "antigravity" ? null : await accountEmail(config, entry.provider, cli).catch(() => null),
+      account: cli === "antigravity" || cli === "opencode" ? null : await accountEmail(config, entry.provider, cli).catch(() => null),
     })),
   );
 }

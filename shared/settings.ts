@@ -1,11 +1,11 @@
 import { defineSettings } from "@getpaseo/plugin";
 import { z } from "zod";
 
-export type UsageSource = "claude" | "codex" | "antigravity";
-export const USAGE_SOURCES: readonly UsageSource[] = ["claude", "codex", "antigravity"];
+export type UsageSource = "claude" | "codex" | "antigravity" | "opencode";
+export const USAGE_SOURCES: readonly UsageSource[] = ["claude", "codex", "antigravity", "opencode"];
 
 export const ProviderSettingsSchema = z.object({
-  /** Providers turned off by the user; every other Claude, Codex, or Antigravity provider resumes. */
+  /** Providers turned off by the user; every other Claude, Codex, Antigravity, or OpenCode provider resumes. */
   disabledProviders: z.array(z.string().min(1)).default([]),
 });
 

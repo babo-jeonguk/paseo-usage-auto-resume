@@ -1,8 +1,7 @@
-import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { runCli, UnsafeShimError } from "./cli-launch";
+import { launchKey, runCli, UnsafeShimError } from "./cli-launch";
 import { isExhausted, type QuotaWindow } from "./quota";
 import type { SubscriptionCheck } from "./subscription";
 
@@ -93,20 +92,6 @@ export interface AgyLaunch {
   command: string[] | undefined;
   cwd: string;
   env: NodeJS.ProcessEnv;
-}
-
-/**
- * Names the executable and the account data it reads: agy keeps its data under HOME (USERPROFILE
- * on Windows) or XDG directories, and a bare command name is found through PATH. A digest is only
- * a cache selector, never account identity.
- */
-function launchKey(binary: string, env: NodeJS.ProcessEnv): string {
-  const bare = !/[\\/]/.test(binary);
-  const selectors = Object.entries(env).filter(([key]) => {
-    const name = key.toUpperCase();
-    return name === "HOME" || name === "USERPROFILE" || name.startsWith("XDG_") || (bare && name === "PATH");
-  }).map(([key, value]) => [key.toUpperCase(), value]).sort(([a], [b]) => a!.localeCompare(b!));
-  return createHash("sha256").update(JSON.stringify([binary, selectors])).digest("hex");
 }
 
 /**

@@ -61,6 +61,7 @@ test("a provider's CLI is found by following extends to a supported built-in", (
       "claude-deep": { extends: "claude-main" },
       "codex-reserve": { extends: "codex" },
       "opencode-work": { extends: "opencode" },
+      "pi-work": { extends: "pi" },
       loop: { extends: "loop-back" },
       "loop-back": { extends: "loop" },
     },
@@ -69,7 +70,9 @@ test("a provider's CLI is found by following extends to a supported built-in", (
   assert.equal(cliFor(config, "antigravity"), "antigravity");
   assert.equal(cliFor(config, "claude-deep"), "claude");
   assert.equal(cliFor(config, "codex-reserve"), "codex");
-  for (const id of ["opencode", "opencode-work", "loop", "claude-unknown"]) assert.equal(cliFor(config, id), null);
+  assert.equal(cliFor(config, "opencode"), "opencode");
+  assert.equal(cliFor(config, "opencode-work"), "opencode");
+  for (const id of ["pi", "pi-work", "loop", "claude-unknown"]) assert.equal(cliFor(config, id), null);
 });
 
 

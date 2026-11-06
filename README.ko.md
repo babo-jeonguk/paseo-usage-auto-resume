@@ -2,7 +2,7 @@
 
 **한도 리셋을 기다리는 일은 맡겨두세요.**
 
-사용 한도로 멈춘 Codex·Claude·Antigravity 에이전트가 같은 대화에서 미완료 작업을 이어가도록 요청하는 [Paseo](https://paseo.sh) 플러그인입니다. 리셋 시각에 돌아와 “계속해”를 보낼 수고를 덜어줍니다.
+사용 한도로 멈춘 Codex·Claude·Antigravity·OpenCode 에이전트가 같은 대화에서 미완료 작업을 이어가도록 요청하는 [Paseo](https://paseo.sh) 플러그인입니다. 리셋 시각에 돌아와 “계속해”를 보낼 수고를 덜어줍니다.
 
 [English](README.md)
 
@@ -18,12 +18,14 @@
 
 - **Paseo 데몬과 앱 0.11.0 이상**, **Settings → Plugins**에서 플러그인 활성화
 - 데몬 호스트에 로그인된 provider CLI, 그리고 절전 상태에 들어가지 않는 데몬 호스트
+- OpenCode 에이전트는 **OpenCode 2.2.2 이상**이 필요합니다.
 
 | Provider | 보내기 전에 |
 | --- | --- |
 | Codex | ChatGPT 구독 사용량이 남았는지 확인합니다. |
 | Claude | claude.ai 구독 사용량이 남았는지 확인합니다. |
 | Antigravity | 가능하면 모델의 쿼터를 확인하고, 확인할 수 없으면 한도 안내를 따릅니다. |
+| OpenCode | Go: Go 사용량 창을 확인합니다. 무료 모델: OpenCode가 무료 사용 한도와 함께 기록한 리셋 시각까지 기다립니다. |
 
 API 키나 다른 과금 경로로 쓰는 에이전트는 재개하지 않습니다.
 
@@ -81,8 +83,9 @@ paseo plugin remove usage-auto-resume
 
 ## 내 데이터
 
-- 데몬 호스트에서 에이전트 상태, 최근 한도 안내, provider CLI 로그인 정보를 읽습니다.
-- Codex·Claude 사용량 확인은 provider의 계정 서비스에 요청하며, 모델을 실행하지 않습니다. 로그인 토큰은 저장하거나 로그에 남기지 않습니다.
+- 데몬 호스트에서 에이전트 상태, 최근 한도 안내, provider CLI 로그인 정보, OpenCode의 로컬 데이터베이스를 읽습니다.
+- Codex·Claude·OpenCode Go 사용량 확인은 provider의 계정 서비스에 요청하며, 모델을 실행하지 않습니다. 로그인 토큰과 OpenCode의 Go 키는 저장하거나 로그에 남기지 않습니다.
+- OpenCode 무료 모델은 OpenCode가 로컬 데이터베이스에 기록한 한도 시각을 사용합니다.
 - 예약, 추가 지시, 바꾼 Continue prompt는 데몬 호스트에 저장합니다. 추가 지시는 전송한 뒤 지웁니다.
 - 재개 메시지는 직접 보내는 메시지처럼 Paseo를 거쳐 기존 에이전트에게 전달됩니다.
 

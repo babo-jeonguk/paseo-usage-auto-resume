@@ -187,10 +187,10 @@ export const listHistoryRpc = defineRpc({
 export const DiscoveredProviderSchema = z.object({
   id: z.string(),
   label: z.string(),
-  cli: z.enum(["claude", "codex", "antigravity"]),
+  cli: z.enum(["claude", "codex", "antigravity", "opencode"]),
   /** False when the provider is turned off in Paseo itself, so it starts no agents. */
   paseoEnabled: z.boolean(),
-  /** Email the CLI signs in as; null for Antigravity or when it cannot be read. */
+  /** Email the CLI signs in as; null for Antigravity or OpenCode, or when it cannot be read. */
   account: z.string().nullable(),
 });
 

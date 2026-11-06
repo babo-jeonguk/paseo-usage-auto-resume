@@ -16,7 +16,7 @@ type ReadySettings = Extract<SettingsState<typeof ProviderSettingsSchema>, { sta
 type ReadyResumeSettings = Extract<SettingsState<typeof ResumeSettingsSchema>, { status: "ready" }>;
 type Theme = PluginSurfaceProps["theme"];
 
-const CLI_NAMES = { claude: "Claude", codex: "Codex", antigravity: "Antigravity" } as const;
+const CLI_NAMES = { claude: "Claude", codex: "Codex", antigravity: "Antigravity", opencode: "OpenCode" } as const;
 
 function ProviderSwitches({ settings, host, theme }: { settings: ReadySettings } & Pick<PluginSurfaceProps, "host" | "theme">) {
   const listProviders = useRpc(listProvidersRpc);
@@ -59,7 +59,7 @@ function ProviderSwitches({ settings, host, theme }: { settings: ReadySettings }
     );
   }
   if (providers.data.length === 0) {
-    return <Text style={{ color: theme.colors.foregroundMuted }}>Paseo has no Claude, Codex, or Antigravity provider.</Text>;
+    return <Text style={{ color: theme.colors.foregroundMuted }}>Paseo has no Claude, Codex, Antigravity, or OpenCode provider.</Text>;
   }
 
   return (
@@ -249,7 +249,7 @@ export function ProviderSettingsScreen({ theme, host }: PluginSurfaceProps) {
             {settings.status === "invalid" ? (
               <SettingsAction
                 label="Reset provider settings"
-                hint="Turns every Claude, Codex, and Antigravity provider back on."
+                hint="Turns every Claude, Codex, Antigravity, and OpenCode provider back on."
                 actionLabel="Reset"
                 disabled={settings.saving}
                 onPress={() => void settings.reset()}
