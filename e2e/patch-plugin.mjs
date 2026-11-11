@@ -15,7 +15,7 @@ const fixtureReader = async (_api: unknown, _agent: unknown, source: string) => 
   if (f.usage === "auth") return { auth: "unknown", status: "unknown" } as const;
   return { auth: "subscription", status: "ready", identity: "fixture" } as const;
 };`);
-  out = out.replace('store: createJobStore(),', 'store: createJobStore(),\n    readSubscription: fixtureReader as never,');
+  out = out.replace(/store: createJobStore\([^)]*\),/, (match) => `${match}\n    readSubscription: fixtureReader as never,`);
   out = out.replace('server.on("agent.turn_ended", (event, { paseo }) => {',
     'server.on("agent.turn_ended", (event, { paseo }) => {\n      console.log("[usage-auto-resume] e2e-probe turn_ended agent=" + event.agent.id + " outcome=" + event.outcome.kind + " timeline.length=" + (Array.isArray((event as { timeline?: unknown[] }).timeline) ? (event as { timeline: unknown[] }).timeline.length : "absent"));');
   out = out.replace('void resumer.onTurnEnded(event, paseo).catch(report);',

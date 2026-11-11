@@ -3,9 +3,10 @@
 // real hooks, 30 s tick, settings, store, history. Fake: model APIs (fake-models.mjs), the account/usage
 // check (control file, see patch-plugin.mjs). See README.md next to this file.
 //
-// node e2e.mjs --label linux-0.13.2 --cli <@getpaseo/cli dir> --root <run dir> --suites claude,codex,antigravity \
+// node e2e.mjs --label linux-0.16 --cli <@getpaseo/cli dir> --root <run dir> --suites claude,codex,antigravity,opencode \
 //   [--from <ref, default v1.2.2>] [--to <ref, default main>] [--source <git source>] [--out <results dir>] \
-//   [--min 1] [--ui 1] [--hold 1] [--claude <bin>] [--codex <bin>] [--agy <bin>] [--path <extra PATH dirs>]
+//   [--min 1] [--ui 1] [--hold 1] [--only 17,18,19] [--claude <bin>] [--codex <bin>] [--agy <bin>] \
+//   [--opencode <bin>] [--model <opencode model>] [--path <extra PATH dirs>]
 // --ui 1 reads Playwright from PW_ROOT and the browser from CHROME, else Chromium on Linux and Edge on Windows (see ui-steps.mjs).
 import assert from 'node:assert/strict';
 import { execFile, execFileSync, spawn } from 'node:child_process';
@@ -26,12 +27,22 @@ const label = args.label ?? 'run';
 const suites = (args.suites ?? 'claude').split(',');
 const MIN = args.min === '1';
 const UI = args.ui === '1';
+// Only the newer sections (17+) honour this; the existing items always run.
+const ONLY = (args.only ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+const wants = (id) => ONLY.length === 0 || ONLY.includes(String(id));
 const GIT_SOURCE = args.source ?? 'git:babo-jeonguk/paseo-usage-auto-resume';
 // The release a user updates from and rolls back to, and the version under test.
 const OLD_REF = args.from ?? 'v1.2.2', NEW_REF = args.to ?? 'main';
 let oldRevision = '';
 const PLUGIN = 'usage-auto-resume';
-const DEFAULT_MARK = 'usage limit should now be reset';
+// The continue prompt is the patch plugin's marker. Keep this in step with shared/prompt.ts; the
+// check below fails the run early instead of silently counting nothing.
+const DEFAULT_MARK = 'Continue the unfinished work from where it stopped.';
+if (!readFileSync(join(here, '..', 'shared', 'prompt.ts'), 'utf8').includes(DEFAULT_MARK)) {
+  throw new Error('e2e DEFAULT_MARK drifted from shared/prompt.ts');
+}
+// Paseo 0.16 restart recovery; the model log counts this marker.
+const RECOVERY_MARK = 'UAR-RECOVERY-MARK go on.';
 
 const cliDir = args.cli;
 const tools = createRequire(join(cliDir, 'package.json'));
@@ -92,7 +103,7 @@ const setUsage = (v) => replace(usageFile, JSON.stringify(v));
 const modelState = {};
 const setModel = (api, v) => { modelState[api] = v; return replace(modelCtl, JSON.stringify(modelState)); };
 const allRequests = () => readFileSync(modelLog, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
-const API = { claude: 'claude', codex: 'codex', antigravity: 'agy' };
+const API = { claude: 'claude', codex: 'codex', antigravity: 'agy', opencode: 'opencode' };
 // agy puts the continue in an earlier user turn and repeats it in later requests, so count distinct user turns (they carry a timestamp).
 const continues = (suite, mark = DEFAULT_MARK) => {
   const reqs = allRequests().filter((r) => r.api === API[suite] && r.counted && !r.url.includes('flash-lite'));
@@ -141,8 +152,21 @@ if (suites.includes('antigravity')) {
   await writeFile(join(agyHome, '.gemini', 'antigravity-cli', 'settings.json'), '{"modelProvider":"gemini"}');
   providers.antigravity = { ...withCmd(args.agy), env: { HOME: agyHome, USERPROFILE: agyHome, GEMINI_API_KEY: 'e2e-fixture-only', GOOGLE_GEMINI_BASE_URL: modelUrl, ...proxyEnv } };
 }
+if (suites.includes('opencode')) {
+  // OpenCode keeps config/data/state/cache under XDG homes; its opencode-go provider points at the
+  // fake chat-completions API, so the real CLI reports a real free-limit error.
+  const ocHome = join(root, 'opencode-home');
+  for (const dir of ['config/opencode', 'data', 'state', 'cache']) await mkdir(join(ocHome, dir), { recursive: true });
+  await writeFile(join(ocHome, 'config', 'opencode', 'opencode.json'), JSON.stringify({
+    model: args.model ?? 'opencode-go/deepseek-v4.1-flash',
+    provider: { 'opencode-go': { options: { baseURL: modelUrl, apiKey: 'e2e-fixture-only' } } },
+  }, null, 2));
+  providers.opencode = { ...withCmd(args.opencode), env: { HOME: ocHome, XDG_CONFIG_HOME: join(ocHome, 'config'), XDG_DATA_HOME: join(ocHome, 'data'),
+    XDG_STATE_HOME: join(ocHome, 'state'), XDG_CACHE_HOME: join(ocHome, 'cache'), OPENCODE_DISABLE_AUTOUPDATE: '1', ...proxyEnv } };
+}
 const cfg = { version: 1, daemon: { listen: target, relay: { enabled: false }, mcp: { enabled: false } }, pluginsEnabled: true,
-  features: { webUi: { enabled: UI }, dictation: { enabled: false }, voiceMode: { enabled: false } }, agents: { providers } };
+  features: { webUi: { enabled: UI }, dictation: { enabled: false }, voiceMode: { enabled: false } },
+  agents: { providers, resumeOnStartup: false, resumePrompt: RECOVERY_MARK } };
 await writeFile(join(home, 'config.json'), JSON.stringify(cfg, null, 2));
 
 const spawned = [];
@@ -274,6 +298,55 @@ const checkClosedAgent = (S, provider, title) => step(16, S, 'a reservation whos
   return `status ${status} after the restart; 1 continue reached the model in the same agent's timeline, history continued`;
 });
 
+// ---- background switch, restart and OpenCode helpers (items 17-19) -------------------------
+// Plugin settings go through Paseo's settings API: a file edit does not notify subscribers, and the
+// background switch's sweep and rescan hang off that notification.
+const providerSettings = async () => rpc('settings.providers.read');
+const setResumeBackground = async (resumeBackground) => {
+  const current = await providerSettings();
+  assert.equal(current.status, 'ready', JSON.stringify(current));
+  const saved = await rpc('settings.providers.write', { revision: current.revision, values: { ...current.values, resumeBackground } });
+  assert.equal(saved.status, 'saved', JSON.stringify(saved));
+  return saved.values;
+};
+
+// The daemon stores one JSON record per agent; a restart reads these fields.
+const agentRecordFile = (id) => join(home, 'agents', work.replace(/^\//, '').replace(/\//g, '-'), id + '.json');
+const agentRecord = async (id) => JSON.parse(await readFile(agentRecordFile(id), 'utf8'));
+const writeDaemonConfig = async (patch) => {
+  const file = join(home, 'config.json');
+  const current = JSON.parse(await readFile(file, 'utf8'));
+  current.agents = { ...(current.agents ?? {}), ...patch };
+  await writeFile(file, JSON.stringify(current, null, 2));
+};
+const stopDaemon = async () => {
+  await client.close().catch(() => {});
+  await paseo('daemon', 'stop').catch(() => {});
+  await waitFor(async () => daemon.exitCode !== null, 'daemon exit', 60000, 500);
+};
+const crashDaemon = async () => {
+  const pid = await paseo('status', '--json').then((s) => { try { return JSON.parse(s).pid ?? null; } catch { return null; } }).catch(() => null);
+  await client.close().catch(() => {});
+  // The foreground `paseo daemon run` supervises a worker; kill both and the process group.
+  try { if (pid) process.kill(pid, 'SIGKILL'); } catch {}
+  try { process.kill(-daemon.pid, 'SIGKILL'); } catch { try { daemon.kill('SIGKILL'); } catch {} }
+  // A signal leaves exitCode null and sets signalCode.
+  await waitFor(async () => daemon.exitCode !== null || daemon.signalCode !== null, 'daemon exit', 60000, 500);
+};
+const recoveryPrompts = (provider) => allRequests().filter((r) => r.api === API[provider] && r.last.includes(RECOVERY_MARK)).length;
+
+// The probe lines the installed source writes; see patch-plugin.mjs.
+const probeFor = async (id) => (await pluginLogLines()).filter((l) => l.includes('e2e-probe') && l.includes(id)).map((l) => l.replace(/^.*e2e-probe /, '').replace(/".*$/, '').trim());
+
+// Sends a prompt that stops at a limit, without waiting for a reservation the switch may refuse.
+const stopAtLimit = async (agent, suite, state) => {
+  await setModel(API[suite], state);
+  await client.sendAgentMessage(agent.id, 'Work on the task.');
+  await waitFor(async () => (await agentStatus(agent.id)) !== 'running' && (await timelineText(agent.id)).some((l) => /limit|quota|free usage|429/i.test(l)), 'agent stopped at the limit', 240000, 1000);
+  await setModel(API[suite], { mode: 'text' });
+  await sleep(4000);
+};
+
 // ==========================================================================================
 const ctx = { step, note, results, rpc, client: () => client, mkAgent, hit, setModel, setUsage, jobOf, editJob, readJobs, readHistory, writeJobs, continues, writeSettings, waitFor, sleep, origin, out, jobsFile, historyFile, root, API, DEFAULT_MARK, timelineText, home };
 try {
@@ -301,8 +374,11 @@ try {
     assert.ok(rev, 'no revision reported');
     oldRevision = rev;
     assert.deepEqual(await rpc('auto-resume.list'), { jobs: [] });
-    const provs = (await rpc('auto-resume.providers')).providers.map((p) => p.id);
-    for (const s of suites) assert.ok(provs.includes(s), `${s} not discovered: ${provs}`);
+    // Provider discovery settles a few seconds after the daemon starts.
+    const provs = await waitFor(async () => {
+      const ids = (await rpc('auto-resume.providers').catch(() => ({ providers: [] }))).providers.map((p) => p.id);
+      return suites.every((s) => ids.includes(s)) ? ids : null;
+    }, `providers ${suites.join(',')} discovered`, 90000, 3000);
     const plog = await paseo('plugin', 'logs', PLUGIN);
     assert.doesNotMatch(plog, /error|failed/i, plog.slice(0, 300));
     return `status running, revision ${rev}, providers ${provs.join(',')}, plugin logs clean`;
@@ -361,7 +437,6 @@ try {
   if (legacyAgent) { await client.archiveAgent(legacyAgent.id).catch(() => {}); await sleep(1500); }
 
   // ---- claude suite -------------------------------------------------------------------------
-  const probeFor = async (id) => (await pluginLogLines()).filter((l) => l.includes('e2e-probe') && l.includes(id)).map((l) => l.replace(/^.*e2e-probe /, '').replace(/".*$/, '').trim());
   if (suites.includes('claude')) {
     const S = 'claude';
     // 3
@@ -507,7 +582,8 @@ try {
   }
 
   // ---- codex / antigravity suites -------------------------------------------------------------
-  for (const S of suites.filter((s) => s !== 'claude')) {
+  // OpenCode has no reset in its limit message; items 19a-19c cover its limit, tick and scan.
+  for (const S of suites.filter((s) => s !== 'claude' && s !== 'opencode')) {
     const resetSec = 7200;
     const a = await mkAgent(`${S} limit`, S);
     let job;
@@ -559,6 +635,194 @@ try {
     }
   }
 
+  // ---- 17. background agents (Paseo 0.16; claude only) -----------------------------------------
+  if (!MIN && suites.includes('claude') && wants(17)) {
+    const mkBg = (title) => client.createAgent({ provider: 'claude', cwd: work, workspaceId: workspace.id, title, background: true });
+    const listed = async (id, options) => { const r = await client.fetchAgents(options); return (r.entries ?? r.agents ?? []).some((a) => a.id === id); };
+    let bgA, bgC;
+    await step(17, 'claude-bg', '17a background agents are skipped while the switch is off, and a pending one is swept when it is turned off', async () => {
+      await setResumeBackground(false);
+      bgA = await mkBg('Background off');
+      assert.equal((await agentRecord(bgA.id)).background, true, 'stored agent record background');
+      assert.equal(await listed(bgA.id), false, 'the background agent is in the default agent list');
+      await stopAtLimit(bgA, 'claude', { mode: 'limit', resetInSec: 5400 });
+      assert.equal(await jobOf(bgA.id), undefined, 'reservation made while the switch was off');
+      assert.ok(!(await readHistory()).some((h) => h.agentId === bgA.id), 'history written while the switch was off');
+
+      // On through Paseo's settings API, then off again: the sweep runs from that notification.
+      await setResumeBackground(true);
+      const job = await hit(bgA, 'claude', { mode: 'limit', resetInSec: 5400 });
+      assert.equal(job.background, true, 'stored row: ' + JSON.stringify({ background: job.background }));
+      await setResumeBackground(false);
+      await waitFor(async () => (await readHistory()).some((h) => h.agentId === bgA.id && h.reason === 'background_off'), 'background_off sweep', 30000, 1000);
+      assert.equal(await jobOf(bgA.id), undefined, 'row kept after the switch was turned off');
+      return 'off: background limit made no reservation and wrote no history; on: row stored with background=true; off again: canceled/background_off at once, row gone';
+    });
+    await step(17, 'claude-bg', '17b with the switch on, the tick continues a background agent exactly once, in the same agent', async () => {
+      assert.ok(bgA, '17a did not create the background agent');
+      await setResumeBackground(true);
+      const job = await hit(bgA, 'claude', { mode: 'limit', resetInSec: 5400 });
+      assert.equal(job.background, true);
+      const sent0 = continues('claude').length;
+      await editJob(bgA.id, { resetAt: iso(Date.now() - 120000), dueAt: iso(Date.now() - 60000) });
+      await waitFor(async () => continues('claude').length === sent0 + 1, 'tick continue', 240000, 1000);
+      await sleep(6000);
+      assert.equal(continues('claude').length, sent0 + 1, 'more than one continue');
+      await waitFor(async () => !(await jobOf(bgA.id)), 'row cleared', 240000, 1000);
+      assert.ok((await timelineText(bgA.id)).join('\n').includes(DEFAULT_MARK), 'continue not in the background agent timeline');
+      return `1 continue, row cleared, continue text in the same background agent timeline; still hidden from the default list: ${!(await listed(bgA.id))}`;
+    });
+    await step(17, 'claude-bg', '17c with the switch on, the startup scan finds a NEW background agent stopped while the plugin was off', async () => {
+      await setResumeBackground(true);
+      bgC = await mkBg('Background missed while disabled');
+      assert.equal((await agentRecord(bgC.id)).background, true, 'the second agent is not background');
+      await client.disablePlugin(PLUGIN);
+      try {
+        await stopAtLimit(bgC, 'claude', { mode: 'limit', resetInSec: 4 * 3600 });
+        assert.equal(await jobOf(bgC.id), undefined, 'reservation made while the plugin was disabled');
+      } finally {
+        await setModel('claude', { mode: 'text' });
+        await client.enablePlugin(PLUGIN);
+      }
+      const job = await waitFor(async () => { await rpc('auto-resume.list').catch(() => {}); const j = await jobOf(bgC.id); return j?.state === 'pending' ? j : null; }, 'scan reservation for a background agent', 240000, 3000);
+      assert.equal(job.background, true, 'stored row: ' + JSON.stringify({ background: job.background }));
+      return `no job while disabled; after enable the scan created one with background=true: due ${job.dueAt} (resetAt ${job.resetAt})`;
+    });
+    try {
+      const jobs = (await rpc('auto-resume.list')).jobs;
+      note(17, 'claude-bg', '17d background agent: plugin list RPC and agent list visibility', JSON.stringify({
+        agentId: bgC?.id ?? null,
+        reservationInPluginList: !!jobs.find((j) => j.agentId === bgC?.id),
+        backgroundOnThatRow: jobs.find((j) => j.agentId === bgC?.id)?.background ?? null,
+        pluginListJobCount: jobs.length,
+        shownByDefaultAgentList: bgC ? await listed(bgC.id) : null,
+        shownWithIncludeBackground: bgC ? await listed(bgC.id, { includeBackground: true }) : null,
+        shownWithFilterIncludeBackground: bgC ? await listed(bgC.id, { filter: { includeBackground: true } }) : null,
+        storedBackground: bgC ? (await agentRecord(bgC.id)).background ?? null : null,
+        fetchAgentStatus: bgC ? await agentStatus(bgC.id) : null,
+        fetchAgentBackground: bgC ? (await client.fetchAgent(bgC.id))?.agent?.background ?? null : null,
+      }));
+    } catch (e) {
+      note(17, 'claude-bg', '17d background agent: plugin list RPC and agent list visibility', 'unreadable: ' + (e?.message ?? e));
+    }
+    await setResumeBackground(true);
+  }
+
+  // ---- 18. restart recovery overlapping a stale reservation ------------------------------------
+  const restartCase = async (name, provider, { recovery, crash, due }) => {
+    const a = await mkAgent(name, provider);
+    const R = await hit(a, API[provider], limitWith(provider, 4 * 3600));
+    assert.ok(R, 'no reservation to start the case');
+    const rId = R.id;
+    await client.disablePlugin(PLUGIN);
+    await setModel(API[provider], { mode: 'hang', delayMs: 150000 });
+    await client.sendAgentMessage(a.id, 'Keep working while the daemon stops.');
+    await waitFor(async () => (await agentStatus(a.id)) === 'running', 'a turn running when the daemon stops', 120000, 500);
+    await client.enablePlugin(PLUGIN);
+    // Let the plugin's startup scan finish before the stop.
+    await sleep(8000);
+    const kept = await jobOf(a.id);
+    assert.ok(kept && kept.id === rId, 'the reservation was lost while the plugin was off: ' + JSON.stringify(kept));
+    const before = await agentRecord(a.id);
+    await writeDaemonConfig({ resumeOnStartup: recovery, resumePrompt: RECOVERY_MARK });
+    // The daemon reads the setting when it captures running agents at a graceful stop, so the
+    // running daemon has to learn about the edit before it stops.
+    await paseo('reload').catch(() => {});
+    await sleep(3000);
+    if (crash) await crashDaemon(); else await stopDaemon();
+    await setModel(API[provider], { mode: 'text' });
+    if (due) await editJob(a.id, { resetAt: iso(Date.now() - 120000), dueAt: iso(Date.now() - 60000) });
+    const sent0 = continues(provider).length, rec0 = recoveryPrompts(provider);
+    await startDaemon();
+    // A connected app polls the plugin's list RPC, which hands the restarted plugin the Paseo API
+    // its tick needs (same as items 11 and 16); keep polling while recovery and the tick settle.
+    for (const until = Date.now() + 150000; Date.now() < until;) {
+      await rpc('auto-resume.list').catch(() => {});
+      await sleep(3000);
+    }
+    const out = {
+      case: name, provider, recovery, crash, due,
+      recoveryPrompts: recoveryPrompts(provider) - rec0,
+      pluginContinues: continues(provider).length - sent0,
+      reservationLeft: await jobOf(a.id).then((j) => j ? `${j.id} due ${j.dueAt}` : null),
+      history: (await readHistory()).filter((h) => h.agentId === a.id).map((h) => `${h.outcome}${h.reason ? '/' + h.reason : ''}`),
+      recordBefore: { lastStatus: before.lastStatus, resumeOnStartup: before.resumeOnStartup, lastError: before.lastError ?? null },
+      recordAfter: await agentRecord(a.id).then((r) => ({ lastStatus: r.lastStatus, resumeOnStartup: r.resumeOnStartup, lastError: r.lastError ?? null })).catch(() => null),
+      agentStatusAfter: await agentStatus(a.id),
+    };
+    out.detail = JSON.stringify(out);
+    return out;
+  };
+  const recoveryStep = (provider, title, opts, want) => step(18, provider, title, async () => {
+    const r = await restartCase(`Recovery ${opts.id}`, provider, opts);
+    assert.equal(r.recoveryPrompts, want.recovery, `recovery prompts: ${r.detail}`);
+    assert.equal(r.pluginContinues, want.continues, `plugin continues: ${r.detail}`);
+    assert.equal(r.reservationLeft, null, `reservation left: ${r.detail}`);
+    assert.ok(r.history.some((h) => h.startsWith('canceled')), `no canceled history entry: ${r.detail}`);
+    return r.detail;
+  });
+  if (!MIN && suites.includes('claude') && wants(18)) {
+    await recoveryStep('claude', '18a recovery on, graceful stop, reservation not due: recovery once, plugin 0, reservation canceled', { id: '18a', recovery: true, crash: false, due: false }, { recovery: 1, continues: 0 });
+    await recoveryStep('claude', '18b recovery on, crash, reservation due in the past: recovery once, plugin 0, reservation canceled', { id: '18b', recovery: true, crash: true, due: true }, { recovery: 1, continues: 0 });
+    await recoveryStep('claude', '18c recovery off, graceful stop, reservation due in the past: recovery 0, plugin 0, reservation canceled', { id: '18c', recovery: false, crash: false, due: true }, { recovery: 0, continues: 0 });
+  }
+  if (!MIN && suites.includes('codex') && wants(18)) {
+    await recoveryStep('codex', '18d recovery on, graceful stop, reservation not due (codex control): recovery once, plugin 0, reservation canceled', { id: '18d', recovery: true, crash: false, due: false }, { recovery: 1, continues: 0 });
+  }
+
+  // ---- 19. OpenCode limit flow against the fake chat-completions API ----------------------------
+  if (!MIN && suites.includes('opencode') && wants(19)) {
+    const ocModel = args.model ?? 'opencode-go/deepseek-v4.1-flash';
+    const mkOpenCode = (title) => client.createAgent({ provider: 'opencode', cwd: work, workspaceId: workspace.id, title, model: ocModel });
+    let ocA;
+    await step(19, 'opencode', '19a real opencode CLI limit (fake API) -> reservation; record resetAt and its evidence', async () => {
+      ocA = await mkOpenCode('OpenCode limit');
+      const t0 = Date.now();
+      const job = await hit(ocA, 'opencode', { mode: 'limit', resetInSec: 3600 });
+      await sleep(3000);
+      const lim = allRequests().filter((r) => r.api === 'opencode' && r.mode === 'limit').at(-1);
+      const expectedRetry = Date.parse(lim.t) + 15 * 60000;
+      const text = (await timelineText(ocA.id)).filter((l) => /limit|quota|429|free/i.test(l)).join(' | ');
+      assert.equal(job.resetAt, null, `resetAt ${job.resetAt} (the OpenCode free-limit message carries no reset)`);
+      assert.ok(Math.abs(Date.parse(job.dueAt) - expectedRetry) < 180000, `dueAt ${job.dueAt} vs the first 15-minute retry ~${iso(expectedRetry)}`);
+      assert.ok(text.includes('Free usage limit reached'), 'no free-limit notice in the timeline: ' + text);
+      return `notice [${text.slice(0, 200)}]; resetAt ${job.resetAt} (no reset in the message; evidence = the free-limit notice only), dueAt ${job.dueAt} (~+15 min retry, request ${lim.t}); reservation after ${Math.round((Date.now() - t0) / 1000)}s; probe ${(await probeFor(ocA.id)).join(' | ')}; status ${await agentStatus(ocA.id)}`;
+    });
+    await step(19, 'opencode', '19b the tick continues the OpenCode agent exactly once, in the same agent', async () => {
+      assert.ok(ocA, '19a did not create the agent');
+      const sent0 = continues('opencode').length;
+      await editJob(ocA.id, { resetAt: iso(Date.now() - 120000), dueAt: iso(Date.now() - 60000) });
+      await waitFor(async () => continues('opencode').length === sent0 + 1, 'tick continue', 240000, 1000);
+      await sleep(6000);
+      assert.equal(continues('opencode').length, sent0 + 1, 'more than one continue');
+      await waitFor(async () => !(await jobOf(ocA.id)), 'row cleared', 240000, 1000);
+      assert.ok((await timelineText(ocA.id)).join('\n').includes(DEFAULT_MARK), 'continue not in the same agent timeline');
+      return `1 continue, row cleared, continue in the same OpenCode agent timeline; history ${(await readHistory()).filter((h) => h.agentId === ocA.id).map((h) => h.outcome).join(',')}`;
+    });
+    await step(19, 'opencode', '19c startup scan finds an OpenCode stop missed while the plugin was off', async () => {
+      const b = await mkOpenCode('OpenCode missed while disabled');
+      await client.disablePlugin(PLUGIN);
+      try {
+        await setModel('opencode', { mode: 'limit', resetInSec: 3600 });
+        await client.sendAgentMessage(b.id, 'Work on the task.');
+        await waitFor(async () => (await agentStatus(b.id)) !== 'running' && (await timelineText(b.id)).some((l) => /limit|free/i.test(l)), 'opencode stopped at the limit', 240000, 1000);
+        await sleep(3000);
+        assert.equal(await jobOf(b.id), undefined, 'reservation made while the plugin was disabled');
+      } finally {
+        await setModel('opencode', { mode: 'text' });
+        await client.enablePlugin(PLUGIN);
+      }
+      const job = await waitFor(async () => { await rpc('auto-resume.list').catch(() => {}); const j = await jobOf(b.id); return j?.state === 'pending' ? j : null; }, 'scan reservation', 240000, 3000);
+      return `no job while disabled; after enable the scan created one: due ${job.dueAt} (resetAt ${job.resetAt})`;
+    });
+  }
+
+  // ---- 20. OpenCode provider discovery after warm-up (observation) -----------------------------
+  if (!MIN && suites.includes('opencode') && wants(20)) {
+    const list = (await rpc('auto-resume.providers')).providers.map((p) => `${p.id}/${p.cli}`);
+    note(20, 'opencode', 'auto-resume.providers after the run (item 1 retries discovery now)', JSON.stringify({ providers: list }));
+  }
+
   // ---- 12. history RPC --------------------------------------------------------------------
   const hist = (await rpc('auto-resume.history')).entries;
   await step(12, 'rpc', 'history RPC shows the outcomes', async () => {
@@ -590,7 +854,12 @@ try {
   // ---- 14. daemon log -------------------------------------------------------------------
   await step(14, 'log', 'daemon log has no plugin errors apart from intended ones', async () => {
     const lines = (await pluginLogLines()).filter((l) => !/e2e-(probe|outcome)/.test(l));
-    const bad = lines.filter((l) => /(failed|could not|error|unreadable)/i.test(l)).map((l) => l.replace(/^\{.*?"msg":"/, '').slice(0, 260));
+    // The daemon records plugin output as JSON; read the message, not the envelope.
+    const messageOf = (line) => {
+      try { const record = JSON.parse(line); return String(record.output ?? record.msg ?? line); }
+      catch { const at = line.indexOf('[usage-auto-resume]'); return at === -1 ? line : line.slice(at); }
+    };
+    const bad = lines.map(messageOf).filter((text) => /(failed|could not|error|unreadable)/i.test(text)).map((text) => text.slice(0, 260));
     const all = (await readFile(daemonLog, 'utf8')).split(/\r?\n/).filter((l) => /"level":(50|60)/.test(l)).map((l) => { try { const j = JSON.parse(l); return `${j.module ?? ''}: ${String(j.msg ?? '').slice(0, 160)}`; } catch { return l.slice(0, 160); } });
     results.push({ item: 14, suite: 'log-detail', ok: null, name: 'plugin log lines / level>=50 lines', ev: JSON.stringify({ pluginLines: lines.length, bad, level50: all.slice(0, 20) }) });
     assert.equal(bad.length, 0, 'plugin error lines: ' + bad.join(' || '));
