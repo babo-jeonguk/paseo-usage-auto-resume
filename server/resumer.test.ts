@@ -99,6 +99,7 @@ function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOption
   const listCalls: Array<{ filter?: { statuses?: string[]; includeBackground?: boolean } }> = [];
   const timelineReads: Array<{ agentId: string; query: unknown }> = [];
   let usageReads = 0;
+  let workspaceReads = 0;
   const snapshot = (agentId: string, agent: Partial<PaseoAgent>) =>
     ({
       id: agentId,
@@ -152,6 +153,7 @@ function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOption
     workspaces: {
       ref: (workspaceId: string) => ({
         refresh: async () => {
+          workspaceReads += 1;
           if (options.workspaceFailure) throw new Error("workspace unavailable");
           return { id: workspaceId, background: options.backgroundWorkspaces?.includes(workspaceId) ?? false };
         },
@@ -206,7 +208,7 @@ function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOption
     const windows = entry.windows.map((w) => ({ id: w.id, usedPct: w.usedPct ?? 100 - (w.remainingPct ?? 0), resetAt: w.resetsAt ?? null }));
     return { auth: "subscription", status: windows.some((w) => w.usedPct >= 100) ? "limited" : "ready", identity, windows };
   });
-  return { api, sent, sendOptions, listCalls, timelineReads, readSubscription, usageReads: () => usageReads };
+  return { api, sent, sendOptions, listCalls, timelineReads, readSubscription, usageReads: () => usageReads, workspaceReads: () => workspaceReads };
 }
 
 /** A turn end as Paseo sends it; `timeline` is what the agent's timeline then reads. */
@@ -1241,6 +1243,23 @@ test("the startup scan skips background agents while the switch is off and inclu
   const on = await setup(agents, { readSettings: async () => ({ ...DEFAULT_PROVIDER_SETTINGS, resumeBackground: true }) });
   assert.deepEqual((await store.list()).map((job) => job.agentId).sort(), ["bg", "n"]);
   assert.deepEqual(on.listCalls[0]?.filter?.includeBackground, true);
+});
+
+test("the startup scan reads a workspace only for agents it could schedule", async () => {
+  const old = new Date(clock.getTime() - 13 * 3_600_000).toISOString();
+  const filtered = await setup({
+    old: { provider: "codex", status: "error", lastError: CODEX_LIMIT, updatedAt: old, workspaceId: "wks-1" },
+    busy: { provider: "codex", status: "error", lastError: CODEX_LIMIT, activeTurn: { turnId: "t", startedAt: null }, workspaceId: "wks-1" },
+    perm: { provider: "codex", status: "error", lastError: CODEX_LIMIT, attentionReason: "permission", workspaceId: "wks-1" },
+  }, { readSettings: async () => ({ ...DEFAULT_PROVIDER_SETTINGS }) });
+  assert.equal(filtered.workspaceReads(), 0, "filtered agents do not read their workspace");
+  assert.deepEqual(await store.list(), []);
+
+  const eligible = await setup({
+    ready: { provider: "codex", status: "error", lastError: CODEX_LIMIT, workspaceId: "wks-1" },
+  }, { readSettings: async () => ({ ...DEFAULT_PROVIDER_SETTINGS }) });
+  assert.ok(eligible.workspaceReads() >= 1, "a scanned agent's workspace decides the background gate");
+  assert.deepEqual((await store.list()).map((job) => job.agentId), ["ready"]);
 });
 
 test("turning the background switch off sweeps pending background rows and leaves the rest", async () => {

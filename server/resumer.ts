@@ -345,9 +345,10 @@ export function createResumer(options: {
     for (const { agent } of entries) {
       const source = isProviderOn(agent.provider, settings) ? cliFor(config, agent.provider) : null;
       if (!source || agent.archivedAt) continue;
-      if (!settings.resumeBackground && (await isBackground(api, agent))) continue;
       if (Date.parse(agent.updatedAt) < since) continue;
       if (agent.activeTurn || agent.pendingPermissions.length > 0 || agent.attentionReason === "permission") continue;
+      // Read the workspace only for agents that could be scheduled; it is not needed to filter.
+      if (!settings.resumeBackground && (await isBackground(api, agent))) continue;
       const observedAt = new Date(agent.updatedAt);
       let stop = null;
       if (agent.status === "error" && agent.lastError) {
