@@ -256,19 +256,6 @@ const hit = async (a, suite, state = { mode: 'limit' }, timeout = 240000) => {
   }
 };
 
-// Waits until an agent's row stops changing, so a switch-on rescan cannot be mistaken for the
-// stop of the next message. Quiet with no row is fine: there was nothing to rescan.
-const settleRow = async (agentId, quietMs = 2000, timeout = 30000) => {
-  let last = JSON.stringify((await jobOf(agentId)) ?? null);
-  let since = Date.now();
-  const until = Date.now() + timeout;
-  while (Date.now() < until) {
-    await sleep(500);
-    const current = JSON.stringify((await jobOf(agentId)) ?? null);
-    if (current !== last) { last = current; since = Date.now(); continue; }
-    if (Date.now() - since >= quietMs) return;
-  }
-};
 const sinceLog = (from) => readFileSync(daemonLog, 'utf8').split(/\r?\n/).slice(from);
 const limitWith = (suite, sec) => suite === 'antigravity' ? { mode: 'limit', resetText: `${sec / 3600}h` } : { mode: 'limit', resetInSec: sec };
 
@@ -693,6 +680,20 @@ try {
   if (!MIN && suites.includes('claude') && wants(17)) {
     const mkBg = (title) => client.createAgent({ provider: 'claude', cwd: work, workspaceId: workspace.id, title, background: true });
     const listed = async (id, options) => { const r = await client.fetchAgents(options); return (r.entries ?? r.agents ?? []).some((a) => a.id === id); };
+    // Turning the switch on looks for missed stops at once (docs/behavior.md). Wait for that row
+    // and check it is the agent's last stop: a new pending row, background true, same reset.
+    const waitForRescan = async (agentId, idsBefore, resetInSec) => {
+      const lim = allRequests().filter((r) => r.api === 'claude' && r.mode === 'limit').at(-1);
+      assert.ok(lim, 'no claude limit request to compare the rescan row with');
+      const expectedReset = Date.parse(lim.t) + resetInSec * 1000;
+      const row = await waitFor(async () => {
+        const j = await jobOf(agentId);
+        return j?.state === 'pending' && !idsBefore.has(j.id) ? j : null;
+      }, `switch-on rescan for ${agentId}`, 30000, 500);
+      assert.equal(row.background, true, 'rescan row background: ' + JSON.stringify(row));
+      assert.ok(Math.abs(Date.parse(row.resetAt) - expectedReset) < 90000, `rescan resetAt ${row.resetAt} vs ~${iso(expectedReset)}`);
+      return { row, expectedReset };
+    };
     let bgA, bgC;
     await step(17, 'claude-bg', '17a background agents are skipped while the switch is off, and a pending one is swept when it is turned off', async () => {
       await setResumeBackground(false);
@@ -704,23 +705,35 @@ try {
       assert.ok(!(await readHistory()).some((h) => h.agentId === bgA.id), 'history written while the switch was off');
 
       // On through Paseo's settings API, then off again: the sweep runs from that notification.
+      const idsBeforeOn = new Set((await readJobs()).map((job) => job.id));
       await setResumeBackground(true);
-      // The switch-on rescan may schedule the earlier stop; let it settle before sending again.
-      await settleRow(bgA.id);
+      // Spec: turning the switch on looks for missed stops at once, so the stop made while it was
+      // off must be reserved. This is also the row a naive wait would mistake for the next send's.
+      const rescan = await waitForRescan(bgA.id, idsBeforeOn, 5400);
+      const cancelsBefore = (await readHistory()).filter((h) => h.agentId === bgA.id && h.outcome === 'canceled' && h.reason === 'new_message').length;
       const job = await hit(bgA, 'claude', { mode: 'limit', resetInSec: 5400 });
       assert.equal(job.background, true, 'stored row: ' + JSON.stringify({ background: job.background }));
+      assert.notEqual(job.id, rescan.row.id, 'the new stop kept the rescan row instead of replacing it');
+      const cancelsAfter = (await readHistory()).filter((h) => h.agentId === bgA.id && h.outcome === 'canceled' && h.reason === 'new_message').length;
+      assert.equal(cancelsAfter, cancelsBefore + 1, 'the rescan row was not canceled as a newer message');
       await setResumeBackground(false);
       await waitFor(async () => (await readHistory()).some((h) => h.agentId === bgA.id && h.reason === 'background_off'), 'background_off sweep', 30000, 1000);
       assert.equal(await jobOf(bgA.id), undefined, 'row kept after the switch was turned off');
-      return 'off: background limit made no reservation and wrote no history; on: row stored with background=true; off again: canceled/background_off at once, row gone';
+      return `off: background limit made no reservation and wrote no history; switch on: rescan reserved the stop made while off (${rescan.row.resetAt}), then the new stop replaced it (canceled/new_message, id ${rescan.row.id.slice(0, 8)} -> ${job.id.slice(0, 8)}); off again: canceled/background_off at once, row gone`;
     });
     await step(17, 'claude-bg', '17b with the switch on, the tick continues a background agent exactly once, in the same agent', async () => {
       assert.ok(bgA, '17a did not create the background agent');
+      const idsBeforeOn = new Set((await readJobs()).map((job) => job.id));
       await setResumeBackground(true);
-      // The rescan of 17a's last stop may create a row now; let it settle so hit() waits for its own.
-      await settleRow(bgA.id);
+      // 17a's final switch-off swept its row; its last stop is still inside the scan window, so
+      // the switch-on rescan must reserve it again. That row must not be taken for this send's.
+      const rescan = await waitForRescan(bgA.id, idsBeforeOn, 5400);
+      const cancelsBefore = (await readHistory()).filter((h) => h.agentId === bgA.id && h.outcome === 'canceled' && h.reason === 'new_message').length;
       const job = await hit(bgA, 'claude', { mode: 'limit', resetInSec: 5400 });
       assert.equal(job.background, true);
+      assert.notEqual(job.id, rescan.row.id, 'the new stop kept the rescan row instead of replacing it');
+      const cancelsAfter = (await readHistory()).filter((h) => h.agentId === bgA.id && h.outcome === 'canceled' && h.reason === 'new_message').length;
+      assert.equal(cancelsAfter, cancelsBefore + 1, 'the rescan row was not canceled as a newer message');
       const sent0 = continues('claude').length;
       await editJob(bgA.id, { resetAt: iso(Date.now() - 120000), dueAt: iso(Date.now() - 60000) });
       await waitFor(async () => continues('claude').length === sent0 + 1, 'tick continue', 240000, 1000);
@@ -728,7 +741,7 @@ try {
       assert.equal(continues('claude').length, sent0 + 1, 'more than one continue');
       await waitFor(async () => !(await jobOf(bgA.id)), 'row cleared', 240000, 1000);
       assert.ok((await timelineText(bgA.id)).join('\n').includes(DEFAULT_MARK), 'continue not in the background agent timeline');
-      return `1 continue, row cleared, continue text in the same background agent timeline; still hidden from the default list: ${!(await listed(bgA.id))}`;
+      return `switch on: rescan reserved 17a's last stop (${rescan.row.resetAt}), then the new stop replaced it; tick: 1 continue, row cleared, continue text in the same background agent timeline; still hidden from the default list: ${!(await listed(bgA.id))}`;
     });
     await step(17, 'claude-bg', '17c with the switch on, the startup scan finds a NEW background agent stopped while the plugin was off', async () => {
       await setResumeBackground(true);
