@@ -595,7 +595,8 @@ export function createResumer(options: {
     return scan(api).catch((error) => console.error("[usage-auto-resume] scan after enabling background agents failed", String(error)));
   }
 
-  /** A job left mid-send by a crash may already have been delivered, so it is dropped. */  async function recover(): Promise<void> {
+  /** A job left mid-send by a crash may already have been delivered, so it is dropped. */
+  async function recover(): Promise<void> {
     for (const job of await store.list()) {
       if (job.state !== "sending") continue;
       await retire(job.agentId, (current) => current.state === "sending", { outcome: "interrupted" });
