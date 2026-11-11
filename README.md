@@ -16,7 +16,7 @@ Actual Paseo web interface with sample reservations. Each row shows what is sche
 
 ## Requirements
 
-- **Paseo daemon and app 0.11.0 or later**, with plugins enabled in **Settings → Plugins**.
+- **Paseo daemon and app 0.16.0 or later**, with plugins enabled in **Settings → Plugins**.
 - The provider CLI already signed in on the daemon host, and the host kept awake.
 - **OpenCode 2.2.2 or later** for OpenCode agents.
 

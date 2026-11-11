@@ -6,7 +6,7 @@ In the plugin's settings you can choose which providers are resumed, include the
 
 ## Setup
 
-Requires Paseo daemon and app 0.11.0 or later, plugins enabled, the provider CLI signed in on the daemon host, and the host kept awake. OpenCode 2.2.2 or later is required for OpenCode agents. Agents billed through an API key or another billing route are not resumed.
+Requires Paseo daemon and app 0.16.0 or later, plugins enabled, the provider CLI signed in on the daemon host, and the host kept awake. OpenCode 2.2.2 or later is required for OpenCode agents. Agents billed through an API key or another billing route are not resumed.
 
 Sending your own message to an agent, or archiving it, cancels its resume, as does the agent waiting for permission when the resume is due.
 

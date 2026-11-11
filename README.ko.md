@@ -16,7 +16,7 @@
 
 ## 필요한 것
 
-- **Paseo 데몬과 앱 0.11.0 이상**, **Settings → Plugins**에서 플러그인 활성화
+- **Paseo 데몬과 앱 0.16.0 이상**, **Settings → Plugins**에서 플러그인 활성화
 - 데몬 호스트에 로그인된 provider CLI, 그리고 절전 상태에 들어가지 않는 데몬 호스트
 - OpenCode 에이전트는 **OpenCode 2.2.2 이상**이 필요합니다.
 
