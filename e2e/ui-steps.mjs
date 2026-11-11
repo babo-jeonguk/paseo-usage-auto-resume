@@ -64,6 +64,9 @@ export async function uiPhase(ctx) {
     const days = Math.round((day(ms) - day(Date.now())) / 86400000);
     return days <= 0 ? 'Today' : days === 1 ? 'Tomorrow' : new Date(ms).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
   };
+  // The time button of a reservation row, which exists only inside the Auto Resume screen. The
+  // agent's title alone also appears in the sidebar, so a text locator would match before a row.
+  const screenRow = (title) => page.getByRole('button', { name: new RegExp(`^Change time for ${title}, now `) });
   // Walks up from a row to its card, whose previous sibling is the day heading.
   const headingOf = (title) => page.getByRole('button', { name: new RegExp(`^Change time for ${title}, now `) }).evaluate((el) => {
     for (let n = el; n; n = n.parentElement) {
@@ -267,11 +270,11 @@ export async function uiPhase(ctx) {
     const u5 = await mkAgent('UI live screen'), u6 = await mkAgent('UI live pill');
     await guarded(21, 'a reservation from a hook appears on the Auto Resume screen within 5 s without reloading', async () => {
       await openScreen();
-      const rowTitle = page.getByText('UI live screen', { exact: true });
-      await expect(rowTitle).toHaveCount(0);
+      const row = screenRow('UI live screen');
+      await expect(row).toHaveCount(0);
       const job = await hit(u5, 'claude');
       const created = Date.now();
-      await expect(rowTitle).toBeVisible({ timeout: 5000 });
+      await expect(row).toBeVisible({ timeout: 5000 });
       const ms = Date.now() - created;
       await shot('ui-10-live-screen');
       return `${job.dueAt} appeared ${ms} ms after the reservation was stored, with the screen already open (no reload)`;
