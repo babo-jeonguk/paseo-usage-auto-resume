@@ -230,14 +230,44 @@ const timelineText = async (id) => {
 };
 const agentStatus = async (id) => { try { const r = await client.fetchAgent(id); return r?.agent?.status ?? r?.status ?? JSON.stringify(r).slice(0, 80); } catch (e) { return 'err ' + e.message; } };
 const agentCount = async () => { try { const r = await client.fetchAgents(); return (r.entries ?? r.agents ?? []).length; } catch { return -1; } };
+/** Turn-end probe lines the installed source writes for one agent; each send adds one. */
+const outcomeCount = async (agentId) => (await pluginLogLines()).filter((l) => l.includes('e2e-outcome') && l.includes(agentId)).length;
+
+// Sends one prompt that should stop at a limit and returns the reservation made by THAT stop.
+// The model stays in the requested mode until this message's turn has ended, so its own request
+// gets the limit; only then does it accept a row that did not exist before the send. A row an
+// earlier rescan made therefore cannot be mistaken for this stop.
 const hit = async (a, suite, state = { mode: 'limit' }, timeout = 240000) => {
   await setModel(API[suite], state);
   const t0 = Date.now();
-  await client.sendAgentMessage(a.id, 'Work on the task.');
-  const job = await waitFor(async () => { const j = await jobOf(a.id); return j?.state === 'pending' ? j : null; }, `reservation for ${a.title}`, timeout, 1000);
-  job._latencyMs = Date.now() - t0;
-  await setModel(API[suite], { mode: 'text' });
-  return job;
+  const turnsBefore = await outcomeCount(a.id);
+  const rowsBefore = new Set((await readJobs()).map((job) => job.id));
+  try {
+    await client.sendAgentMessage(a.id, 'Work on the task.');
+    await waitFor(async () => (await outcomeCount(a.id)) > turnsBefore, `turn end for ${a.title}`, timeout, 500);
+    const job = await waitFor(async () => {
+      const j = await jobOf(a.id);
+      return j?.state === 'pending' && !rowsBefore.has(j.id) ? j : null;
+    }, `reservation for ${a.title}`, timeout, 1000);
+    job._latencyMs = Date.now() - t0;
+    return job;
+  } finally {
+    await setModel(API[suite], { mode: 'text' });
+  }
+};
+
+// Waits until an agent's row stops changing, so a switch-on rescan cannot be mistaken for the
+// stop of the next message. Quiet with no row is fine: there was nothing to rescan.
+const settleRow = async (agentId, quietMs = 2000, timeout = 30000) => {
+  let last = JSON.stringify((await jobOf(agentId)) ?? null);
+  let since = Date.now();
+  const until = Date.now() + timeout;
+  while (Date.now() < until) {
+    await sleep(500);
+    const current = JSON.stringify((await jobOf(agentId)) ?? null);
+    if (current !== last) { last = current; since = Date.now(); continue; }
+    if (Date.now() - since >= quietMs) return;
+  }
 };
 const sinceLog = (from) => readFileSync(daemonLog, 'utf8').split(/\r?\n/).slice(from);
 const limitWith = (suite, sec) => suite === 'antigravity' ? { mode: 'limit', resetText: `${sec / 3600}h` } : { mode: 'limit', resetInSec: sec };
@@ -675,6 +705,8 @@ try {
 
       // On through Paseo's settings API, then off again: the sweep runs from that notification.
       await setResumeBackground(true);
+      // The switch-on rescan may schedule the earlier stop; let it settle before sending again.
+      await settleRow(bgA.id);
       const job = await hit(bgA, 'claude', { mode: 'limit', resetInSec: 5400 });
       assert.equal(job.background, true, 'stored row: ' + JSON.stringify({ background: job.background }));
       await setResumeBackground(false);
@@ -685,6 +717,8 @@ try {
     await step(17, 'claude-bg', '17b with the switch on, the tick continues a background agent exactly once, in the same agent', async () => {
       assert.ok(bgA, '17a did not create the background agent');
       await setResumeBackground(true);
+      // The rescan of 17a's last stop may create a row now; let it settle so hit() waits for its own.
+      await settleRow(bgA.id);
       const job = await hit(bgA, 'claude', { mode: 'limit', resetInSec: 5400 });
       assert.equal(job.background, true);
       const sent0 = continues('claude').length;
