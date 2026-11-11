@@ -82,6 +82,8 @@ interface FakeOptions {
   backgroundWorkspaces?: string[];
   /** Every workspace read fails, so only the agent's own flag decides. */
   workspaceFailure?: boolean;
+  /** Runs while a workspace is being read, as a concurrent change would. */
+  duringWorkspaceRead?: () => Promise<void>;
   listError?: Error;
   usage?: Array<{ providerId: string; displayName: string; status?: string; windows: Array<Record<string, unknown>> }>;
   /** Runs while usage is being read, as a concurrent change would. */
@@ -154,6 +156,7 @@ function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOption
       ref: (workspaceId: string) => ({
         refresh: async () => {
           workspaceReads += 1;
+          await options.duringWorkspaceRead?.();
           if (options.workspaceFailure) throw new Error("workspace unavailable");
           return { id: workspaceId, background: options.backgroundWorkspaces?.includes(workspaceId) ?? false };
         },
@@ -3170,7 +3173,63 @@ test("a switch turned off after planning read it retires the overload retry just
   assert.deepEqual([converted.row?.kind, converted.ended], [undefined, []]);
   const unreadable = await run("unreadable", async () => null);
   assert.deepEqual([unreadable.row?.kind, unreadable.ended], ["overload", []]);
-  // A limit reservation keeps the behavior it had before Labs: its due time checks the provider.
+  // A switch turned off before the write is judged by the row stored then, for a limit row too.
   const limit = await run("limit", null, true, failed(CODEX_LIMIT));
-  assert.deepEqual([limit.row?.kind, limit.row?.state, limit.ended], [undefined, "pending", []]);
+  assert.deepEqual([limit.row, limit.ended], [undefined, [["provider_off", null]]]);
+});
+
+test("a background switch turned off while a reservation is being planned cancels the stored row", async () => {
+  let settings = { ...DEFAULT_PROVIDER_SETTINGS, resumeBackground: true };
+  let hold = false;
+  let reached!: () => void;
+  const reading = new Promise<void>((resolve) => { reached = resolve; });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const { api, resumer } = await setup({ bg: { provider: "codex", workspaceId: "wks-bg" } }, {
+    readSettings: async () => settings,
+    backgroundWorkspaces: ["wks-bg"],
+    duringWorkspaceRead: async () => {
+      if (!hold) return;
+      hold = false;
+      reached();
+      await gate;
+    },
+  });
+  hold = true;
+  const scheduling = resumer.onTurnEnded(turnEnded("bg", "codex", failed(CODEX_LIMIT)), api);
+  await reading;
+  // The sweep runs before the row exists, so only the write's own re-read can see the switch.
+  settings = { ...DEFAULT_PROVIDER_SETTINGS };
+  await resumer.reconcileProviders();
+  release();
+  await scheduling;
+  assert.deepEqual(await store.list(), []);
+  assert.deepEqual(await recorded(), ["bg canceled/background_off"]);
+});
+
+test("a provider switch turned off while a limit reservation is being planned cancels the stored row", async () => {
+  let settings = { ...DEFAULT_PROVIDER_SETTINGS, resumeBackground: true };
+  let hold = false;
+  let reached!: () => void;
+  const reading = new Promise<void>((resolve) => { reached = resolve; });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const { api, resumer } = await setup({ c1: { provider: "codex", workspaceId: "wks-1" } }, {
+    readSettings: async () => settings,
+    duringWorkspaceRead: async () => {
+      if (!hold) return;
+      hold = false;
+      reached();
+      await gate;
+    },
+  });
+  hold = true;
+  const scheduling = resumer.onTurnEnded(turnEnded("c1", "codex", failed(CODEX_LIMIT)), api);
+  await reading;
+  settings = { ...settings, disabledProviders: ["codex"] };
+  await resumer.reconcileProviders();
+  release();
+  await scheduling;
+  assert.deepEqual(await store.list(), []);
+  assert.deepEqual(await recorded(), ["c1 canceled/provider_off"]);
 });

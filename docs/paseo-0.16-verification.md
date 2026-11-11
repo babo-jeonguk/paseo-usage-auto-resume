@@ -16,7 +16,7 @@
 
 ## 1.4.0에서 사용자에게 보이는 변화
 
-- **배경 에이전트 스위치 (기본 꺼짐).** Paseo는 `agent.background || workspace.background`인 에이전트를 목록에서 숨긴다. 1.3.2까지는 이런 에이전트도 제한 후 자동 재개했다. 1.4.0은 기본으로 재개하지 않고, 켜면 다른 에이전트와 똑같이 재개한다. **배경 워크스페이스의 에이전트가 더 이상 기본으로 재개되지 않는 동작 변화**이며, 켜는 즉시 시작 스캔과 같은 놓친 제한 스캔을 실행한다. 끄면 그 에이전트의 대기 중 예약을 `background_off` 사유로 즉시 취소한다.
+- **배경 에이전트 스위치 (기본 꺼짐).** Paseo는 `agent.background || workspace.background`인 에이전트를 목록에서 숨긴다. 1.3.2까지는 이런 에이전트도 제한 후 자동 재개했다. 1.4.0은 기본으로 재개하지 않고, 켜면 다른 에이전트와 똑같이 재개한다. **배경 워크스페이스의 에이전트가 더 이상 기본으로 재개되지 않는 동작 변화**이며, 켜는 즉시 시작 스캔과 같은 놓친 제한 스캔을 실행한다. 끄면 그 에이전트의 대기 중 예약을 `background_off` 사유로 즉시 취소하며, 예약을 계획하는 중에 끄더라도 저장 직후 취소한다.
 - **실시간 갱신.** 예약·결과가 저장되면 plugin subscription(`auto-resume.changes`)이 revision을 push하고, Auto Resume 화면·대화 팝오버·작성창 pill이 기존 목록 RPC로 바로 다시 읽는다. 2분 주기 전체 새로고침은 이름·위치가 바뀐 에이전트를 위한 안전망으로 남는다.
 - **Paseo 0.16 이상 요구.** 0.15 이하 daemon에는 설치되지 않는다.
 
@@ -149,7 +149,7 @@ daemon 시작 직후 첫 `auto-resume.providers` 호출에서 OpenCode가 빠져
 ## 1.4.0 릴리스 노트 초안
 
 - **Paseo 0.16.0 이상이 필요합니다.** 0.15 이하 daemon에서는 설치되지 않습니다.
-- **Resume background agents (기본 꺼짐).** Paseo가 목록에서 숨기는 background agent와 background workspace의 agent를 자동 재개할지 정합니다. 기본값이 꺼짐이므로, 이전에 이런 agent가 재개되던 환경은 설정에서 켜야 합니다. 끄면 대기 중인 배경 예약이 `background_off`로 취소됩니다.
+- **Resume background agents (기본 꺼짐).** Paseo가 목록에서 숨기는 background agent와 background workspace의 agent를 자동 재개할지 정합니다. 기본값이 꺼짐이므로, 이전에 이런 agent가 재개되던 환경은 설정에서 켜야 합니다. 끄면 대기 중인 배경 예약이 `background_off`로 취소되며, 예약을 계획하는 중에 끄더라도 저장 직후 취소됩니다.
 - **실시간 갱신.** 예약이 생기거나 결과가 기록되면 열려 있는 Auto Resume 화면, 대화 팝오버, 작성창 pill이 즉시 갱신됩니다. 2분마다 전체 새로고침도 유지됩니다.
 - **종료 중 로그 정리.** daemon이 멈추는 중에 시작 스캔이 끊기면 오류 대신 정보 로그만 남깁니다.
 - OpenCode Go·무료 모델 지원은 1.3.2와 같습니다.

@@ -293,20 +293,23 @@ export function createResumer(options: {
 
   /**
    * The switches were read before the write, and turning one off sweeps only the reservations
-   * stored when it runs. Reading them again after the write closes that gap for an overload
-   * retry: a sweep that ran first is seen here as the switch being off, and one that runs later
-   * finds the row. The row stored now decides, as in the sweeps, so a retry planned again as a
-   * limit meanwhile is left alone. Limit reservations keep the behavior they had before Labs.
+   * stored when it runs. Reading them again after the write closes that gap for both switches: a
+   * sweep that ran first is seen here as the switch being off, and one that runs later finds the
+   * row. The row stored now decides, as in the sweeps, so one planned again or a switch turned
+   * back on meanwhile is left alone. Unreadable settings retire nothing.
    */
   async function retireIfSwitchedOff(job: ResumeJob): Promise<void> {
-    if (job.kind !== "overload") return;
-    const retry = (current: ResumeJob) => current.id === job.id && current.state === "pending" && current.kind === "overload";
+    const pending = (current: ResumeJob) => current.id === job.id && current.state === "pending";
     const settings = await readSettings();
     if (settings && !isProviderOn(job.provider, settings)) {
-      await retire(job.agentId, (current) => retry(current) && !isProviderOn(current.provider, settings), providerOff(job.provider));
-      return;
+      if (await retire(job.agentId, (current) => pending(current) && !isProviderOn(current.provider, settings), providerOff(job.provider))) return;
     }
-    if ((await overloadRetry()) === false) await retire(job.agentId, retry, canceled("overload_off", "overload retry turned off"));
+    if (settings && !settings.resumeBackground) {
+      if (await retire(job.agentId, (current) => pending(current) && current.background === true, backgroundOff())) return;
+    }
+    if ((await overloadRetry()) === false) {
+      await retire(job.agentId, (current) => pending(current) && current.kind === "overload", canceled("overload_off", "overload retry turned off"));
+    }
   }
 
   /** The agent's latest timeline items, oldest first; none, and a log line, when they cannot be read. */
