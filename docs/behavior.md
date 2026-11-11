@@ -6,7 +6,7 @@
 
 Usage Auto Resume detects short provider limit notices and explicit limit error codes at the end of a turn. Claude can finish a turn normally while leaving a limit notice, so detection also checks the closing assistant message. Context overflow, ordinary errors and API billing failures are excluded.
 
-At the end of a turn that was not canceled, the plugin reads the agent's latest 20 timeline items and checks those after the latest user message; the timeline Paseo 0.11 and 0.12 sent with a turn's end is not used. When they cannot be read, the failure is logged and only the error the turn failed with is checked.
+At the end of a turn that was not canceled, the plugin reads the agent's latest 20 timeline items and checks those after the latest user message; the empty timeline a turn's end carries is not used. When they cannot be read, the failure is logged and only the error the turn failed with is checked.
 
 Each daemon runs its own copy of the plugin, and a turn's end reaches only the daemon that runs the agent. An agent that Paseo's connected hosts run on another machine is resumed only when the plugin is installed and turned on in that machine's daemon.
 
@@ -48,7 +48,7 @@ A stop at a limit makes no reservation while provider settings cannot be read or
 2. The provider is off, or no longer runs a supported CLI: cancel.
 3. The agent is gone or archived, or its provider or model changed: cancel.
 4. A new message: cancel.
-5. The agent is starting: cancel. A closed agent goes on, and the continue reopens its saved session. Paseo closes an agent's runtime when, for example, the daemon stops or crashes, even mid-turn, or, by default from 0.14, the agent has been idle for an hour. A continue whose reopen fails is recorded as could not be sent.
+5. The agent is starting: cancel. A closed agent goes on, and the continue reopens its saved session. Paseo closes an agent's runtime when, for example, the daemon stops or crashes, even mid-turn, or, by default, the agent has been idle for an hour. A continue whose reopen fails is recorded as could not be sent.
 6. The agent awaits permission or input: cancel.
 7. The agent is in a turn: wait for it to end, without a usage lookup. A reservation that is turned off waits too, so the turn's end decides it.
 8. The reservation is turned off: skip it.
@@ -115,7 +115,7 @@ Reservations survive daemon and plugin restarts. Paseo supplies its plugin API i
 
 The startup scan searches up to 200 idle/error agents active in the preceding 12 hours for missed limit stops. Existing persisted reservations can wait longer, including for weekly resets. Codex, Antigravity and OpenCode recovery checks error notices; Claude also checks notices in its latest 20 timeline items, and an agent whose timeline cannot be read is logged and skipped. A missed stop is scheduled unless the agent already has a reservation that is pending or being sent; after a sent continue it counts as one more automatic continue. Closed agents are not searched, so a stop is missed when the agent was closed before the plugin started again, as every agent is after a daemon restart.
 
-At session open, the plugin captures non-secret launch paths, credential-store selectors, the OS username used for Keychain lookup, and credential-presence flags. These survive restarts with the reservation. For a session opened before the plugin loaded, account checks use the daemon environment plus provider configuration; environment values added by other plugins at session open are not available. For Codex and Claude, unrecognized quota shapes and custom launchers with multiple command arguments wait for verification. OpenCode waits when its agent session is not in its database or the database is unreadable. Antigravity instead preserves its notice/retry behavior. Known one-command launchers can use native account/status protocols. Because the plugin reads session opens, Paseo 0.14 and later reopen the session of each open agent before its next prompt whenever the plugin starts, stops or reloads, including on install and update. A continue whose reopen fails is recorded as could not be sent.
+At session open, the plugin captures non-secret launch paths, credential-store selectors, the OS username used for Keychain lookup, and credential-presence flags. These survive restarts with the reservation. For a session opened before the plugin loaded, account checks use the daemon environment plus provider configuration; environment values added by other plugins at session open are not available. For Codex and Claude, unrecognized quota shapes and custom launchers with multiple command arguments wait for verification. OpenCode waits when its agent session is not in its database or the database is unreadable. Antigravity instead preserves its notice/retry behavior. Known one-command launchers can use native account/status protocols. Because the plugin reads session opens, Paseo reopens the session of each open agent before its next prompt whenever the plugin starts, stops or reloads, including on install and update. A continue whose reopen fails is recorded as could not be sent.
 
 ## Data access and storage
 

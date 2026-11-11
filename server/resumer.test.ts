@@ -78,8 +78,6 @@ interface FakeOptions {
   /** How reading an agent's timeline fails: an error page, or a rejected request. */
   timelineFailure?: "page" | "throw";
   backgroundAgents?: string[];
-  /** A newer SDK can reject inclusive discovery against an older host. */
-  backgroundUnsupported?: boolean;
   listError?: Error;
   usage?: Array<{ providerId: string; displayName: string; status?: string; windows: Array<Record<string, unknown>> }>;
   /** Runs while usage is being read, as a concurrent change would. */
@@ -114,9 +112,6 @@ function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOption
       list: async (query: { filter?: { statuses?: string[]; includeBackground?: boolean } }) => {
         listCalls.push(query);
         if (options.listError) throw options.listError;
-        if (query.filter?.includeBackground && options.backgroundUnsupported) {
-          throw new Error("Update the host to use background workspaces.");
-        }
         return {
           entries: [...agents]
             .filter(([agentId]) => query.filter?.includeBackground || !options.backgroundAgents?.includes(agentId))
@@ -202,7 +197,7 @@ function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOption
   return { api, sent, sendOptions, listCalls, timelineReads, readSubscription, usageReads: () => usageReads };
 }
 
-/** A turn end as Paseo 0.13 sends it; `timeline` is what the agent's timeline then reads. */
+/** A turn end as Paseo sends it; `timeline` is what the agent's timeline then reads. */
 function turnEnded(
   agentId: string,
   provider: string,
@@ -321,7 +316,7 @@ test("a turn end reads the Claude notice from the agent's latest timeline", asyn
 
 test("the timeline a turn end carries is never read", async () => {
   const { api, resumer } = await setup({ m1: { provider: "claude" }, m2: { provider: "claude" } });
-  // Paseo 0.11 and 0.12 filled it; the agent's own timeline decides alike on every version.
+  // The event's own timeline is not read; the agent's timeline decides.
   await resumer.onTurnEnded({ ...turnEnded("m1", "claude", { kind: "completed" }), timeline: claudeNotice(CLAUDE_LIMIT) }, api);
   assert.deepEqual(await store.list(), []);
   // A later Paseo may drop the field altogether.
@@ -892,7 +887,7 @@ test("an agent waiting for permission or starting is left alone", async () => {
   assert.deepEqual(await recorded(), ["a1 canceled/permission", "a1 canceled/permission", "a1 canceled/agent_busy"]);
 });
 
-// Paseo 0.14 releases an idle runtime after an hour and stores the agent as closed; a send
+// Paseo releases an idle runtime after an hour and stores the agent as closed; a send
 // reopens its saved session. A daemon shutdown leaves agents closed the same way.
 test("a closed agent is continued at its reset", async () => {
   const { api, sent, resumer, agents } = await setup({ a1: { provider: "codex" }, m1: { provider: "claude" } });
@@ -1111,16 +1106,6 @@ test("startup scan recovers unseen limit stops in background workspaces and send
   await resumer.tick();
   assert.deepEqual(sent.map((message) => message.agentId).sort(), ["c1", "m1"]);
   assert.ok(sent.every((message) => message.text === CONTINUE_PROMPT));
-});
-
-test("startup scan falls back to normal discovery when an older host rejects background discovery", async () => {
-  const { listCalls } = await setup({
-    c1: { provider: "codex", status: "error", lastError: CODEX_LIMIT },
-  }, { backgroundUnsupported: true });
-  assert.equal(listCalls.length, 2);
-  assert.equal(listCalls[0]?.filter?.includeBackground, true);
-  assert.equal(listCalls[1]?.filter?.includeBackground, undefined);
-  assert.deepEqual((await store.list()).map((job) => job.agentId), ["c1"]);
 });
 
 test("startup scan does not hide unrelated discovery failures by retrying a narrower list", async () => {
