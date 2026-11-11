@@ -158,7 +158,7 @@ async function scenario(t: TestContext, profile: Profile, limit: "five" | "week"
   const make = () => createResumer({ store: createJobStore(storePath), now: () => new Date(clock), readSettings: async () => settings, readSubscription });
   const resumer = make();
   const event = (message: string): PluginLifecycleEvents["agent.turn_ended"] => ({
-    agent: { id: agent.id, provider, cwd: dir, title: agent.title, workspaceId: null, parentAgentId: null },
+    agent: { id: agent.id, provider, cwd: dir, title: agent.title, workspaceId: null, parentAgentId: null, metadata: {} },
     turnId: "fixture-turn", outcome: source === "claude" ? { kind: "completed" }
       : { kind: "failed", error: { message, ...(source === "antigravity" ? { code: "RESOURCE_EXHAUSTED" } : {}) } },
     timeline: [],

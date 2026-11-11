@@ -105,7 +105,7 @@ async function harness(t: TestContext, source: UsageSource, plan: string) {
   const makeResumer = () => createResumer({ store: createJobStore(storePath), now: () => clock, readSubscription: read });
   const resumer = makeResumer();
   const event: PluginLifecycleEvents["agent.turn_ended"] = {
-    agent: { id: agent.id, provider, workspaceId: null, parentAgentId: null, cwd: dir, title: null },
+    agent: { id: agent.id, provider, workspaceId: null, parentAgentId: null, cwd: dir, title: null, metadata: {} },
     turnId: "fixture-turn", outcome: { kind: "failed", error: { message: source === "antigravity"
       ? "Individual quota reached. Resets in 120h." : "Usage limit reached" } },
     timeline: [],

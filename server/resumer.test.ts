@@ -211,7 +211,7 @@ function turnEnded(
 ): PluginLifecycleEvents["agent.turn_ended"] {
   turnTimelines.set(agentId, timeline);
   return {
-    agent: { id: agentId, workspaceId: "wks", parentAgentId: null, provider, cwd: "/repo", title: null },
+    agent: { id: agentId, workspaceId: "wks", parentAgentId: null, provider, cwd: "/repo", title: null, metadata: {} },
     turnId: "turn-1",
     outcome,
     timeline: [],
