@@ -8,6 +8,7 @@ import { clockLabel, dayLabel, delayChoices, notePreview, RESUME_NOW_UNFINISHED,
 import { editorLocks } from "./edit-session";
 import { NoteEditor } from "./note-editor";
 import { historyQueryKey, jobsQueryKey } from "./query-keys";
+import { useScheduleChanges } from "./use-changes";
 import { accentText, bodyText, chipText, clockText, headingText, mutedText } from "./text-styles";
 import { filled, outlined, pressFeedback } from "./button-styles";
 import { notifyScheduleChanged } from "./schedule-changes";
@@ -28,7 +29,9 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
   const queryClient = useQueryClient();
   const toast = useToast();
   const queryKey = jobsQueryKey(host.id);
-  const query = useQuery({ queryKey, queryFn: async () => (await list({})).jobs, refetchInterval: 10_000 });
+  // The full refresh is a safety net; pushed changes and local actions update it at once.
+  const query = useQuery({ queryKey, queryFn: async () => (await list({})).jobs, refetchInterval: 120_000 });
+  useScheduleChanges(queryClient, [queryKey]);
   const job = query.data?.find((entry) => entry.agentId === agentId);
   const [now, setNow] = useState(Date.now);
   const [session, dispatch] = useEditSession(query.data);
@@ -107,7 +110,12 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
   );
   return (
     <View testID={`resume-conversation-${agentId}`} style={{ padding: 16, gap: 16, width: "100%", maxWidth: 360 }}>
-      {!layout.compact ? <Text accessibilityRole="header" style={headingText(colors)}>Auto Resume</Text> : null}
+      {!layout.compact ? (
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <Text accessibilityRole="header" style={headingText(colors)}>Auto Resume</Text>
+          {job?.background ? <Text style={muted}>Background</Text> : null}
+        </View>
+      ) : null}
       {/* A failed refresh keeps what was shown, with every change off until it loads. */}
       {query.isError && query.data ? <View style={{ gap: 8 }}>
         <Text accessibilityRole="alert" style={muted}>Couldn’t refresh this reservation.</Text>

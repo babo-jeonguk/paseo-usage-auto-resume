@@ -2,11 +2,11 @@ Usage Auto Resume asks the same Codex, Claude, Antigravity, or OpenCode agent to
 
 The Auto Resume screen in the sidebar lists upcoming resumes by day, with their conversation, provider and workspace. Skip a resume, delay it, pick another time, add instructions for that continue, or turn every shown resume off at once. Recent activity shows how resumes ended over the last 24 hours. A conversation with a resume also gets an Auto Resume button next to its message box, to manage it in place or resume right away when a limit lifts early.
 
-In the plugin's settings you can choose which providers are resumed and change the message sent to the agent.
+In the plugin's settings you can choose which providers are resumed, include the agents Paseo hides as background (off by default), and change the message sent to the agent.
 
 ## Setup
 
-Requires Paseo daemon and app 0.11.0 or later, plugins enabled, the provider CLI signed in on the daemon host, and the host kept awake. OpenCode 2.2.2 or later is required for OpenCode agents. Agents billed through an API key or another billing route are not resumed.
+Requires Paseo daemon and app 0.16.0 or later, plugins enabled, the provider CLI signed in on the daemon host, and the host kept awake. OpenCode 2.2.2 or later is required for OpenCode agents. Agents billed through an API key or another billing route are not resumed.
 
 Sending your own message to an agent, or archiving it, cancels its resume, as does the agent waiting for permission when the resume is due.
 

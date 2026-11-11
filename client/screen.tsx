@@ -37,6 +37,7 @@ import { useEditSession } from "./use-edit-session";
 import { NoteEditor } from "./note-editor";
 import { notifyScheduleChanged } from "./schedule-changes";
 import { historyQueryKey, jobsQueryKey } from "./query-keys";
+import { useScheduleChanges } from "./use-changes";
 
 type Theme = PluginScreenProps["theme"];
 
@@ -286,6 +287,11 @@ function JobRow(props: {
             <View style={styles.chip}>
               <Text style={styles.chipText}>{providerLabel(job.provider)}</Text>
             </View>
+            {job.background ? (
+              <View style={styles.chip}>
+                <Text style={styles.chipText}>Background</Text>
+              </View>
+            ) : null}
             {place ? (
               <Text style={styles.metaText} numberOfLines={1}>
                 {place}
@@ -409,6 +415,11 @@ function HistorySection(props: {
                     <View style={styles.chip}>
                       <Text style={styles.chipText}>{providerLabel(entry.provider)}</Text>
                     </View>
+                    {entry.background ? (
+                      <View style={styles.chip}>
+                        <Text style={styles.chipText}>Background</Text>
+                      </View>
+                    ) : null}
                     <Text style={styles.metaText} numberOfLines={1}>
                       {title}
                     </Text>
@@ -451,17 +462,19 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
 
   const historyKey = useMemo(() => historyQueryKey(host.id), [host.id]);
 
+  // The full refresh is a safety net for renamed or moved agents, not the update path.
   const query = useQuery({
     queryKey,
     queryFn: async () => (await listScheduled({})).jobs,
-    refetchInterval: 30_000,
+    refetchInterval: 120_000,
   });
   const [session, dispatch] = useEditSession(query.data);
   const history = useQuery({
     queryKey: historyKey,
     queryFn: async () => (await listHistory({})).entries,
-    refetchInterval: 30_000,
+    refetchInterval: 120_000,
   });
+  useScheduleChanges(queryClient, [queryKey, historyKey]);
   const refresh = () => {
     void query.refetch();
     void history.refetch();

@@ -1,9 +1,10 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { createChangeFeed, createChangeSubscriptions } from "./server/changes";
 import { createHistoryStore } from "./server/history";
 import { discoverProviders } from "./server/providers";
 import { createResumer } from "./server/resumer";
 import { createJobStore } from "./server/store";
-import { listHistoryRpc, listProvidersRpc, listScheduledRpc, rescheduleRpc, resumeNowRpc, setAllEnabledRpc, setEnabledRpc, setNoteRpc } from "./shared/rpc";
+import { changesSubscription, listHistoryRpc, listProvidersRpc, listScheduledRpc, rescheduleRpc, resumeNowRpc, setAllEnabledRpc, setEnabledRpc, setNoteRpc } from "./shared/rpc";
 import { providerSettings, resumeSettings } from "./shared/settings";
 
 const TICK_MS = 30_000;
@@ -13,9 +14,13 @@ export default function contribute(server: PluginServerContext) {
   const promptSettings = server.registerSettings(resumeSettings);
   // The tick reads these on every send; the same failure is reported once, not every time.
   let resumeError: string | null = null;
+  // Every write to a store pushes a revision, so open screens and composer pills refetch at once.
+  const changes = createChangeFeed();
+  const changeSubscriptions = createChangeSubscriptions(changes);
+  const notifyChange = () => changes.notify();
   const resumer = createResumer({
-    store: createJobStore(),
-    history: createHistoryStore(),
+    store: createJobStore(undefined, notifyChange),
+    history: createHistoryStore({ onChange: notifyChange }),
     readSettings: async () => {
       const current = await settings.read();
       if (current.status === "ready") return current.values;
@@ -39,10 +44,20 @@ export default function contribute(server: PluginServerContext) {
   const report = (error: unknown) => console.error("[usage-auto-resume] hook failed", String(error));
   void resumer.recover().catch(report);
 
+  // Turning background resumption on can reveal stops earlier scans skipped, so it rescans.
+  let resumeBackground = false;
+  const onProviderSettings = (current: Awaited<ReturnType<typeof settings.read>>) => {
+    const on = current.status === "ready" && current.values.resumeBackground;
+    const turnedOn = on && !resumeBackground;
+    resumeBackground = on;
+    if (turnedOn) void resumer.scanIfAttached().catch(report);
+    void resumer.reconcileProviders().catch(report);
+  };
+
   // Hooks return at once: detection reads the agent and usage, which must not hold up the daemon.
   const stops = [
     server.before("agent.session_open", ({ request }) => resumer.rememberSession(request)),
-    settings.subscribe(() => void resumer.reconcileProviders().catch(report)),
+    settings.subscribe(onProviderSettings),
     promptSettings.subscribe(() => void resumer.reconcileOverload().catch(report)),
     server.on("agent.turn_started", (event, { paseo }) => {
       void resumer.attach(paseo);
@@ -60,6 +75,13 @@ export default function contribute(server: PluginServerContext) {
     server.on("agent.created", (_event, { paseo }) => void resumer.attach(paseo)),
     server.on("agent.closed", (_event, { paseo }) => void resumer.attach(paseo)),
   ];
+  // Live updates: a subscription is told the revision after a store write, then refetches.
+  server.handle(changesSubscription, (_input, { paseo, push, signal }) => {
+    void resumer.attach(paseo);
+    changeSubscriptions.listen((revision) => {
+      void push({ revision }).catch((error) => console.error("[usage-auto-resume] could not push a change", String(error)));
+    }, signal);
+  });
   // Opening the screen also hands over the API, so a restart never waits on agent activity alone.
   server.handle(listScheduledRpc, async (_input, { paseo }) => {
     void resumer.attach(paseo);
@@ -98,5 +120,7 @@ export default function contribute(server: PluginServerContext) {
   return () => {
     clearInterval(timer);
     for (const stop of stops) stop();
+    // Subscriptions still open at a plugin stop release their listeners here.
+    changeSubscriptions.clear();
   };
 }

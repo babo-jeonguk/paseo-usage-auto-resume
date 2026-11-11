@@ -409,6 +409,7 @@ async function scenario(t: TestContext, model: string, message: string, start: s
     runtimeInfo: { provider: "opencode", sessionId: SESSION, model },
   } as unknown as PaseoAgent;
   const api = {
+    workspaces: { ref: () => ({ refresh: async () => null }) },
     config: { get: async () => ({ config: { providers: { opencode: { env: { XDG_DATA_HOME: data.xdg } } } } }) },
     agents: {
       list: async () => ({ entries: [], pageInfo: { hasMore: false } }),
@@ -429,7 +430,7 @@ async function scenario(t: TestContext, model: string, message: string, start: s
   const resumer = createResumer({ store: createJobStore(storePath), now: () => clock, readSubscription: read });
   await resumer.attach(api);
   const event: PluginLifecycleEvents["agent.turn_ended"] = {
-    agent: { id: agent.id, provider: "opencode", workspaceId: null, parentAgentId: null, cwd: dir, title: null },
+    agent: { id: agent.id, provider: "opencode", workspaceId: null, parentAgentId: null, cwd: dir, title: null, metadata: {} },
     turnId: "turn", outcome: { kind: "failed", error: { message } }, timeline: [],
   };
   return { data, state, store, resumer, api, event, sent, setTime: (iso: string) => { clock = new Date(iso); } };

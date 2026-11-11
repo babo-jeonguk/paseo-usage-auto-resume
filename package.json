@@ -1,7 +1,7 @@
 {
   "name": "usage-auto-resume",
   "private": true,
-  "version": "1.3.2",
+  "version": "1.4.0",
   "description": "Resume Codex, Claude, Antigravity, and OpenCode agents after their usage limits reset in Paseo",
   "license": "MIT",
   "repository": {
@@ -34,9 +34,9 @@
     "check": "npm run typecheck && npm test"
   },
   "devDependencies": {
-    "@getpaseo/client": "0.11.0",
-    "@getpaseo/plugin": "0.11.0",
-    "@getpaseo/protocol": "0.11.0",
+    "@getpaseo/client": "0.16.0-beta.1",
+    "@getpaseo/plugin": "0.16.0-beta.1",
+    "@getpaseo/protocol": "0.16.0-beta.1",
     "@tanstack/react-query": "^5.90.11",
     "@types/node": "^22.20.4",
     "@types/react": "~19.2.0",

@@ -45,6 +45,11 @@ const JobSchema = z.object({
   note: z.string().max(NOTE_MAX_CHARS).optional().catch(undefined),
   /** The user chose `dueAt`; a new plan for the reservation keeps it while it is later. */
   userChosenTime: z.literal(true).optional().catch(undefined),
+  /**
+   * Paseo treated the agent as background when the reservation was made, by its own flag or its
+   * workspace's. Absent on rows written before the switch existed; they are decided at delivery.
+   */
+  background: z.boolean().optional(),
 });
 
 type StoredJob = z.infer<typeof JobSchema>;
@@ -61,7 +66,7 @@ export function defaultStorePath(): string {
 }
 
 /** One job per agent, persisted so a daemon or plugin restart keeps the schedule. */
-export function createJobStore(path = defaultStorePath()) {
+export function createJobStore(path = defaultStorePath(), onChange?: () => void) {
   // Hooks and the tick share one process; a promise chain serializes read-modify-write.
   let tail: Promise<unknown> = Promise.resolve();
   const serialize = <T>(work: () => Promise<T>): Promise<T> => {
@@ -121,6 +126,8 @@ export function createJobStore(path = defaultStorePath()) {
         const next = changed && { ...changed, id: changed.id ?? randomUUID() };
         const rest = jobs.filter((job) => job.agentId !== agentId);
         await write(next ? [...rest, next] : rest);
+        // Only a write that changed the file is announced; a no-op update is not.
+        onChange?.();
         return next;
       }),
   };

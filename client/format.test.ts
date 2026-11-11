@@ -40,6 +40,7 @@ const job = (overrides: Partial<ScheduledJob>): ScheduledJob => ({
   dueAt: new Date(2026, 9, 6, 18, 53).toISOString(),
   enabled: true,
   sending: false,
+  background: false,
   ...overrides,
 });
 const now = new Date(2026, 9, 6, 17, 1).getTime();
@@ -228,6 +229,7 @@ test("every recorded result reads as one line", () => {
     ["canceled", "account_changed", "Canceled · account changed"],
     ["canceled", "api_route", "Canceled · API billing route"],
     ["canceled", "provider_off", "Canceled · provider turned off"],
+    ["canceled", "background_off", "Canceled · background agents turned off"],
     ["canceled", "unsupported_cli", "Canceled · unsupported CLI"],
     ["canceled", undefined, "Canceled"],
   ];
