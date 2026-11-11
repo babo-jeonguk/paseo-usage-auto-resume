@@ -705,7 +705,8 @@ try {
     } catch (e) {
       note(17, 'claude-bg', '17d background agent: plugin list RPC and agent list visibility', 'unreadable: ' + (e?.message ?? e));
     }
-    await setResumeBackground(true);
+    // Back to the default; later items use normal agents and do not need background resumption.
+    await setResumeBackground(false);
   }
 
   // ---- 18. restart recovery overlapping a stale reservation ------------------------------------
