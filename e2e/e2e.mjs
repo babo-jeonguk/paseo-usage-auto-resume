@@ -210,6 +210,13 @@ const patchInstalled = async () => {
   await waitFor(async () => (await rpc('auto-resume.list').catch(() => null))?.jobs, 'plugin answering after reload', 90000);
 };
 const pluginLogLines = async () => (await readFile(daemonLog, 'utf8').catch(() => '')).split(/\r?\n/).filter((l) => l.includes('[usage-auto-resume]'));
+// The installed release's own provider list. A release that predates a provider cannot discover it,
+// so item 1 expects only the suites that release supports; item 2 checks the version under test.
+const installedSources = async () => {
+  const source = await readFile(join(await pluginDir(), 'shared', 'settings.ts'), 'utf8').catch(() => '');
+  const list = /USAGE_SOURCES[^=]*=\s*\[([^\]]*)\]/.exec(source)?.[1] ?? '';
+  return [...list.matchAll(/"([a-z]+)"/g)].map((match) => match[1]);
+};
 
 // ---- agents -------------------------------------------------------------------------------
 let workspace;
@@ -374,14 +381,18 @@ try {
     assert.ok(rev, 'no revision reported');
     oldRevision = rev;
     assert.deepEqual(await rpc('auto-resume.list'), { jobs: [] });
-    // Provider discovery settles a few seconds after the daemon starts.
+    // Provider discovery settles a few seconds after the daemon starts. The --from release cannot
+    // discover a provider it predates (v1.3.2 has no OpenCode); item 2 checks the version under test.
+    const supported = await installedSources();
+    assert.ok(supported.length, 'could not read the installed provider list');
+    const expected = suites.filter((s) => supported.includes(s));
     const provs = await waitFor(async () => {
       const ids = (await rpc('auto-resume.providers').catch(() => ({ providers: [] }))).providers.map((p) => p.id);
-      return suites.every((s) => ids.includes(s)) ? ids : null;
-    }, `providers ${suites.join(',')} discovered`, 90000, 3000);
+      return expected.every((s) => ids.includes(s)) ? ids : null;
+    }, `providers ${expected.join(',')} discovered`, 90000, 3000);
     const plog = await paseo('plugin', 'logs', PLUGIN);
     assert.doesNotMatch(plog, /error|failed/i, plog.slice(0, 300));
-    return `status running, revision ${rev}, providers ${provs.join(',')}, plugin logs clean`;
+    return `status running, revision ${rev}, ${OLD_REF} supports ${supported.join(',')}, providers ${provs.join(',')}, plugin logs clean`;
   });
   await patchInstalled();
 
@@ -423,16 +434,29 @@ try {
       const rev = await pluginRevision();
       assert.ok(rev && rev !== oldRevision, 'revision ' + rev);
       await patchInstalled();
+      const updatedProviders = await waitFor(async () => {
+        const ids = (await rpc('auto-resume.providers').catch(() => ({ providers: [] }))).providers.map((p) => p.id);
+        return suites.every((s) => ids.includes(s)) ? ids : null;
+      }, `providers ${suites.join(',')} after the update`, 120000, 3000);
       const jobAfter = await jobOf(legacyAgent.id);
       assert.deepEqual(jobAfter, jobBefore, 'job changed by the update');
       assert.ok((await rpc('auto-resume.list')).jobs.some((j) => j.agentId === legacyAgent.id), 'PR lists the reservation');
       const histAfter = await readFile(historyFile, 'utf8');
       assert.equal(histAfter, histBefore, 'history.json changed by the update');
       assert.ok((await rpc('auto-resume.history')).entries.length >= JSON.parse(histBefore).entries.length, 'PR history RPC reads the earlier entries');
-      return `created on ${OLD_REF} ${seeded ? `(seeded jobs.json: ${OLD_REF} made no reservation on this Paseo)` : '(by the real hook)'}; updated to ${rev.slice(0, 7)} via plugin update --ref; job + history.json byte-identical, listed by the new version, its history RPC reads the ${JSON.parse(histBefore).entries.length} earlier entries (v1.2.2 itself has no history/resume-now/note RPCs)`;
+      return `created on ${OLD_REF} ${seeded ? `(seeded jobs.json: ${OLD_REF} made no reservation on this Paseo)` : '(by the real hook)'}; updated to ${rev.slice(0, 7)} via plugin update --ref; providers ${updatedProviders.join(',')}; job + history.json byte-identical, listed by the new version, its history RPC reads the ${JSON.parse(histBefore).entries.length} earlier entries (v1.2.2 itself has no history/resume-now/note RPCs)`;
     });
   } else {
-    await paseo('plugin', 'update', PLUGIN, '--ref', NEW_REF, '--yes'); await patchInstalled();
+    await step(2, 'plugin', `update to ${NEW_REF} and discover every requested provider`, async () => {
+      const upd = await paseo('plugin', 'update', PLUGIN, '--ref', NEW_REF, '--yes');
+      assert.match(upd, /updated/, upd);
+      await patchInstalled();
+      const ids = await waitFor(async () => {
+        const found = (await rpc('auto-resume.providers').catch(() => ({ providers: [] }))).providers.map((p) => p.id);
+        return suites.every((s) => found.includes(s)) ? found : null;
+      }, `providers ${suites.join(',')} after the update`, 120000, 3000);
+      return `updated to ${NEW_REF}; providers ${ids.join(',')}`;
+    });
   }
   if (legacyAgent) { await client.archiveAgent(legacyAgent.id).catch(() => {}); await sleep(1500); }
 
