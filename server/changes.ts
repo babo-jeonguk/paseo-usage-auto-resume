@@ -26,3 +26,28 @@ export function createChangeFeed() {
 }
 
 export type ChangeFeed = ReturnType<typeof createChangeFeed>;
+
+/**
+ * One feed listener per open subscription. Aborting a subscription, or the plugin's own cleanup,
+ * releases its listener, so reconnects cannot leave stale entries in the plugin's cleanup.
+ */
+export function createChangeSubscriptions(feed: ChangeFeed) {
+  const listeners = new Set<() => void>();
+  return {
+    listen(push: (revision: number) => void, signal: AbortSignal): void {
+      const unsubscribe = feed.subscribe(push);
+      listeners.add(unsubscribe);
+      signal.addEventListener("abort", () => {
+        unsubscribe();
+        listeners.delete(unsubscribe);
+      }, { once: true });
+    },
+    /** Releases every listener still open; safe to call when none are. */
+    clear(): void {
+      for (const unsubscribe of listeners) unsubscribe();
+      listeners.clear();
+    },
+  };
+}
+
+export type ChangeSubscriptions = ReturnType<typeof createChangeSubscriptions>;

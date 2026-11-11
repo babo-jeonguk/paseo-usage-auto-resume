@@ -1,5 +1,5 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { createChangeFeed } from "./server/changes";
+import { createChangeFeed, createChangeSubscriptions } from "./server/changes";
 import { createHistoryStore } from "./server/history";
 import { discoverProviders } from "./server/providers";
 import { createResumer } from "./server/resumer";
@@ -16,6 +16,7 @@ export default function contribute(server: PluginServerContext) {
   let resumeError: string | null = null;
   // Every write to a store pushes a revision, so open screens and composer pills refetch at once.
   const changes = createChangeFeed();
+  const changeSubscriptions = createChangeSubscriptions(changes);
   const notifyChange = () => changes.notify();
   const resumer = createResumer({
     store: createJobStore(undefined, notifyChange),
@@ -77,12 +78,9 @@ export default function contribute(server: PluginServerContext) {
   // Live updates: a subscription is told the revision after a store write, then refetches.
   server.handle(changesSubscription, (_input, { paseo, push, signal }) => {
     void resumer.attach(paseo);
-    const unsubscribe = changes.subscribe((revision) => {
+    changeSubscriptions.listen((revision) => {
       void push({ revision }).catch((error) => console.error("[usage-auto-resume] could not push a change", String(error)));
-    });
-    signal.addEventListener("abort", unsubscribe, { once: true });
-    // The plugin's own cleanup releases a listener whose subscription never saw the abort.
-    stops.push(unsubscribe);
+    }, signal);
   });
   // Opening the screen also hands over the API, so a restart never waits on agent activity alone.
   server.handle(listScheduledRpc, async (_input, { paseo }) => {
@@ -122,5 +120,7 @@ export default function contribute(server: PluginServerContext) {
   return () => {
     clearInterval(timer);
     for (const stop of stops) stop();
+    // Subscriptions still open at a plugin stop release their listeners here.
+    changeSubscriptions.clear();
   };
 }
