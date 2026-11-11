@@ -286,6 +286,11 @@ function JobRow(props: {
             <View style={styles.chip}>
               <Text style={styles.chipText}>{providerLabel(job.provider)}</Text>
             </View>
+            {job.background ? (
+              <View style={styles.chip}>
+                <Text style={styles.chipText}>Background</Text>
+              </View>
+            ) : null}
             {place ? (
               <Text style={styles.metaText} numberOfLines={1}>
                 {place}
@@ -409,6 +414,11 @@ function HistorySection(props: {
                     <View style={styles.chip}>
                       <Text style={styles.chipText}>{providerLabel(entry.provider)}</Text>
                     </View>
+                    {entry.background ? (
+                      <View style={styles.chip}>
+                        <Text style={styles.chipText}>Background</Text>
+                      </View>
+                    ) : null}
                     <Text style={styles.metaText} numberOfLines={1}>
                       {title}
                     </Text>

@@ -2,7 +2,7 @@ Usage Auto Resume asks the same Codex, Claude, Antigravity, or OpenCode agent to
 
 The Auto Resume screen in the sidebar lists upcoming resumes by day, with their conversation, provider and workspace. Skip a resume, delay it, pick another time, add instructions for that continue, or turn every shown resume off at once. Recent activity shows how resumes ended over the last 24 hours. A conversation with a resume also gets an Auto Resume button next to its message box, to manage it in place or resume right away when a limit lifts early.
 
-In the plugin's settings you can choose which providers are resumed and change the message sent to the agent.
+In the plugin's settings you can choose which providers are resumed, include the agents Paseo hides as background (off by default), and change the message sent to the agent.
 
 ## Setup
 

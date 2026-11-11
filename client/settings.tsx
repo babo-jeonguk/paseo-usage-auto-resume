@@ -37,7 +37,7 @@ function ProviderSwitches({ settings, host, theme }: { settings: ReadySettings }
   const turn = (provider: DiscoveredProvider, on: boolean) => {
     const others = settings.values.disabledProviders.filter((id) => id !== provider.id);
     const disabledProviders = on ? others : [...others, provider.id].sort();
-    void settings.save({ disabledProviders }, settings.revision).then((saved) => {
+    void settings.save({ ...settings.values, disabledProviders }, settings.revision).then((saved) => {
       if (saved) toast.show(`${provider.label} turned ${on ? "on" : "off"}`, { variant: "success" });
     });
   };
@@ -70,6 +70,17 @@ function ProviderSwitches({ settings, host, theme }: { settings: ReadySettings }
           Choose which providers continue after a usage limit. Turning one off cancels its pending reservations.
         </Text>
       </View>
+      <SettingsSection title="Background agents">
+        <SettingsCard>
+          <SettingsSwitch
+            label="Resume background agents"
+            hint="Agents Paseo hides from lists, and agents in background workspaces"
+            value={settings.values.resumeBackground}
+            onValueChange={(resumeBackground) => void settings.save({ ...settings.values, resumeBackground }, settings.revision)}
+            disabled={settings.saving}
+          />
+        </SettingsCard>
+      </SettingsSection>
       {USAGE_SOURCES.map((cli) => {
         const rows = sortProviders(providers.data.filter((provider) => provider.cli === cli));
         if (rows.length === 0) return null;

@@ -78,6 +78,10 @@ interface FakeOptions {
   /** How reading an agent's timeline fails: an error page, or a rejected request. */
   timelineFailure?: "page" | "throw";
   backgroundAgents?: string[];
+  /** Workspaces Paseo treats as background. */
+  backgroundWorkspaces?: string[];
+  /** Every workspace read fails, so only the agent's own flag decides. */
+  workspaceFailure?: boolean;
   listError?: Error;
   usage?: Array<{ providerId: string; displayName: string; status?: string; windows: Array<Record<string, unknown>> }>;
   /** Runs while usage is being read, as a concurrent change would. */
@@ -144,6 +148,14 @@ function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOption
       create: () => {
         throw new Error("auto-resume must never create agents");
       },
+    },
+    workspaces: {
+      ref: (workspaceId: string) => ({
+        refresh: async () => {
+          if (options.workspaceFailure) throw new Error("workspace unavailable");
+          return { id: workspaceId, background: options.backgroundWorkspaces?.includes(workspaceId) ?? false };
+        },
+      }),
     },
     config: {
       get: async () => ({
@@ -401,7 +413,7 @@ test("every provider built on Claude, Codex, Antigravity, or OpenCode resumes by
 
 test("a provider turned off is not scheduled, even when another provider shares its account", async () => {
   const { api, sent, resumer } = await setup({ c1: { provider: "codex" }, r1: { provider: "codex-reserve" } }, {
-    readSettings: async () => ({ disabledProviders: ["codex-reserve"] }),
+    readSettings: async () => ({ ...DEFAULT_PROVIDER_SETTINGS, disabledProviders: ["codex-reserve"] }),
   });
   await resumer.onTurnEnded(turnEnded("c1", "codex", failed(CODEX_LIMIT)), api);
   await resumer.onTurnEnded(turnEnded("r1", "codex-reserve", failed(CODEX_LIMIT)), api);
@@ -1079,7 +1091,7 @@ test("startup scan finds a Claude closing notice and ignores everything else", a
     },
     {
       timelines: { m1: claudeNotice(CLAUDE_LIMIT), s1: claudeNotice(CLAUDE_LIMIT) },
-      readSettings: async () => ({ disabledProviders: ["claude-sub"] }),
+      readSettings: async () => ({ ...DEFAULT_PROVIDER_SETTINGS, disabledProviders: ["claude-sub"] }),
     },
   );
   const jobs = await store.list();
@@ -1098,7 +1110,7 @@ test("startup scan recovers unseen limit stops in background workspaces and send
   }, {
     backgroundAgents: ["c1", "m1", "off"],
     timelines: { m1: claudeNotice(CLAUDE_LIMIT) },
-    readSettings: async () => ({ disabledProviders: ["claude-sub"] }),
+    readSettings: async () => ({ ...DEFAULT_PROVIDER_SETTINGS, disabledProviders: ["claude-sub"] }),
   });
   assert.deepEqual((await store.list()).map((job) => job.agentId).sort(), ["c1", "m1"]);
   clock = new Date("2026-10-06T06:02:00.000Z");
@@ -1182,6 +1194,121 @@ test("startup scan keeps a job that already exists", async () => {
   assert.equal(job?.dueAt, "2026-10-06T03:20:00.000Z");
 });
 
+test("a background agent gets no reservation while the background switch is off", async () => {
+  const { api, resumer } = await setup({ bg: { provider: "codex", background: true } });
+  await resumer.onTurnEnded(turnEnded("bg", "codex", failed(CODEX_LIMIT)), api);
+  assert.deepEqual(await store.list(), []);
+});
+
+test("with the background switch on, a background agent is reserved like any other", async () => {
+  const on = { ...DEFAULT_PROVIDER_SETTINGS, resumeBackground: true };
+  const { api, resumer } = await setup({ bg: { provider: "codex", background: true } }, { readSettings: async () => on });
+  await resumer.onTurnEnded(turnEnded("bg", "codex", failed(CODEX_LIMIT)), api);
+  const [job] = await store.list();
+  assert.equal(job?.background, true);
+  assert.equal(job?.dueAt, "2026-10-06T05:02:00.000Z");
+  const [shown] = await resumer.listScheduled(api);
+  assert.equal(shown?.background, true);
+});
+
+test("a background workspace counts like a background agent", async () => {
+  const settings = { ...DEFAULT_PROVIDER_SETTINGS };
+  const off = await setup({ w1: { provider: "codex", workspaceId: "wks-bg" } }, {
+    readSettings: async () => settings,
+    backgroundWorkspaces: ["wks-bg"],
+  });
+  await off.resumer.onTurnEnded(turnEnded("w1", "codex", failed(CODEX_LIMIT)), off.api);
+  assert.deepEqual(await store.list(), [], "no reservation while the switch is off");
+
+  const on = await setup({ w1: { provider: "codex", workspaceId: "wks-bg" } }, {
+    readSettings: async () => ({ ...settings, resumeBackground: true }),
+    backgroundWorkspaces: ["wks-bg"],
+  });
+  await on.resumer.onTurnEnded(turnEnded("w1", "codex", failed(CODEX_LIMIT)), on.api);
+  assert.equal((await store.list())[0]?.background, true);
+});
+
+test("the startup scan skips background agents while the switch is off and includes them when on", async () => {
+  const agents = {
+    bg: { provider: "codex", status: "error" as const, lastError: CODEX_LIMIT, background: true },
+    n: { provider: "codex", status: "error" as const, lastError: CODEX_LIMIT },
+  };
+  const off = await setup(agents, { readSettings: async () => ({ ...DEFAULT_PROVIDER_SETTINGS }) });
+  assert.deepEqual((await store.list()).map((job) => job.agentId), ["n"]);
+  assert.deepEqual(off.listCalls[0]?.filter?.includeBackground, true, "discovery stays inclusive");
+
+  for (const job of await store.list()) await store.update(job.agentId, () => null);
+  const on = await setup(agents, { readSettings: async () => ({ ...DEFAULT_PROVIDER_SETTINGS, resumeBackground: true }) });
+  assert.deepEqual((await store.list()).map((job) => job.agentId).sort(), ["bg", "n"]);
+  assert.deepEqual(on.listCalls[0]?.filter?.includeBackground, true);
+});
+
+test("turning the background switch off sweeps pending background rows and leaves the rest", async () => {
+  let settings = { ...DEFAULT_PROVIDER_SETTINGS, resumeBackground: true };
+  const { api, resumer } = await setup({
+    bg: { provider: "codex", background: true },
+    n: { provider: "codex" },
+  }, { readSettings: async () => settings });
+  await resumer.onTurnEnded(turnEnded("bg", "codex", failed(CODEX_LIMIT)), api);
+  await resumer.onTurnEnded(turnEnded("n", "codex", failed(CODEX_LIMIT)), api);
+  assert.deepEqual((await store.list()).map((job) => [job.agentId, job.background]), [["bg", true], ["n", undefined]]);
+
+  settings = { ...DEFAULT_PROVIDER_SETTINGS };
+  await resumer.reconcileProviders();
+  assert.deepEqual((await store.list()).map((job) => job.agentId), ["n"]);
+  assert.deepEqual(await recorded(), ["bg canceled/background_off"]);
+});
+
+test("a due row saved without the background flag is canceled when its agent is background", async () => {
+  await writeFile(join(dir, "jobs.json"), JSON.stringify({ version: 1, jobs: [{
+    agentId: "bg", provider: "codex", resetAt: null, dueAt: "2026-10-06T02:30:00.000Z",
+    baseline: "2026-10-06T02:00:00.000Z", attempts: 0, state: "pending",
+  }] }));
+  const { sent } = await setup({ bg: { provider: "codex", background: true } }, { readSettings: async () => ({ ...DEFAULT_PROVIDER_SETTINGS }) });
+  assert.deepEqual(await store.list(), []);
+  assert.deepEqual(sent, []);
+  assert.deepEqual(await recorded(), ["bg canceled/background_off"]);
+});
+
+test("enabling the background switch rescans only once the API is attached", async () => {
+  let settings = { ...DEFAULT_PROVIDER_SETTINGS };
+  const agents = { bg: { provider: "codex", status: "error" as const, lastError: CODEX_LIMIT, background: true } };
+  const { resumer } = await setup(agents, { readSettings: async () => settings });
+  assert.deepEqual(await store.list(), [], "the startup scan skipped it while off");
+
+  const detached = createResumer({ store: createJobStore(join(dir, "detached.json")), readSettings: async () => settings });
+  settings = { ...DEFAULT_PROVIDER_SETTINGS, resumeBackground: true };
+  await detached.scanIfAttached();
+  const detachedStore = createJobStore(join(dir, "detached.json"));
+  assert.deepEqual(await detachedStore.list(), [], "nothing is scanned before the API attaches");
+
+  await resumer.scanIfAttached();
+  assert.deepEqual((await store.list()).map((job) => job.agentId), ["bg"]);
+});
+
+test("a workspace that cannot be read leaves the agent's own flag to decide, logged once", async () => {
+  const on = { ...DEFAULT_PROVIDER_SETTINGS, resumeBackground: true };
+  const errors: unknown[][] = [];
+  const original = console.error;
+  console.error = (...line: unknown[]) => { errors.push(line); };
+  let result;
+  try {
+    result = await setup({
+      bg: { provider: "codex", background: true, workspaceId: "wks-1" },
+      plain: { provider: "codex", workspaceId: "wks-1" },
+      other: { provider: "codex", workspaceId: "wks-1" },
+    }, { readSettings: async () => on, workspaceFailure: true });
+    for (const id of ["bg", "plain", "other"]) {
+      await result.resumer.onTurnEnded(turnEnded(id, "codex", failed(CODEX_LIMIT)), result.api);
+    }
+  } finally {
+    console.error = original;
+  }
+  assert.deepEqual((await store.list()).map((job) => [job.agentId, job.background]), [["bg", true], ["plain", undefined], ["other", undefined]]);
+  assert.equal(errors.length, 1, JSON.stringify(errors));
+  assert.match(String(errors[0]![0]), /could not read workspace wks-1/);
+});
+
 test("a job turned off is skipped at its time and leaves the list", async () => {
   const { api, sent, resumer } = await setup({ a1: { provider: "codex", title: "Fix login", workspaceId: "background-workspace" } });
   await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
@@ -1246,8 +1373,8 @@ test("jobs saved before the toggle existed load as turned on", async () => {
 });
 
 /** This host resumes Claude only through Claude Main. */
-const LOCAL_PROVIDERS: ProviderSettings = { disabledProviders: ["claude", "claude-sub"] };
-const CLAUDE_MAIN_OFF: ProviderSettings = { disabledProviders: ["claude-main"] };
+const LOCAL_PROVIDERS: ProviderSettings = { ...DEFAULT_PROVIDER_SETTINGS, disabledProviders: ["claude", "claude-sub"] };
+const CLAUDE_MAIN_OFF: ProviderSettings = { ...DEFAULT_PROVIDER_SETTINGS, disabledProviders: ["claude-main"] };
 
 test("with only Claude Main on, only it resumes, using its own account windows", async () => {
   const usage = [
@@ -1475,7 +1602,7 @@ test("startup scan schedules an Antigravity agent that hit its limit before the 
 });
 
 test("an Antigravity provider can be turned off while another built on it resumes", async () => {
-  const customSettings: ProviderSettings = { disabledProviders: ["antigravity"] };
+  const customSettings: ProviderSettings = { ...DEFAULT_PROVIDER_SETTINGS, disabledProviders: ["antigravity"] };
   const { api, resumer } = await setup(
     {
       g1: { provider: "antigravity-fast" },
@@ -2664,7 +2791,7 @@ test("Labs is off by default, on read failure, and at startup; API billing and p
   assert.deepEqual(await store.list(), []);
   for (const options of [
     { readSubscription: async () => ({ auth: "api", status: "unknown" } as const) },
-    { readSettings: async () => ({ disabledProviders: ["codex"] }) },
+    { readSettings: async () => ({ ...DEFAULT_PROVIDER_SETTINGS, disabledProviders: ["codex"] }) },
   ]) {
     const { resumer, api } = await setup({ a: { provider: "codex" } }, { ...options, readResumeSettings: async () => labs });
     await resumer.onTurnEnded(turnEnded("a", "codex", failed(CAPACITY)), api);
@@ -2938,7 +3065,7 @@ test("a switch turned off after planning read it retires the overload retry just
         const on = await labsAfter();
         return on === null ? null : { ...labs, overloadRetry: on };
       },
-      readSettings: async () => (++providerReads < 3 || !providerOff ? DEFAULT_PROVIDER_SETTINGS : { disabledProviders: ["codex"] }),
+      readSettings: async () => (++providerReads < 3 || !providerOff ? DEFAULT_PROVIDER_SETTINGS : { ...DEFAULT_PROVIDER_SETTINGS, disabledProviders: ["codex"] }),
     });
     labsReads = 0; providerReads = 0;
     await resumer.onTurnEnded(turnEnded(agentId, "codex", outcome), api);

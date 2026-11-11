@@ -60,6 +60,8 @@ export interface Stop {
   identity?: string;
   model?: string;
   launch?: ResumeJob["launch"];
+  /** Paseo treats the agent as background; written when the reservation is created. */
+  background?: boolean;
 }
 
 /**
@@ -118,6 +120,7 @@ export function replan(current: ResumeJob | null, stop: Stop): Replan {
     model: kept ? kept.model ?? stop.model : stop.model,
     launch: stop.launch,
     note: kept?.note,
+    background: stop.background || undefined,
     userChosenTime: keepTime || undefined,
   };
   if (kept && !kept.kind && unchanged(kept, job)) return null;
@@ -177,7 +180,7 @@ export function replanOverload(current: ResumeJob | null, stop: Omit<Stop, "plan
       kind: "overload", overloadStep, attempts, retries: previous?.retries ?? 0,
       dueAt: overloadDue(stop.at, overloadStep, random), resetAt: null,
       baseline: stop.baseline, identity: stop.identity, model: stop.model, launch: stop.launch,
-      state: "pending", enabled: true,
+      state: "pending", enabled: true, background: stop.background || undefined,
     },
   };
 }

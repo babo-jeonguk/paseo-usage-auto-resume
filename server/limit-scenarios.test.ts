@@ -11,7 +11,7 @@ import { createClaudeCredentialReader } from "./claude-credentials";
 import { createHash } from "node:crypto";
 import { createJobStore } from "./store";
 import { pinOf } from "./test-pins";
-import type { ProviderSettings, UsageSource } from "../shared/settings";
+import { DEFAULT_PROVIDER_SETTINGS, type ProviderSettings, type UsageSource } from "../shared/settings";
 import { summaryLabels, waitingLabel } from "../client/format";
 
 // Synthetic scenarios, not captures from paid accounts. Native status probes run real child
@@ -87,7 +87,7 @@ async function scenario(t: TestContext, profile: Profile, limit: "five" | "week"
   let clock = START;
   const reset = limit === "five" ? FIVE : WEEK;
   const provider = `${source}-${plan}`;
-  const settings: ProviderSettings = { disabledProviders: [] };
+  const settings: ProviderSettings = { ...DEFAULT_PROVIDER_SETTINGS, disabledProviders: [] };
   const sent: Array<{ id: string; text: string }> = [];
   const requests: string[] = [];
   const agent = { id: "original-agent", provider, cwd: dir, model, title: "Simulation",
@@ -106,6 +106,7 @@ async function scenario(t: TestContext, profile: Profile, limit: "five" | "week"
     "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "GEMINI_API_KEY", "AGY_ADC_AUTH", "GOOGLE_GEMINI_BASE_URL",
   ].map(key => [key, ""]));
   const api = {
+    workspaces: { ref: () => ({ refresh: async () => null }) },
     config: { get: async () => ({ config: { providers: {
       [provider]: { extends: `${source}-base` },
       [`${source}-base`]: { extends: source, command: [cli], env: { ...env, CODEX_HOME: home, CLAUDE_CONFIG_DIR: home, CLAUDE_SECURESTORAGE_CONFIG_DIR: home,

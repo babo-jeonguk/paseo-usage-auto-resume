@@ -14,7 +14,8 @@ import type { PluginLifecycleEvents } from "@getpaseo/plugin/server";
 const NOW = new Date("2026-10-20T00:00:00Z");
 const authEnv = Object.fromEntries(["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN",
   "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"].map(key => [key, ""]));
-const api = { config: { get: async () => ({ config: { providers: { claude: { env: authEnv } } } }) } } as unknown as Pick<PaseoApi, "config">;
+const api = { config: { get: async () => ({ config: { providers: { claude: { env: authEnv } } } }) },
+  workspaces: { ref: () => ({ refresh: async () => null }) } } as unknown as Pick<PaseoApi, "config" | "workspaces">;
 /** An agent timeline whose latest turn ended with `notice`. */
 const timelineOf = (notice: string) => ({ refetch: async () => ({ error: null, entries: [{ item: { type: "assistant_message", text: notice }, seqStart: 0 }] }) });
 const agent = { id: "fixture-agent", provider: "claude", cwd: "/tmp", model: "claude-opus-4-6" } as PaseoAgent;
@@ -84,6 +85,7 @@ for (const plan of ["pro", "max", "team"]) for (const window of ["five", "week"]
     const sent: string[] = [];
     const notice = `You've hit your limit. Resets at ${new Date(reset).toISOString()}`;
     const host = { config: { get: async () => ({ config: { providers: { claude: { env } } } }) },
+      workspaces: { ref: () => ({ refresh: async () => null }) },
       agents: { list: async () => ({ entries: [] }), ref: () => ({ refresh: async () => ({ agent: nativeAgent, project: null }),
         send: async (text: string) => { sent.push(text); }, timeline: timelineOf(notice) }) } } as unknown as ResumerApi;
     const store = createJobStore(join(home, "jobs.json"));

@@ -6,7 +6,7 @@ import { editorLocks, editSession, type EditEvent, type EditSession } from "./ed
 const DUE = "2026-10-06T05:02:00.000Z";
 const job = (fields: Partial<ScheduledJob> = {}): ScheduledJob => ({
   id: `${fields.agentId ?? "a"}-1`, agentId: "a", provider: "codex", title: "Task", projectName: null, workspaceName: null,
-  resetAt: null, dueAt: DUE, enabled: true, sending: false, ...fields,
+  resetAt: null, dueAt: DUE, enabled: true, sending: false, background: false, ...fields,
 });
 const run = (...events: EditEvent[]) => events.reduce<EditSession | null>(editSession, null);
 const open = (kind: "time" | "note", fields: Partial<ScheduledJob> = {}): EditEvent => ({ type: "open", kind, job: job(fields) });

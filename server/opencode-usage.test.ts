@@ -409,6 +409,7 @@ async function scenario(t: TestContext, model: string, message: string, start: s
     runtimeInfo: { provider: "opencode", sessionId: SESSION, model },
   } as unknown as PaseoAgent;
   const api = {
+    workspaces: { ref: () => ({ refresh: async () => null }) },
     config: { get: async () => ({ config: { providers: { opencode: { env: { XDG_DATA_HOME: data.xdg } } } } }) },
     agents: {
       list: async () => ({ entries: [], pageInfo: { hasMore: false } }),

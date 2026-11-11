@@ -107,7 +107,12 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
   );
   return (
     <View testID={`resume-conversation-${agentId}`} style={{ padding: 16, gap: 16, width: "100%", maxWidth: 360 }}>
-      {!layout.compact ? <Text accessibilityRole="header" style={headingText(colors)}>Auto Resume</Text> : null}
+      {!layout.compact ? (
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <Text accessibilityRole="header" style={headingText(colors)}>Auto Resume</Text>
+          {job?.background ? <Text style={muted}>Background</Text> : null}
+        </View>
+      ) : null}
       {/* A failed refresh keeps what was shown, with every change off until it loads. */}
       {query.isError && query.data ? <View style={{ gap: 8 }}>
         <Text accessibilityRole="alert" style={muted}>Couldn’t refresh this reservation.</Text>

@@ -227,6 +227,7 @@ const CANCEL_REASONS: Partial<Record<HistoryReason, string>> = {
   account_changed: "account changed",
   api_route: "API billing route",
   provider_off: "provider turned off",
+  background_off: "background agents turned off",
   unsupported_cli: "unsupported CLI",
   overload_off: "overload retry turned off",
 };

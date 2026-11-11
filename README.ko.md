@@ -65,6 +65,7 @@ paseo plugin install github:babo-jeonguk/paseo-usage-auto-resume
 ![provider별 스위치와 계정, Continue prompt가 있는 설정 화면](assets/settings.png)
 
 - **Providers:** provider별로 자동 재개를 켜거나 끕니다. `claude-main`, `codex-sub` 같은 프로필도 포함됩니다. 끄면 그 provider의 대기 중인 예약이 취소됩니다.
+- **Resume background agents:** 기본값은 꺼짐입니다. 켜면 Paseo가 목록에서 숨기는 에이전트와 백그라운드 워크스페이스의 에이전트도 재개합니다. 끄면 그 에이전트들의 대기 중인 예약이 취소됩니다.
 - **Continue prompt:** 에이전트에게 보내는 메시지를 확인하고 바꿀 수 있습니다. **Reset to default**를 누르면 하위 에이전트까지 이어서 진행하도록 요청하는 기본 메시지로 돌아갑니다.
 
 ## 업데이트

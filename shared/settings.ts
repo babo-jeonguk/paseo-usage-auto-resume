@@ -7,6 +7,8 @@ export const USAGE_SOURCES: readonly UsageSource[] = ["claude", "codex", "antigr
 export const ProviderSettingsSchema = z.object({
   /** Providers turned off by the user; every other Claude, Codex, Antigravity, or OpenCode provider resumes. */
   disabledProviders: z.array(z.string().min(1)).default([]),
+  /** Resume agents Paseo treats as background: a background agent, or an agent in a background workspace. */
+  resumeBackground: z.boolean().default(false),
 });
 
 export type ProviderSettings = z.output<typeof ProviderSettingsSchema>;
@@ -25,6 +27,8 @@ const ProviderSettingsV1Schema = z
 export const providerSettings = defineSettings({
   id: "providers",
   scope: "host",
+  // Added `resumeBackground` without a version bump: a stored version 2 file that lacks it parses
+  // with the default, off, so no migration is needed.
   version: 2,
   schema: ProviderSettingsSchema,
   // An upgraded host starts with every provider on, like a new install. A version 1 file that

@@ -39,10 +39,20 @@ export default function contribute(server: PluginServerContext) {
   const report = (error: unknown) => console.error("[usage-auto-resume] hook failed", String(error));
   void resumer.recover().catch(report);
 
+  // Turning background resumption on can reveal stops earlier scans skipped, so it rescans.
+  let resumeBackground = false;
+  const onProviderSettings = (current: Awaited<ReturnType<typeof settings.read>>) => {
+    const on = current.status === "ready" && current.values.resumeBackground;
+    const turnedOn = on && !resumeBackground;
+    resumeBackground = on;
+    if (turnedOn) void resumer.scanIfAttached().catch(report);
+    void resumer.reconcileProviders().catch(report);
+  };
+
   // Hooks return at once: detection reads the agent and usage, which must not hold up the daemon.
   const stops = [
     server.before("agent.session_open", ({ request }) => resumer.rememberSession(request)),
-    settings.subscribe(() => void resumer.reconcileProviders().catch(report)),
+    settings.subscribe(onProviderSettings),
     promptSettings.subscribe(() => void resumer.reconcileOverload().catch(report)),
     server.on("agent.turn_started", (event, { paseo }) => {
       void resumer.attach(paseo);

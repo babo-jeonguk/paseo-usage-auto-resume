@@ -14,6 +14,7 @@ import { DEFAULT_PROVIDER_SETTINGS, DEFAULT_RESUME_SETTINGS, isProviderOn, type 
 import { cliFor } from "./providers";
 import { isExhausted } from "./quota";
 import { continuePrompt, DEFAULT_CONTINUE_PROMPT } from "../shared/prompt";
+import { readBackground } from "./background";
 
 /** Kept for callers that compare against the built-in prompt; sends go through `continuePrompt`. */
 export const CONTINUE_PROMPT = DEFAULT_CONTINUE_PROMPT;
@@ -22,7 +23,7 @@ export const CONTINUE_PROMPT = DEFAULT_CONTINUE_PROMPT;
 const SCAN_WINDOW_MS = 12 * 3_600_000;
 const TAIL_TIMELINE_ITEMS = 20;
 
-export type ResumerApi = Pick<PaseoApi, "agents" | "config" | "providers">;
+export type ResumerApi = Pick<PaseoApi, "agents" | "config" | "providers" | "workspaces">;
 type TurnEnded = PluginLifecycleEvents["agent.turn_ended"];
 
 function log(message: string): void {
@@ -79,6 +80,7 @@ function planFor(check: SubscriptionCheck, at: Date): Plan {
 }
 
 const providerOff = (provider: string) => canceled("provider_off", `automatic resume is turned off for ${provider}`);
+const backgroundOff = () => canceled("background_off", "automatic resume is turned off for background agents");
 
 /** The tick's attempt at a due job, or Resume now's on the user's request. */
 type DeliverMode = "auto" | "manual";
@@ -148,6 +150,16 @@ export function createResumer(options: {
     try { return await readSubscription(api, agent, source, at, launch, mode); }
     catch { return unknownCheck(); }
   };
+
+  /** Whether Paseo treats the agent as background; a workspace read failure is logged once. */
+  const unreadableWorkspaces = new Set<string>();
+  function isBackground(api: ResumerApi, agent: Pick<PaseoAgent, "id" | "background" | "workspaceId">): Promise<boolean> {
+    return readBackground(api, agent, (workspaceId, error) => {
+      if (unreadableWorkspaces.has(workspaceId)) return;
+      unreadableWorkspaces.add(workspaceId);
+      console.error(`[usage-auto-resume] could not read workspace ${workspaceId}; using the agent's own background flag`, String(error));
+    });
+  }
 
   // Only the fields read here, so the request type can grow across Paseo versions.
   function rememberSession(request: Pick<PluginSessionOpenRequest, "agentId" | "purpose" | "env">): void {
@@ -247,11 +259,14 @@ export function createResumer(options: {
     const plan: Plan = stated ? { kind: "reset", resetAt: stated } : planFor(check, at);
     const settings = await readSettings();
     if (!settings || !isProviderOn(agent.provider, settings)) return;
+    // A background agent is resumed only when the user turns that on.
+    const background = await isBackground(api, agent);
+    if (background && !settings.resumeBackground) return;
     if (options.overload && !(await overloadRetry())) return;
     const stop = {
       id: randomUUID(),
       agentId: agent.id, provider: agent.provider, plan, at: options.overload ? observedAt : at, baseline: agent.lastUserMessageAt ?? null,
-      identity: check.identity, model: subscriptionModel(agent), launch,
+      identity: check.identity, model: subscriptionModel(agent), launch, background,
     };
     // Assigned inside the callback, which TypeScript does not follow.
     let ended = null as { row: ResumeJob; outcome: Outcome } | null;
@@ -330,6 +345,7 @@ export function createResumer(options: {
     for (const { agent } of entries) {
       const source = isProviderOn(agent.provider, settings) ? cliFor(config, agent.provider) : null;
       if (!source || agent.archivedAt) continue;
+      if (!settings.resumeBackground && (await isBackground(api, agent))) continue;
       if (Date.parse(agent.updatedAt) < since) continue;
       if (agent.activeTurn || agent.pendingPermissions.length > 0 || agent.attentionReason === "permission") continue;
       const observedAt = new Date(agent.updatedAt);
@@ -435,6 +451,9 @@ export function createResumer(options: {
     const title = agent && titleOf(agent);
     const gate = agentGate(job, agent, mode);
     if (gate) return gated(gate, title);
+    // The stored flag is enough; a row written before the switch existed is decided from the agent.
+    const backgroundOf = async (latest: PaseoAgent): Promise<boolean> => job.background === true || await isBackground(api, latest);
+    if (!settings.resumeBackground && (await backgroundOf(agent!))) return cancel({ ...backgroundOff(), title });
     const check = await inspect(api, agent!, source, at, launches.get(job.agentId) ?? job.launch);
     if (check.auth === "api") return cancel({ ...API_ROUTE, title });
     if (job.identity && check.identity && job.identity !== check.identity) {
@@ -459,6 +478,7 @@ export function createResumer(options: {
     const currentSettings = await readSettings();
     if (!currentSettings) return { result: "unavailable" };
     if (!isProviderOn(job.provider, currentSettings)) return cancel({ ...providerOff(job.provider), title });
+    if (!currentSettings.resumeBackground && (await backgroundOf(latestAgent!))) return cancel({ ...backgroundOff(), title });
     // Assigned inside the callback, which TypeScript does not follow. The returned row cannot
     // tell: a row another attempt already claimed comes back unchanged, also as `sending`.
     // The note is taken from the claimed row, not `job`: one saved while the agent was being
@@ -505,14 +525,22 @@ export function createResumer(options: {
 
   /**
    * Turning a provider off also retires the reservations it already has: it concerns the agent,
-   * so whatever pending reservation is stored when the write happens goes, moved or not.
+   * so whatever pending reservation is stored when the write happens goes, moved or not. The
+   * background switch works the same way; rows saved without the flag are decided at delivery.
    */
   async function reconcileProviders(): Promise<void> {
     const settings = await readSettings();
     if (!settings) return;
     for (const job of await store.list()) {
-      if (job.state !== "pending" || isProviderOn(job.provider, settings)) continue;
-      await retire(job.agentId, (current) => current.state === "pending" && !isProviderOn(current.provider, settings), providerOff(job.provider));
+      if (job.state !== "pending") continue;
+      const providerTurnedOff = !isProviderOn(job.provider, settings);
+      const backgroundTurnedOff = !settings.resumeBackground && job.background === true;
+      if (!providerTurnedOff && !backgroundTurnedOff) continue;
+      const outcome = providerTurnedOff ? providerOff(job.provider) : backgroundOff();
+      // The row stored when the write happens decides, so a reservation turned on again meanwhile stays.
+      await retire(job.agentId, (current) => current.state === "pending" && (providerTurnedOff
+        ? !isProviderOn(current.provider, settings)
+        : !settings.resumeBackground && current.background === true), outcome);
     }
   }
 
@@ -557,8 +585,17 @@ export function createResumer(options: {
       .then(tick);
   }
 
-  /** A job left mid-send by a crash may already have been delivered, so it is dropped. */
-  async function recover(): Promise<void> {
+  /**
+   * A setting that widens what is scanned (the background switch) looks for missed stops at once,
+   * when the API is attached; otherwise the next attach's scan covers it.
+   */
+  function scanIfAttached(): Promise<void> {
+    const api = paseo;
+    if (!api) return Promise.resolve();
+    return scan(api).catch((error) => console.error("[usage-auto-resume] scan after enabling background agents failed", String(error)));
+  }
+
+  /** A job left mid-send by a crash may already have been delivered, so it is dropped. */  async function recover(): Promise<void> {
     for (const job of await store.list()) {
       if (job.state !== "sending") continue;
       await retire(job.agentId, (current) => current.state === "sending", { outcome: "interrupted" });
@@ -589,6 +626,8 @@ export function createResumer(options: {
           sending: job.state === "sending",
           waiting: job.waiting,
           note: job.note,
+          // The stored flag is authoritative; a row written before it existed reads the agent.
+          background: job.background ?? (loaded ? await isBackground(api, loaded.agent) : false),
         };
       }),
     );
@@ -601,15 +640,17 @@ export function createResumer(options: {
     const ids = [...new Set(entries.map((entry) => entry.agentId))];
     const agents = new Map(await Promise.all(ids.map(async (id) => {
       const loaded = await api.agents.ref(id).refresh().catch(() => null);
-      return [id, loaded?.agent ?? null] as const;
+      return [id, loaded ? { agent: loaded.agent, background: await isBackground(api, loaded.agent) } : null] as const;
     })));
     return entries.map((entry) => {
-      const agent = agents.get(entry.agentId);
+      const live = agents.get(entry.agentId);
+      const agent = live?.agent;
       return {
         ...entry,
         title: (agent && titleOf(agent)) || entry.title,
         workspaceId: agent?.workspaceId ?? null,
         archived: !!agent?.archivedAt,
+        background: live?.background ?? false,
       };
     });
   }
@@ -705,6 +746,7 @@ export function createResumer(options: {
     tick,
     recover,
     scan,
+    scanIfAttached,
     listScheduled,
     listHistory,
     setEnabled,

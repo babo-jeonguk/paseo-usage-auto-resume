@@ -45,6 +45,11 @@ const JobSchema = z.object({
   note: z.string().max(NOTE_MAX_CHARS).optional().catch(undefined),
   /** The user chose `dueAt`; a new plan for the reservation keeps it while it is later. */
   userChosenTime: z.literal(true).optional().catch(undefined),
+  /**
+   * Paseo treated the agent as background when the reservation was made, by its own flag or its
+   * workspace's. Absent on rows written before the switch existed; they are decided at delivery.
+   */
+  background: z.boolean().optional(),
 });
 
 type StoredJob = z.infer<typeof JobSchema>;

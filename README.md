@@ -65,6 +65,7 @@ Open **Settings → Plugins → usage-auto-resume → Settings**.
 ![Settings with a switch and account for each provider, and the continue prompt](assets/settings.png)
 
 - **Providers:** turn resumes on or off for each provider, including profiles such as `claude-main` or `codex-sub`. Turning one off cancels its pending resumes.
+- **Resume background agents:** off by default. Turn it on to include agents Paseo hides from its lists and agents in background workspaces; turning it off cancels their pending resumes.
 - **Continue prompt:** see the message sent to the agent and replace it. **Reset to default** brings back the built-in one, which also asks the agent to resume its unfinished subagents.
 
 ## Update

@@ -28,6 +28,8 @@ export const ScheduledJobSchema = z.object({
   waiting: WaitingSchema.optional(),
   /** The user's extra instruction sent after the continue prompt; older servers never send it. */
   note: z.string().optional(),
+  /** Paseo treats the agent as background: its own flag or its workspace's. */
+  background: z.boolean(),
 });
 
 export type ScheduledJob = z.infer<typeof ScheduledJobSchema>;
@@ -114,7 +116,7 @@ export const HistoryReasonSchema = z.enum([
   // canceled
   "turn_started", "new_message", "turn_finished", "agent_missing", "archived",
   "provider_changed", "model_changed", "agent_busy", "permission",
-  "account_changed", "api_route", "provider_off", "unsupported_cli", "overload_off",
+  "account_changed", "api_route", "provider_off", "background_off", "unsupported_cli", "overload_off",
   // gave_up
   "attempts", "retries", "overload_retries",
 ]);
@@ -173,6 +175,8 @@ export const HistoryRowSchema = HistoryEntrySchema.extend({
   workspaceId: z.string().nullable(),
   /** The agent still exists but is archived, so its conversation cannot be opened. */
   archived: z.boolean(),
+  /** The live agent is background now; false once it is gone or not readable as such. */
+  background: z.boolean(),
 });
 
 export type HistoryRow = z.infer<typeof HistoryRowSchema>;

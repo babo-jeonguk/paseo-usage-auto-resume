@@ -47,6 +47,7 @@ async function harness(t: TestContext, source: UsageSource, plan: string) {
     lastUserMessageAt: START, activeTurn: null, pendingPermissions: [], attentionReason: null, archivedAt: null,
   } as unknown as PaseoAgent;
   const api = {
+    workspaces: { ref: () => ({ refresh: async () => null }) },
     config: { get: async () => ({ config: { providers: {
       [provider]: { extends: `${source}-base` },
       [`${source}-base`]: { extends: source, env: { ...cleanAuthEnv, CODEX_HOME: home, CLAUDE_CONFIG_DIR: home, CLAUDE_SECURESTORAGE_CONFIG_DIR: home } },
