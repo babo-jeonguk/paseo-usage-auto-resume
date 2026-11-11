@@ -1289,6 +1289,73 @@ test("a due row saved without the background flag is canceled when its agent is 
   assert.deepEqual(await recorded(), ["bg canceled/background_off"]);
 });
 
+test("the due check cancels a background row while its agent is in a turn", async () => {
+  let settings = { ...DEFAULT_PROVIDER_SETTINGS, resumeBackground: true };
+  const { api, sent, resumer } = await setup({ bg: { provider: "codex", background: true, status: "running" } }, {
+    readSettings: async () => settings,
+  });
+  await resumer.onTurnEnded(turnEnded("bg", "codex", failed(CODEX_LIMIT)), api);
+  const [job] = await store.list();
+  assert.equal(job?.background, true);
+  // The switch is off without a sweep: the due check itself has to see it.
+  settings = { ...DEFAULT_PROVIDER_SETTINGS };
+  clock = new Date(job!.dueAt);
+  await resumer.tick();
+  assert.deepEqual(await store.list(), []);
+  assert.deepEqual(sent, []);
+  assert.deepEqual(await recorded(), ["bg canceled/background_off"]);
+});
+
+test("the due check cancels a background row that is turned off instead of skipping it", async () => {
+  let settings = { ...DEFAULT_PROVIDER_SETTINGS, resumeBackground: true };
+  const { api, resumer } = await setup({ bg: { provider: "codex", background: true } }, { readSettings: async () => settings });
+  await resumer.onTurnEnded(turnEnded("bg", "codex", failed(CODEX_LIMIT)), api);
+  await resumer.setEnabled("bg", await pinOf(store, "bg"), false);
+  settings = { ...DEFAULT_PROVIDER_SETTINGS };
+  clock = new Date((await store.list())[0]!.dueAt);
+  await resumer.tick();
+  assert.deepEqual(await store.list(), []);
+  assert.deepEqual(await recorded(), ["bg canceled/background_off"]);
+});
+
+test("the due check cancels a background row even when its agent is gone", async () => {
+  let settings = { ...DEFAULT_PROVIDER_SETTINGS, resumeBackground: true };
+  const { api, agents, resumer } = await setup({ bg: { provider: "codex", background: true } }, { readSettings: async () => settings });
+  await resumer.onTurnEnded(turnEnded("bg", "codex", failed(CODEX_LIMIT)), api);
+  agents.delete("bg");
+  settings = { ...DEFAULT_PROVIDER_SETTINGS };
+  clock = new Date((await store.list())[0]!.dueAt);
+  await resumer.tick();
+  assert.deepEqual(await store.list(), []);
+  assert.deepEqual(await recorded(), ["bg canceled/background_off"]);
+});
+
+test("the due check reads a row without the background flag from its background workspace before a turn", async () => {
+  await writeFile(join(dir, "jobs.json"), JSON.stringify({ version: 1, jobs: [{
+    agentId: "w1", provider: "codex", resetAt: null, dueAt: "2026-10-06T02:30:00.000Z",
+    baseline: "2026-10-06T02:00:00.000Z", attempts: 0, state: "pending",
+  }] }));
+  const { sent } = await setup({ w1: { provider: "codex", status: "running", workspaceId: "wks-bg" } }, {
+    readSettings: async () => ({ ...DEFAULT_PROVIDER_SETTINGS }), backgroundWorkspaces: ["wks-bg"],
+  });
+  assert.deepEqual(await store.list(), []);
+  assert.deepEqual(sent, []);
+  assert.deepEqual(await recorded(), ["w1 canceled/background_off"]);
+});
+
+test("Resume now cancels a background row while its agent is in a turn", async () => {
+  let settings = { ...DEFAULT_PROVIDER_SETTINGS, resumeBackground: true };
+  const { api, sent, resumer } = await setup({ bg: { provider: "codex", background: true, status: "running" } }, {
+    readSettings: async () => settings,
+  });
+  await resumer.onTurnEnded(turnEnded("bg", "codex", failed(CODEX_LIMIT)), api);
+  settings = { ...DEFAULT_PROVIDER_SETTINGS };
+  assert.deepEqual(await resumer.resumeNow(api, "bg", await pinOf(store, "bg")), { result: "canceled", reason: "background_off" });
+  assert.deepEqual(await store.list(), []);
+  assert.deepEqual(sent, []);
+  assert.deepEqual(await recorded(), ["bg canceled/background_off (manual)"]);
+});
+
 test("enabling the background switch rescans only once the API is attached", async () => {
   let settings = { ...DEFAULT_PROVIDER_SETTINGS };
   const agents = { bg: { provider: "codex", status: "error" as const, lastError: CODEX_LIMIT, background: true } };

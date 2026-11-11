@@ -26,7 +26,7 @@
 
 - 배경 에이전트 판정은 Paseo 정의(`agent.background || workspace.background`)를 그대로 쓴다. hook payload에는 background 필드가 없으므로 agent snapshot과 `api.workspaces.ref(id).refresh()`의 `background`를 읽는다. workspace를 읽지 못하면 agent 자신의 flag로 결정하고 한 번만 기록한다.
 - 설정 파일 버전은 **2를 유지**했다. 0.16의 `PluginSettingsStore`는 저장된 version이 현재 version과 같으면 `schema.parseAsync(values)`를 그대로 실행하므로, `resumeBackground`가 없는 기존 version 2 파일은 zod default인 `false`로 읽힌다. 마이그레이션이 필요 없다.
-- 예약 행에는 `background?: boolean`을 추가했다. 이 버전이 만드는 배경 예약은 `true`를 저장하고, 예전 행(플래그 없음)은 전달 시점에 agent를 읽어 판정한다. 1.3.2로 되돌리면 이 키는 무시된다.
+- 예약 행에는 `background?: boolean`을 추가했다. 이 버전이 만드는 배경 예약은 `true`를 저장하고, 예전 행(플래그 없음)은 전달 시점에 agent를 읽어 판정한다. 전달 시점의 배경 판정은 agent 상태 확인보다 먼저 하며, 저장된 플래그가 있으면 agent가 사라졌어도 그 플래그로 결정한다. 1.3.2로 되돌리면 이 키는 무시된다.
 - 저장소 쓰기 알림은 **파일을 실제로 바꾼 쓰기**에만 붙였다(no-op update는 알리지 않음). job/history 어느 쪽이 바뀌어도 revision이 오른다.
 
 ## 실행 환경과 검증의 한계

@@ -450,11 +450,15 @@ export function createResumer(options: {
     };
     const agent = await loadAgent(api, job.agentId);
     const title = agent && titleOf(agent);
+    // Step 2 precedes the agent's state: the stored flag decides on its own, even when the agent
+    // is gone, and a row written before the switch existed reads the agent when it still exists.
+    if (!settings.resumeBackground && (job.background === true || (agent && (await isBackground(api, agent))))) {
+      return cancel({ ...backgroundOff(), title });
+    }
     const gate = agentGate(job, agent, mode);
     if (gate) return gated(gate, title);
-    // The stored flag is enough; a row written before the switch existed is decided from the agent.
+    // The post-usage re-check uses the same rule: the stored flag, or the agent for an older row.
     const backgroundOf = async (latest: PaseoAgent): Promise<boolean> => job.background === true || await isBackground(api, latest);
-    if (!settings.resumeBackground && (await backgroundOf(agent!))) return cancel({ ...backgroundOff(), title });
     const check = await inspect(api, agent!, source, at, launches.get(job.agentId) ?? job.launch);
     if (check.auth === "api") return cancel({ ...API_ROUTE, title });
     if (job.identity && check.identity && job.identity !== check.identity) {
