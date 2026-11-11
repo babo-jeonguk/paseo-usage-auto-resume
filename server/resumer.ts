@@ -29,6 +29,18 @@ function log(message: string): void {
   console.log(`[usage-auto-resume] ${message}`);
 }
 
+/**
+ * A connection the daemon closed is a shutdown, not a plugin failure. The client throws
+ * `DaemonConnectionError` for a lost transport and a plain `Error("Daemon client closed")` once
+ * its own runtime is closed.
+ */
+function isConnectionClosed(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return error.name === "DaemonConnectionError"
+    || error.message === "Daemon client closed"
+    || error.message.startsWith("Transport not connected");
+}
+
 const titleOf = (agent: Pick<PaseoAgent, "title">): string | null => agent.title?.trim() || null;
 
 function exhaustedReset(check: SubscriptionCheck, at: Date): Date | null {
@@ -537,7 +549,11 @@ export function createResumer(options: {
     paseo = api;
     if (!first) return Promise.resolve();
     return reconcileProviders().then(reconcileOverload).then(() => scan(api))
-      .catch((error) => console.error("[usage-auto-resume] startup scan failed", String(error)))
+      .catch((error) => {
+        // The daemon stopping mid-scan is expected; only a real failure is an error.
+        if (isConnectionClosed(error)) log("startup scan stopped: the daemon connection closed");
+        else console.error("[usage-auto-resume] startup scan failed", String(error));
+      })
       .then(tick);
   }
 

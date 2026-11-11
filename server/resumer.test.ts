@@ -1116,6 +1116,53 @@ test("startup scan does not hide unrelated discovery failures by retrying a narr
   assert.deepEqual(await store.list(), []);
 });
 
+/** The client's own class is not exported to plugins; the name is what a caller can see. */
+const daemonClosed = (message: string) => Object.assign(new Error(message), { name: "DaemonConnectionError" });
+
+test("a scan cut off by the daemon closing is information, and the tick after it still runs", async () => {
+  const dueJob = { version: 1, jobs: [{
+    agentId: "a1", provider: "codex", resetAt: null, dueAt: "2026-10-06T02:30:00.000Z",
+    baseline: "2026-10-06T02:00:00.000Z", attempts: 0, state: "pending",
+  }] };
+  for (const closed of [
+    daemonClosed("Transport not connected"),
+    new Error("Daemon client closed"),
+    new Error("Transport not connected (status: disconnected)"),
+  ]) {
+    await writeFile(join(dir, "jobs.json"), JSON.stringify(dueJob));
+    const errors: unknown[][] = [];
+    const lines: string[] = [];
+    const originalError = console.error, originalLog = console.log;
+    console.error = (...line: unknown[]) => { errors.push(line); };
+    console.log = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+    let sent: Array<{ agentId: string; text: string }>;
+    try {
+      ({ sent } = await setup({ a1: { provider: "codex" } }, { listError: closed }));
+    } finally {
+      console.error = originalError;
+      console.log = originalLog;
+    }
+    assert.deepEqual(errors, [], `${closed.message} is not an error`);
+    assert.equal(lines.some((line) => line.includes("startup scan stopped")), true, lines.join("\n"));
+    assert.equal(lines.some((line) => line.includes("failed")), false, lines.join("\n"));
+    assert.deepEqual(sent, [{ agentId: "a1", text: CONTINUE_PROMPT }], "the tick still runs");
+  }
+});
+
+test("any other scan failure is still logged as an error", async () => {
+  const errors: unknown[][] = [];
+  const original = console.error;
+  console.error = (...line: unknown[]) => { errors.push(line); };
+  try {
+    await setup({ c1: { provider: "codex", status: "error", lastError: CODEX_LIMIT } }, { listError: new Error("Connection lost") });
+  } finally {
+    console.error = original;
+  }
+  assert.equal(errors.length, 1, JSON.stringify(errors));
+  assert.match(String(errors[0]![0]), /startup scan failed/);
+  assert.match(String(errors[0]![1]), /Connection lost/);
+});
+
 test("startup scan keeps a job that already exists", async () => {
   clock = new Date("2026-10-06T03:10:00.000Z");
   await store.update("c1", () => ({
