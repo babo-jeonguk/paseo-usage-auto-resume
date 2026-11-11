@@ -1,9 +1,10 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { createChangeFeed } from "./server/changes";
 import { createHistoryStore } from "./server/history";
 import { discoverProviders } from "./server/providers";
 import { createResumer } from "./server/resumer";
 import { createJobStore } from "./server/store";
-import { listHistoryRpc, listProvidersRpc, listScheduledRpc, rescheduleRpc, resumeNowRpc, setAllEnabledRpc, setEnabledRpc, setNoteRpc } from "./shared/rpc";
+import { changesSubscription, listHistoryRpc, listProvidersRpc, listScheduledRpc, rescheduleRpc, resumeNowRpc, setAllEnabledRpc, setEnabledRpc, setNoteRpc } from "./shared/rpc";
 import { providerSettings, resumeSettings } from "./shared/settings";
 
 const TICK_MS = 30_000;
@@ -13,9 +14,12 @@ export default function contribute(server: PluginServerContext) {
   const promptSettings = server.registerSettings(resumeSettings);
   // The tick reads these on every send; the same failure is reported once, not every time.
   let resumeError: string | null = null;
+  // Every write to a store pushes a revision, so open screens and composer pills refetch at once.
+  const changes = createChangeFeed();
+  const notifyChange = () => changes.notify();
   const resumer = createResumer({
-    store: createJobStore(),
-    history: createHistoryStore(),
+    store: createJobStore(undefined, notifyChange),
+    history: createHistoryStore({ onChange: notifyChange }),
     readSettings: async () => {
       const current = await settings.read();
       if (current.status === "ready") return current.values;
@@ -70,6 +74,16 @@ export default function contribute(server: PluginServerContext) {
     server.on("agent.created", (_event, { paseo }) => void resumer.attach(paseo)),
     server.on("agent.closed", (_event, { paseo }) => void resumer.attach(paseo)),
   ];
+  // Live updates: a subscription is told the revision after a store write, then refetches.
+  server.handle(changesSubscription, (_input, { paseo, push, signal }) => {
+    void resumer.attach(paseo);
+    const unsubscribe = changes.subscribe((revision) => {
+      void push({ revision }).catch((error) => console.error("[usage-auto-resume] could not push a change", String(error)));
+    });
+    signal.addEventListener("abort", unsubscribe, { once: true });
+    // The plugin's own cleanup releases a listener whose subscription never saw the abort.
+    stops.push(unsubscribe);
+  });
   // Opening the screen also hands over the API, so a restart never waits on agent activity alone.
   server.handle(listScheduledRpc, async (_input, { paseo }) => {
     void resumer.attach(paseo);

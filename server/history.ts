@@ -24,7 +24,7 @@ export function defaultHistoryPath(): string {
  * How recent reservations ended, kept apart from jobs.json so a failed write here never
  * affects a resume. Entries are stored oldest first.
  */
-export function createHistoryStore(options: { path?: string; now?: () => Date } = {}): {
+export function createHistoryStore(options: { path?: string; now?: () => Date; onChange?: () => void } = {}): {
   list(): Promise<HistoryEntry[]>;
   append(record: HistoryRecord): Promise<void>;
 } {
@@ -83,6 +83,7 @@ export function createHistoryStore(options: { path?: string; now?: () => Date } 
       serialize(async () => {
         const entry: HistoryEntry = { id: randomUUID(), at: now().toISOString(), ...record };
         await write(recent([...(await read()), entry]));
+        options.onChange?.();
       }),
   };
 }

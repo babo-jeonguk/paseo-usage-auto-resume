@@ -122,3 +122,12 @@ test("a Resume now result keeps its trigger, and entries written without one sti
   assert.equal(automatic?.agentId, "a1");
   assert.equal(automatic?.trigger, undefined);
 });
+
+test("an appended result announces a change", async () => {
+  let changes = 0;
+  const history = createHistoryStore({ path, now: () => clock, onChange: () => { changes += 1; } });
+  await history.append(entry("a1"));
+  assert.equal(changes, 1);
+  await history.append(entry("a2"));
+  assert.equal(changes, 2);
+});

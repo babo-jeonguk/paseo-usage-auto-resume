@@ -11,12 +11,23 @@ const job = (agentId: string, workspaceId: string | null = "workspace"): Schedul
   resetAt: null, dueAt: new Date(Date.now() + 3_600_000).toISOString(), enabled: true, sending: false, background: false,
 });
 
+type FakeSubscription = {
+  onEvent(event: unknown): void;
+  onClosed?: (closed: { error?: Error }) => void;
+  released: boolean;
+  ready: Promise<void>;
+  resolveReady(): void;
+  rejectReady(error: Error): void;
+};
+
 function fixture() {
   let jobs = [job("a"), job("b"), job("unplaced", null)];
   let read: () => Promise<{ jobs: ScheduledJob[] }> = async () => ({ jobs });
+  let reads = 0;
+  const subscriptions: FakeSubscription[] = [];
   const added: Array<PluginComposerPillContribution & { removed: boolean; updates: Partial<PluginButton>[] }> = [];
   const client = {
-    rpc: () => read(),
+    rpc: () => { reads += 1; return read(); },
     addComposerPill: (input: PluginComposerPillContribution) => {
       const item = { ...input, button: { ...input.button }, removed: false, updates: [] as Partial<PluginButton>[] };
       added.push(item);
@@ -25,9 +36,29 @@ function fixture() {
         remove: () => { item.removed = true; },
       };
     },
+    subscribe: (
+      _contract: unknown,
+      _input: unknown,
+      onEvent: (event: unknown) => void,
+      options?: { onClosed?: (closed: { error?: Error }) => void },
+    ) => {
+      let resolveReady!: () => void;
+      let rejectReady!: (error: Error) => void;
+      const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+      const item: FakeSubscription = { onEvent, onClosed: options?.onClosed, released: false, ready, resolveReady, rejectReady };
+      subscriptions.push(item);
+      return Object.assign(() => { item.released = true; }, {
+        ready,
+        release: async () => { item.released = true; },
+      });
+    },
   } as unknown as PluginClientContext;
   const stop = installConversationControls(client, () => null);
-  return { added, stop, setJobs: (next: ScheduledJob[]) => { jobs = next; }, setRead: (next: typeof read) => { read = next; } };
+  return {
+    added, subscriptions, stop, readCount: () => reads,
+    setJobs: (next: ScheduledJob[]) => { jobs = next; },
+    setRead: (next: typeof read) => { read = next; },
+  };
 }
 
 test("unchanged polls do not update pills; displayed state changes and error recovery still do", async (t) => {
@@ -145,5 +176,66 @@ test("changes during a read discard the old result; unload removes controls and 
     notifyScheduleChanged();
     await setImmediate();
     assert.equal(f.added.length, 2);
+  } finally { f.stop(); }
+});
+
+test("a pushed change and every (re)connect ask for a fresh directory read", async () => {
+  const f = fixture();
+  try {
+    await setImmediate();
+    const afterLoad = f.readCount();
+    f.subscriptions[0]!.onEvent({ revision: 1 });
+    await setImmediate();
+    assert.equal(f.readCount(), afterLoad + 1, "a pushed change refreshes");
+    f.subscriptions[0]!.resolveReady();
+    await setImmediate();
+    assert.equal(f.readCount(), afterLoad + 2, "a resolved subscription refreshes as well");
+    f.subscriptions[0]!.onEvent({ revision: 2 });
+    f.subscriptions[0]!.onEvent({ revision: 3 });
+    await setImmediate();
+    assert.ok(f.readCount() >= afterLoad + 3, "each signal is applied");
+  } finally { f.stop(); }
+});
+
+test("a closed subscription refreshes and resubscribes with backoff until cleanup", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const f = fixture();
+  try {
+    await setImmediate();
+    const afterLoad = f.readCount();
+    assert.equal(f.subscriptions.length, 1);
+    f.subscriptions[0]!.onClosed?.({ error: new Error("plugin stopped") });
+    await setImmediate();
+    assert.equal(f.readCount(), afterLoad + 1, "the closed subscription refreshes at once");
+    t.mock.timers.tick(4_999);
+    assert.equal(f.subscriptions.length, 1, "it does not resubscribe before 5 s");
+    t.mock.timers.tick(1);
+    assert.equal(f.subscriptions.length, 2, "it resubscribes after 5 s");
+    f.subscriptions[1]!.onClosed?.({ error: Object.assign(new Error("plugin stopped"), { name: "DaemonConnectionError" }) });
+    await setImmediate();
+    t.mock.timers.tick(14_999);
+    assert.equal(f.subscriptions.length, 2, "the next wait is 15 s");
+    t.mock.timers.tick(1);
+    assert.equal(f.subscriptions.length, 3);
+  } finally { f.stop(); }
+});
+
+test("cleanup releases the change subscription", async () => {
+  const f = fixture();
+  await setImmediate();
+  f.stop();
+  assert.equal(f.subscriptions[0]!.released, true);
+});
+
+test("the fallback poll runs every two minutes", async (t) => {
+  const intervals: Array<number | undefined> = [];
+  t.mock.method(globalThis, "setInterval", (_fn: () => void, ms?: number) => {
+    intervals.push(ms);
+    return 0 as unknown as ReturnType<typeof setInterval>;
+  });
+  const f = fixture();
+  try {
+    await setImmediate();
+    assert.deepEqual(intervals, [120_000]);
   } finally { f.stop(); }
 });

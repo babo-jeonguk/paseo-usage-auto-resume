@@ -1,6 +1,16 @@
-import { defineRpc } from "@getpaseo/plugin";
+import { defineRpc, defineSubscription } from "@getpaseo/plugin";
 import { z } from "zod";
 import { NOTE_MAX_CHARS } from "./prompt";
+
+/**
+ * A revision pushed after a reservation or a result is written. Clients refetch through the list
+ * RPCs and keep a slow full refresh as the safety net.
+ */
+export const changesSubscription = defineSubscription({
+  name: "auto-resume.changes",
+  input: z.object({}),
+  event: z.object({ revision: z.number().int().nonnegative() }),
+});
 
 /** The check a reservation waits on instead of a promised continue: the account, or its usage. */
 export const WaitingSchema = z.enum(["auth", "usage"]);
