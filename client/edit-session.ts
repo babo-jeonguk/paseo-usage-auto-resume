@@ -1,4 +1,5 @@
 import type { ScheduledJob } from "../shared/rpc";
+import { timeEditorStart, type TimeEditorStart, type TimeEntry } from "./format";
 
 /** The two editors a reservation offers; each surface keeps at most one open. */
 export type EditorKind = "time" | "note";
@@ -19,14 +20,17 @@ export interface EditSession {
   /** The extra instructions as typed, and what the editor opened with. */
   draft: string;
   initial: string;
+  /** The time editor's opening entry and the current entry; null for extra instructions. */
+  time: { start: TimeEditorStart; entry: TimeEntry } | null;
   /** A note's save is in flight: the editor stays open, and closes only on its result. */
   saving: boolean;
   problem: string | null;
 }
 
 export type EditEvent =
-  | { type: "open"; kind: EditorKind; job: ScheduledJob }
+  | { type: "open"; kind: EditorKind; job: ScheduledJob; now: number }
   | { type: "type"; text: string }
+  | { type: "set-time"; entry: TimeEntry }
   | { type: "save" }
   | { type: "saved"; opened: object }
   | { type: "refused"; opened: object; problem: string }
@@ -44,13 +48,17 @@ export type EditEvent =
 export function editSession(state: EditSession | null, event: EditEvent): EditSession | null {
   switch (event.type) {
     case "open": {
-      const { kind, job } = event;
+      const { kind, job, now } = event;
       if (job.sending || (state && (kind === "note" || state.kind === "note"))) return state;
       const note = kind === "note" ? job.note ?? "" : "";
-      return { opened: {}, agentId: job.agentId, reservation: job.id, kind, pin: job.dueAt, draft: note, initial: note, saving: false, problem: null };
+      const start = timeEditorStart(job, now);
+      const time = kind === "time" ? { start, entry: { text: start.text, day: start.day } } : null;
+      return { opened: {}, agentId: job.agentId, reservation: job.id, kind, pin: job.dueAt, draft: note, initial: note, time, saving: false, problem: null };
     }
     case "type":
       return state?.kind === "note" && !state.saving ? { ...state, draft: event.text } : state;
+    case "set-time":
+      return state?.kind === "time" && state.time ? { ...state, time: { ...state.time, entry: event.entry } } : state;
     case "save":
       return state?.kind === "note" ? { ...state, saving: true, problem: null } : state;
     case "saved":
