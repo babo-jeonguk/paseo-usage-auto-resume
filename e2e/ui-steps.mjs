@@ -165,17 +165,27 @@ export async function uiPhase(ctx) {
 
     // ---- item 9 in the UI: provider switch ---------------------------------------------------
     const u4 = await mkAgent('UI provider off', 'claude-sub');
-    await guarded(9, 'Settings switch turns Claude Sub off: its pending reservation is canceled at once', async () => {
+    await guarded(9, 'Auto Resume names the Claude Sub row by its Paseo name, at phone width too', async () => {
       await hit(u4, 'claude');
-      // The row's chip names the profile as Paseo does, at phone width too, with the row's switch still on screen.
-      await page.setViewportSize({ width: 390, height: 844 });
       await openScreen();
       const row = page.getByRole('switch', { name: /^Continue UI provider off automatically at / });
-      await expect(row).toBeInViewport({ timeout: 30000 });
+      await expect(row).toBeVisible({ timeout: 30000 });
       await expect(page.getByText('Claude Sub', { exact: true }).first()).toBeVisible();
       assert.equal(await page.getByText('claude-sub', { exact: true }).count(), 0);
-      await shot('ui-5-provider-label-phone');
-      await page.setViewportSize({ width: 1440, height: 960 });
+      // The chip shrinks before the row's switch leaves the screen.
+      await page.setViewportSize({ width: 390, height: 844 });
+      try {
+        await row.scrollIntoViewIfNeeded();
+        await expect(row).toBeInViewport({ ratio: 1, timeout: 15000 });
+        await expect(page.getByText('Claude Sub', { exact: true }).first()).toBeVisible();
+        await shot('ui-5-provider-label-phone');
+      } finally {
+        await page.setViewportSize({ width: 1440, height: 960 });
+      }
+      return 'row chip "Claude Sub", no raw ID; switch fully on screen at 390px';
+    });
+    await guarded(9, 'Settings switch turns Claude Sub off: its pending reservation is canceled at once', async () => {
+      if (!(await jobOf(u4.id))) await hit(u4, 'claude');
       await openSettings();
       await expect(page.getByText(/1 pending reservation/)).toBeVisible({ timeout: 30000 });
       await shot('ui-5-settings-pending');
@@ -184,7 +194,7 @@ export async function uiPhase(ctx) {
       assert.equal(await jobOf(u4.id), undefined);
       await page.getByRole('switch', { name: /Claude Sub/ }).click();
       await sleep(1500);
-      return 'chip "Claude Sub" at 390px; history canceled/provider_off right after the switch; switched back on';
+      return 'history canceled/provider_off right after the switch; switched back on';
     });
 
     // ---- item 17 in the UI: settings save failures ----------------------------------------

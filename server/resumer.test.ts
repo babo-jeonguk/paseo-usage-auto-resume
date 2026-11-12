@@ -2036,6 +2036,23 @@ test("a missing or blank provider label is left off the row", async () => {
   }
 });
 
+test("a result whose agent is gone still names its provider by its current label", async () => {
+  const { api, resumer, agents } = await setup(
+    { a1: { provider: "codex-reserve", title: "Fix login", workspaceId: "w1" } },
+    { providerSnapshot: () => [{ provider: "codex-reserve", label: "Codex Reserve" }] },
+  );
+  await resumer.onTurnEnded(turnEnded("a1", "codex-reserve", failed(CODEX_LIMIT)), api);
+  advance(3 * 60 * MINUTE);
+  await resumer.tick();
+  agents.delete("a1");
+  const row = (await resumer.listHistory(api)).find((entry) => entry.agentId === "a1");
+  assert.ok(row);
+  assert.equal(row?.providerLabel, "Codex Reserve");
+  assert.equal(row?.provider, "codex-reserve");
+  assert.equal(row?.title, "Fix login");
+  assert.equal(row?.workspaceId, null);
+});
+
 test("a history that cannot be written never stops a continue", async () => {
   const map = new Map(Object.entries({ a1: { provider: "codex" } as Partial<PaseoAgent> }));
   const fake = fakePaseo(map);
