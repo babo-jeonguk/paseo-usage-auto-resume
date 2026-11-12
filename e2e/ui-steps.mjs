@@ -151,6 +151,11 @@ export async function uiPhase(ctx) {
       await waitFor(async () => (await jobOf(u2.id))?.note === NOTE, 'note saved', 20000, 300);
       await openSettings();
       await shot('ui-3-settings');
+      // The Labs switch explains itself from the (i) beside its label.
+      await page.getByRole('button', { name: 'About Retry after a provider overload', exact: true }).hover();
+      await expect(page.getByText(/If a turn fails because the provider is busy/)).toBeVisible({ timeout: 15000 });
+      await shot('ui-3-labs-info');
+      await page.mouse.move(0, 0);
       const prompt = page.getByRole('textbox', { name: 'Continue prompt' });
       await prompt.fill(CUSTOM);
       await page.getByRole('button', { name: 'Save', exact: true }).click();

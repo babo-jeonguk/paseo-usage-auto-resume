@@ -1,9 +1,9 @@
 import { useRpc, useSettings, type PluginSurfaceProps, type SettingsState } from "@getpaseo/plugin/client";
 import { SettingsAction, SettingsCard, SettingsSection, SettingsSwitch } from "@getpaseo/plugin/client/ui";
-import { ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
+import { Icon, ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
-import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import { useEffect, useRef, useState, type ComponentProps, type ComponentType } from "react";
+import { ActivityIndicator, Pressable, Text, useWindowDimensions, View } from "react-native";
 import { DEFAULT_CONTINUE_PROMPT } from "../shared/prompt";
 import { listProvidersRpc, listScheduledRpc, type DiscoveredProvider } from "../shared/rpc";
 import { isProviderOn, PROMPT_MAX_CHARS, providerSettings, ProviderSettingsSchema, resumeSettings, ResumeSettingsSchema, USAGE_SOURCES } from "../shared/settings";
@@ -12,6 +12,7 @@ import { charactersLeft, promptToSave, providerHint, sortProviders } from "./for
 import { jobsQueryKey } from "./query-keys";
 import type { SaveFailure } from "./save-failure";
 import { accentText, bodyText, dangerText, headingText, inputText, mutedText } from "./text-styles";
+import { Toggle } from "./toggle";
 import { useSaveFeedback, type SaveFeedback } from "./use-save-feedback";
 
 type ReadySettings = Extract<SettingsState<typeof ProviderSettingsSchema>, { status: "ready" }>;
@@ -20,6 +21,10 @@ type Theme = PluginSurfaceProps["theme"];
 
 const CLI_NAMES = { claude: "Claude", codex: "Codex", antigravity: "Antigravity", opencode: "OpenCode" } as const;
 const OVERLOAD_RETRY_LABEL = "Retry after a provider overload";
+const OVERLOAD_RETRY_INFO = "If a turn fails because the provider is busy, retry the turn up to 3 times — about 3, 10, then 25 minutes later.";
+const OVERLOAD_RETRY_FINE = "Claude, Codex and Antigravity only. Usage limits are checked first.";
+/** View accepts pointer events on web; the installed React Native types do not list them yet. */
+const HoverView = View as ComponentType<ComponentProps<typeof View> & { onPointerEnter?: () => void; onPointerLeave?: () => void }>;
 
 /** The failed save's message beside its control. Not a live region: the toast already announces it. */
 function SaveFailureNote({ failure, feedback, saving, colors }: { failure: SaveFailure | null; feedback: SaveFeedback; saving: boolean; colors: Theme["colors"] }) {
@@ -180,6 +185,114 @@ function PromptEditor({ settings, theme, feedback }: { settings: ReadyResumeSett
   );
 }
 
+/**
+ * The Labs switch with an (i) that explains it on hover. SettingsCard clips its children, so this
+ * card draws the same surface without clipping the tooltip above the row.
+ */
+function OverloadRetrySetting({ value, disabled, onValueChange, theme }: {
+  value: boolean;
+  disabled: boolean;
+  onValueChange(value: boolean): void;
+  theme: Theme;
+}) {
+  const { colors } = theme;
+  const { width } = useWindowDimensions();
+  const [open, setOpen] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tooltipWidth = Math.min(300, Math.max(200, width - 32));
+  const clearHide = () => {
+    if (hideTimer.current) {
+      clearTimeout(hideTimer.current);
+      hideTimer.current = null;
+    }
+  };
+  const show = () => {
+    clearHide();
+    setOpen(true);
+  };
+  // A short delay lets the pointer move from the label into the tooltip without closing it.
+  const hide = () => {
+    if (pinned) return;
+    clearHide();
+    hideTimer.current = setTimeout(() => setOpen(false), 120);
+  };
+  const dismiss = () => {
+    clearHide();
+    setPinned(false);
+    setOpen(false);
+  };
+  useEffect(() => () => clearHide(), []);
+  return (
+    <View
+      style={{
+        position: "relative",
+        backgroundColor: colors.surface1,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: colors.border,
+      }}
+    >
+      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12, paddingVertical: 16, paddingHorizontal: 16 }}>
+        <HoverView
+          onPointerEnter={show}
+          onPointerLeave={hide}
+          style={{ flexGrow: 1, flexShrink: 1, flexBasis: 160, flexDirection: "row", alignItems: "flex-start", gap: 6 }}
+        >
+          <Text style={[bodyText(colors), { flexShrink: 1 }]}>{OVERLOAD_RETRY_LABEL}</Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`About ${OVERLOAD_RETRY_LABEL}`}
+            accessibilityHint="Shows what this setting does."
+            accessibilityState={{ expanded: open }}
+            hitSlop={8}
+            onFocus={show}
+            onBlur={dismiss}
+            onPress={() => {
+              const next = !pinned;
+              setPinned(next);
+              setOpen(next);
+            }}
+            style={({ pressed }) => ({
+              width: 20, height: 20, borderRadius: 10,
+              alignItems: "center", justifyContent: "center",
+              backgroundColor: pressed || open ? colors.surface2 : "transparent",
+            })}
+          >
+            <Icon name="Info" size={15} color={open ? colors.foreground : colors.foregroundMuted} />
+          </Pressable>
+        </HoverView>
+        <Toggle
+          theme={theme}
+          value={value}
+          disabled={disabled}
+          accessibilityLabel={OVERLOAD_RETRY_LABEL}
+          onValueChange={onValueChange}
+        />
+      </View>
+      {open ? (
+        <HoverView
+          onPointerEnter={show}
+          onPointerLeave={hide}
+          accessibilityLiveRegion="polite"
+          style={{
+            position: "absolute", bottom: "100%", right: 0, marginBottom: 8,
+            width: tooltipWidth, maxWidth: "100%",
+            gap: 6, paddingVertical: 10, paddingHorizontal: 12,
+            backgroundColor: colors.surface1,
+            borderWidth: 1, borderColor: colors.border, borderRadius: 8,
+            shadowColor: "#000", shadowOpacity: 0.18, shadowRadius: 12, shadowOffset: { width: 0, height: 4 },
+            elevation: 6, zIndex: 10,
+          }}
+        >
+          <Text style={bodyText(colors)}>{OVERLOAD_RETRY_INFO}</Text>
+          <Text style={mutedText(colors)}>{OVERLOAD_RETRY_FINE}</Text>
+        </HoverView>
+      ) : null}
+    </View>
+  );
+}
+
 /** Read apart from the provider switches, so either one can fail without the other. */
 function ResumeSettings({ theme }: { theme: Theme }) {
   const settings = useSettings(resumeSettings);
@@ -225,14 +338,12 @@ function ResumeSettings({ theme }: { theme: Theme }) {
             <Text accessibilityRole="header" style={headingText(colors)}>Labs</Text>
             <Text style={mutedText(colors)}>Experimental automatic resumes still being tested.</Text>
           </View>
-          <SettingsCard>
-            <SettingsSwitch
-              label={OVERLOAD_RETRY_LABEL}
-              value={settings.values.overloadRetry}
-              disabled={settings.saving}
-              onValueChange={(overloadRetry) => void feedback.run("labs", { kind: "switch", label: OVERLOAD_RETRY_LABEL, on: overloadRetry }, () => settings.save({ ...settings.values, overloadRetry }, settings.revision))}
-            />
-          </SettingsCard>
+          <OverloadRetrySetting
+            value={settings.values.overloadRetry}
+            disabled={settings.saving}
+            onValueChange={(overloadRetry) => void feedback.run("labs", { kind: "switch", label: OVERLOAD_RETRY_LABEL, on: overloadRetry }, () => settings.save({ ...settings.values, overloadRetry }, settings.revision))}
+            theme={theme}
+          />
           <SaveFailureNote failure={feedback.failureFor("labs")} feedback={feedback} saving={settings.saving} colors={colors} />
         </View>
       ) : null}
