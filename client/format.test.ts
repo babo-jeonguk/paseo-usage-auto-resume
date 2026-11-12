@@ -163,6 +163,20 @@ test("a turned-off check or a continue being sent does not add a misleading chec
   });
 });
 
+test("the header names the earliest check and continue whatever order the list arrives in", () => {
+  // A surface that moved one reservation can hand over a list that is no longer sorted by time.
+  const at = (hours: number, minutes: number) => new Date(2026, 9, 6, hours, minutes).toISOString();
+  assert.deepEqual(summaryLabels([job({ dueAt: at(21, 0) }), job({ dueAt: at(20, 0) })]), {
+    title: "2 agents will continue", detail: "Next at 20:00",
+  });
+  assert.deepEqual(summaryLabels([job({ waiting: "usage", dueAt: at(22, 0) }), job({ waiting: "auth", dueAt: at(19, 30) })]), {
+    title: "2 agents waiting for verification", detail: "Next check at 19:30",
+  });
+  assert.deepEqual(summaryLabels([job({ dueAt: at(21, 45) }), job({ waiting: "usage", dueAt: at(20, 30) }), job({ dueAt: at(20, 0) }), job({ waiting: "usage", dueAt: at(19, 58) })]), {
+    title: "2 agents will continue", detail: "Next check 19:58 · Next at 20:00",
+  });
+});
+
 test("labels for place", () => {
   assert.equal(placeLabel(job({ projectName: "DoneFolio", workspaceName: "DoneFolio" })), "DoneFolio");
   assert.equal(placeLabel(job({ projectName: "DoneFolio", workspaceName: "issue-233" })), "DoneFolio · issue-233");

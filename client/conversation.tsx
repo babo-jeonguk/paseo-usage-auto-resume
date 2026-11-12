@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { listScheduledRpc, rescheduleRpc, resumeNowRpc, setEnabledRpc, type ScheduledJob } from "../shared/rpc";
-import { clockLabel, dayLabel, delayChoices, notePreview, RESUME_NOW_UNFINISHED, refusalLabel, relativeLabel, relativeSpoken, resumeNowToast, SCHEDULE_CHANGED, waitingLabel } from "./format";
+import { byDueAt, clockLabel, dayLabel, delayChoices, notePreview, RESUME_NOW_UNFINISHED, refusalLabel, relativeLabel, relativeSpoken, resumeNowToast, SCHEDULE_CHANGED, waitingLabel } from "./format";
 import { editorLocks, openEditor } from "./edit-session";
 import { NoteEditor } from "./note-editor";
 import { SpokenText } from "./spoken-text";
@@ -54,10 +54,15 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
     onSuccess: (_result, input) => {
       if (input.kind === "move") dispatch({ type: "moved", reservation: input.job.id });
       // Reflect only an acknowledged mutation, in the sidebar's shared cache too.
-      queryClient.setQueryData<ScheduledJob[]>(queryKey, (jobs) => jobs?.map((entry) =>
-        entry.id !== input.job.id || entry.dueAt !== input.job.dueAt ? entry : input.kind === "toggle"
-          ? { ...entry, enabled: input.enabled }
-          : { ...entry, dueAt: input.dueAt, enabled: true }));
+      queryClient.setQueryData<ScheduledJob[]>(queryKey, (jobs) => {
+        if (!jobs) return jobs;
+        const updated = jobs.map((entry) =>
+          entry.id !== input.job.id || entry.dueAt !== input.job.dueAt ? entry : input.kind === "toggle"
+            ? { ...entry, enabled: input.enabled }
+            : { ...entry, dueAt: input.dueAt, enabled: true });
+        // A move changes the order; the list header and rows read it earliest first.
+        return input.kind === "move" ? byDueAt(updated) : updated;
+      });
       toast.show(input.kind === "toggle" ? `Auto Resume turned ${input.enabled ? "on" : "off"}` : "Resume time updated");
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "Could not update the schedule."),

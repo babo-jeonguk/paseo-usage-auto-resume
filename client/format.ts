@@ -95,6 +95,9 @@ export interface DayGroup {
   jobs: ScheduledJob[];
 }
 
+/** The list in due time order, earliest first. */
+export const byDueAt = (jobs: ScheduledJob[]) => [...jobs].sort((left, right) => left.dueAt.localeCompare(right.dueAt));
+
 /** Jobs are already sorted by due time; consecutive days become sections. */
 export function groupByDay(jobs: readonly ScheduledJob[], now: number): DayGroup[] {
   const groups: DayGroup[] = [];
@@ -127,8 +130,8 @@ export function summaryLabels(jobs: readonly ScheduledJob[]): { title: string; d
   const checks = on.filter((job) => job.waiting);
   const title = continues.length ? (continues.length === 1 ? "1 agent will continue" : `${continues.length} agents will continue`)
     : `${checks.length} agent${checks.length === 1 ? "" : "s"} waiting for verification`;
-  const check = checks[0];
-  const resume = continues[0];
+  const check = byDueAt(checks)[0];
+  const resume = byDueAt(continues)[0];
   const next = !check ? `Next at ${clockLabel(resume!.dueAt)}`
     : !resume ? `Next check at ${clockLabel(check.dueAt)}`
       : bothLabel(check.dueAt, resume.dueAt);

@@ -15,6 +15,7 @@ import {
 } from "../shared/rpc";
 import {
   bulkAction,
+  byDueAt,
   clockLabel,
   delayChoices,
   groupByDay,
@@ -51,8 +52,6 @@ function useNow(intervalMs: number): number {
   }, [intervalMs]);
   return now;
 }
-
-const byDueAt = (jobs: ScheduledJob[]) => [...jobs].sort((left, right) => left.dueAt.localeCompare(right.dueAt));
 
 function createStyles(theme: Theme, compact: boolean) {
   const { colors } = theme;
