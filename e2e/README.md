@@ -73,6 +73,7 @@ Each run writes `results.json` (one row per checked item), `daemon.log` and `mod
 | 14 | No plugin errors in the daemon log |
 | 15 | The Auto Resume screen: day sections, a row's +10m, Change time, extra instructions, Open and switch, and Turn all off/on (`--ui 1`) |
 | 16 | A reservation whose agent a daemon restart closed is continued at its due time |
+| 17 | A settings save that fails (read-only settings directory, or a conflict) shows a plain message and changes nothing; Reload and a retry recover (`--ui 1`, not on Windows or as root) |
 
 Codex and Antigravity run items 3, 6, 7, 9, 11 and 16. The fake-request total, the refused connections and the harness's longest event-loop stall (`loopMaxMs`) are printed in the final `SUMMARY` line. The harness keeps one daemon session open for the whole run, and the daemon closes a session that sends nothing for 45 seconds, so the harness must not block its event loop: it runs the `paseo` CLI asynchronously.
 

@@ -10,7 +10,9 @@ import { isProviderOn, PROMPT_MAX_CHARS, providerSettings, ProviderSettingsSchem
 import { filled, outlined } from "./button-styles";
 import { charactersLeft, promptToSave, providerHint, sortProviders } from "./format";
 import { jobsQueryKey } from "./query-keys";
+import type { SaveFailure } from "./save-failure";
 import { accentText, bodyText, dangerText, headingText, inputText, mutedText } from "./text-styles";
+import { useSaveFeedback, type SaveFeedback } from "./use-save-feedback";
 
 type ReadySettings = Extract<SettingsState<typeof ProviderSettingsSchema>, { status: "ready" }>;
 type ReadyResumeSettings = Extract<SettingsState<typeof ResumeSettingsSchema>, { status: "ready" }>;
@@ -18,7 +20,25 @@ type Theme = PluginSurfaceProps["theme"];
 
 const CLI_NAMES = { claude: "Claude", codex: "Codex", antigravity: "Antigravity", opencode: "OpenCode" } as const;
 
-function ProviderSwitches({ settings, host, theme }: { settings: ReadySettings } & Pick<PluginSurfaceProps, "host" | "theme">) {
+/** The failed save's message beside its control. Not a live region: the toast already announces it. */
+function SaveFailureNote({ failure, feedback, saving, colors }: { failure: SaveFailure | null; feedback: SaveFeedback; saving: boolean; colors: Theme["colors"] }) {
+  if (!failure) return null;
+  return (
+    <View style={{ gap: 8, paddingHorizontal: 4, flexDirection: "row", flexWrap: "wrap", alignItems: "center" }}>
+      <Text style={[dangerText(colors), { flex: 1, minWidth: 200 }]}>{failure.message}</Text>
+      {failure.reload ? (
+        <Pressable
+          accessibilityRole="button" accessibilityLabel="Reload" accessibilityState={{ disabled: saving }} disabled={saving}
+          onPress={() => void feedback.reload()} style={({ pressed }) => outlined(colors, pressed, saving)}
+        >
+          <Text style={bodyText(colors)}>Reload</Text>
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
+function ProviderSwitches({ settings, host, theme, feedback }: { settings: ReadySettings; feedback: SaveFeedback } & Pick<PluginSurfaceProps, "host" | "theme">) {
   const listProviders = useRpc(listProvidersRpc);
   const listScheduled = useRpc(listScheduledRpc);
   const toast = useToast();
@@ -37,7 +57,8 @@ function ProviderSwitches({ settings, host, theme }: { settings: ReadySettings }
   const turn = (provider: DiscoveredProvider, on: boolean) => {
     const others = settings.values.disabledProviders.filter((id) => id !== provider.id);
     const disabledProviders = on ? others : [...others, provider.id].sort();
-    void settings.save({ disabledProviders }, settings.revision).then((saved) => {
+    // The switch shows the saved value, so a failed save leaves it as it was and cancels nothing.
+    void feedback.run(provider.id, { kind: "switch", label: provider.label, on }, () => settings.save({ disabledProviders }, settings.revision)).then((saved) => {
       if (saved) toast.show(`${provider.label} turned ${on ? "on" : "off"}`, { variant: "success" });
     });
   };
@@ -90,6 +111,7 @@ function ProviderSwitches({ settings, host, theme }: { settings: ReadySettings }
                 );
               })}
             </SettingsCard>
+            <SaveFailureNote failure={rows.map((provider) => feedback.failureFor(provider.id)).find(Boolean) ?? null} feedback={feedback} saving={settings.saving} colors={theme.colors} />
           </SettingsSection>
         );
       })}
@@ -98,7 +120,7 @@ function ProviderSwitches({ settings, host, theme }: { settings: ReadySettings }
 }
 
 /** The text a continue sends. Typing keeps a draft through failed saves and other clients' changes. */
-function PromptEditor({ settings, theme }: { settings: ReadyResumeSettings; theme: Theme }) {
+function PromptEditor({ settings, theme, feedback }: { settings: ReadyResumeSettings; theme: Theme; feedback: SaveFeedback }) {
   const toast = useToast();
   const { colors } = theme;
   const saved = settings.values.continuePrompt;
@@ -108,7 +130,7 @@ function PromptEditor({ settings, theme }: { settings: ReadyResumeSettings; them
   const next = promptToSave(text);
   const changed = next !== saved;
   const savePrompt = (continuePrompt: string | null, message: string) =>
-    void settings.save({ ...settings.values, continuePrompt }, settings.revision).then((ok) => {
+    void feedback.run("prompt", { kind: "named", name: "continue prompt" }, () => settings.save({ ...settings.values, continuePrompt }, settings.revision)).then((ok) => {
       if (!ok) return;
       setDraft(null);
       toast.show(message, { variant: "success" });
@@ -135,17 +157,8 @@ function PromptEditor({ settings, theme }: { settings: ReadyResumeSettings; them
       />
       <View style={{ gap: 12, paddingVertical: 12, paddingHorizontal: 16 }}>
         <Text accessibilityLiveRegion="polite" style={mutedText(colors)}>{status}</Text>
-        {settings.saveError ? <Text accessibilityRole="alert" style={dangerText(colors)}>{settings.saveError}</Text> : null}
+        <SaveFailureNote failure={feedback.failureFor("prompt")} feedback={feedback} saving={settings.saving} colors={colors} />
         <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", gap: 8 }}>
-          {/* A conflict needs the latest revision; the typed text is kept as the draft. */}
-          {settings.saveError ? (
-            <Pressable
-              accessibilityRole="button" accessibilityLabel="Reload" accessibilityState={{ disabled: settings.saving }} disabled={settings.saving}
-              onPress={() => void settings.reload()} style={({ pressed }) => ({ ...outlined(colors, pressed, settings.saving), marginRight: "auto" })}
-            >
-              <Text style={bodyText(colors)}>Reload</Text>
-            </Pressable>
-          ) : null}
           <Pressable
             accessibilityRole="button" accessibilityLabel="Reset to default" accessibilityState={{ disabled: !canReset }}
             disabled={!canReset} onPress={reset} style={({ pressed }) => outlined(colors, pressed, !canReset)}
@@ -169,6 +182,7 @@ function PromptEditor({ settings, theme }: { settings: ReadyResumeSettings; them
 /** Read apart from the provider switches, so either one can fail without the other. */
 function ResumeSettings({ theme }: { theme: Theme }) {
   const settings = useSettings(resumeSettings);
+  const feedback = useSaveFeedback(settings);
   const { colors } = theme;
   return (
     <View style={{ gap: 16 }}>
@@ -178,27 +192,30 @@ function ResumeSettings({ theme }: { theme: Theme }) {
           <Text style={mutedText(colors)}>Sent to the agent when its reservation continues.</Text>
         </View>
         {settings.status === "ready" ? (
-          <PromptEditor settings={settings} theme={theme} />
+          <PromptEditor settings={settings} theme={theme} feedback={feedback} />
         ) : settings.status === "loading" ? (
           <Text style={{ color: colors.foreground }}>Loading the continue prompt…</Text>
         ) : (
-          <SettingsCard>
-            <SettingsAction
-              label="The continue prompt could not be read"
-              hint={`${settings.error}\nContinues send the default prompt until this is fixed.`}
-              actionLabel="Retry"
-              onPress={() => void settings.reload()}
-            />
-            {settings.status === "invalid" ? (
+          <View style={{ gap: 8 }}>
+            <SettingsCard>
               <SettingsAction
-                label="Reset the continue prompt"
-                hint="Goes back to the default prompt."
-                actionLabel="Reset"
-                disabled={settings.saving}
-                onPress={() => void settings.reset()}
+                label="The continue prompt could not be read"
+                hint={`${settings.error}\nContinues send the default prompt until this is fixed.`}
+                actionLabel="Retry"
+                onPress={() => void settings.reload()}
               />
-            ) : null}
-          </SettingsCard>
+              {settings.status === "invalid" ? (
+                <SettingsAction
+                  label="Reset the continue prompt"
+                  hint="Goes back to the default prompt."
+                  actionLabel="Reset"
+                  disabled={settings.saving}
+                  onPress={() => void feedback.run("reset", { kind: "named", name: "resume settings" }, () => settings.reset())}
+                />
+              ) : null}
+            </SettingsCard>
+            <SaveFailureNote failure={feedback.failureFor("reset")} feedback={feedback} saving={settings.saving} colors={colors} />
+          </View>
         )}
       </View>
       {settings.status === "ready" ? (
@@ -212,9 +229,10 @@ function ResumeSettings({ theme }: { theme: Theme }) {
               label="Retry after a provider overload"
               value={settings.values.overloadRetry}
               disabled={settings.saving}
-              onValueChange={(overloadRetry) => void settings.save({ ...settings.values, overloadRetry }, settings.revision)}
+              onValueChange={(overloadRetry) => void feedback.run("labs", { kind: "switch", label: "Retry after a provider overload", on: overloadRetry }, () => settings.save({ ...settings.values, overloadRetry }, settings.revision))}
             />
           </SettingsCard>
+          <SaveFailureNote failure={feedback.failureFor("labs")} feedback={feedback} saving={settings.saving} colors={colors} />
         </View>
       ) : null}
     </View>
@@ -223,6 +241,7 @@ function ResumeSettings({ theme }: { theme: Theme }) {
 
 export function ProviderSettingsScreen({ theme, host }: PluginSurfaceProps) {
   const settings = useSettings(providerSettings);
+  const feedback = useSaveFeedback(settings);
   return (
     <ScrollView
       keyboardShouldPersistTaps="handled"
@@ -230,10 +249,7 @@ export function ProviderSettingsScreen({ theme, host }: PluginSurfaceProps) {
     >
       {settings.status === "ready" ? (
         <View style={{ gap: 16 }}>
-          <ProviderSwitches settings={settings} host={host} theme={theme} />
-          {settings.saveError ? (
-            <Text accessibilityRole="alert" style={{ color: theme.colors.statusDanger }}>{settings.saveError}</Text>
-          ) : null}
+          <ProviderSwitches settings={settings} host={host} theme={theme} feedback={feedback} />
         </View>
       ) : settings.status === "loading" ? (
         <Text style={{ color: theme.colors.foreground }}>Loading provider settings…</Text>
@@ -252,10 +268,11 @@ export function ProviderSettingsScreen({ theme, host }: PluginSurfaceProps) {
                 hint="Turns every Claude, Codex, Antigravity, and OpenCode provider back on."
                 actionLabel="Reset"
                 disabled={settings.saving}
-                onPress={() => void settings.reset()}
+                onPress={() => void feedback.run("reset", { kind: "named", name: "provider settings" }, () => settings.reset())}
               />
             ) : null}
           </SettingsCard>
+          <SaveFailureNote failure={feedback.failureFor("reset")} feedback={feedback} saving={settings.saving} colors={theme.colors} />
         </SettingsSection>
       )}
       <ResumeSettings theme={theme} />

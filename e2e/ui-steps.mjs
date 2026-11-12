@@ -3,10 +3,10 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
-import { writeFile } from 'node:fs/promises';
+import { chmod, writeFile } from 'node:fs/promises';
 
 export async function uiPhase(ctx) {
-  const { step, note, rpc, mkAgent, hit, setUsage, jobOf, editJob, readJobs, readHistory, continues, writeSettings, waitFor, sleep, origin, out, API, DEFAULT_MARK } = ctx;
+  const { step, note, rpc, mkAgent, hit, setUsage, jobOf, editJob, readJobs, readHistory, continues, writeSettings, waitFor, sleep, origin, out, home, API, DEFAULT_MARK } = ctx;
   const S = 'claude-ui';
   const isWin = process.platform === 'win32';
   const pwRoot = process.env.PW_ROOT ?? (isWin ? null : process.env.HOME + '/.npm/_npx/e41f203b7505f1fb/node_modules/');
@@ -176,6 +176,76 @@ export async function uiPhase(ctx) {
       await page.getByRole('switch', { name: /Claude Sub/ }).click();
       await sleep(1500);
       return 'history canceled/provider_off right after the switch; switched back on';
+    });
+
+    // ---- item 17 in the UI: settings save failures ----------------------------------------
+    const settingsDir = join(home, 'plugin-settings', 'usage-auto-resume');
+    const u5 = await mkAgent('UI save failure', 'claude-sub');
+    const RAW = /EACCES|\.tmp\b|plugin-settings|requestType|handler_error|Request failed/;
+    const readOnlyDirs = !isWin && process.getuid?.() !== 0;
+    if (!readOnlyDirs) note(17, S, 'settings save failures', 'skipped: a read-only directory cannot be simulated on Windows or as root');
+    else await guarded(17, 'a failed settings save shows a plain message, keeps the switch and the reservation, and a retry clears it', async () => {
+      await hit(u5, 'claude');
+      await openSettings();
+      await expect(page.getByText(/1 pending reservation/)).toBeVisible({ timeout: 30000 });
+      const sw = page.getByRole('switch', { name: /Claude Sub/ });
+      await expect(sw).toBeChecked();
+      await chmod(settingsDir, 0o555);
+      try {
+        // Turn off fails: the toast and the note beside the switch say so, and nothing changed.
+        await sw.click();
+        const off = 'Couldn’t turn off Claude Sub. Try again.';
+        await expect(page.getByRole('alert').filter({ hasText: off })).toBeVisible({ timeout: 15000 });
+        await expect(page.getByText(off, { exact: true }).first()).toBeVisible();
+        await expect(sw).toBeChecked();
+        assert.doesNotMatch(await page.locator('body').innerText(), RAW);
+        await shot('ui-17-save-failed');
+        assert.ok(await jobOf(u5.id), 'reservation kept after a failed save');
+        assert.ok(!(await readHistory()).some((h) => h.agentId === u5.id && h.reason === 'provider_off'), 'no provider_off after a failed save');
+        // Writable again: the same click retries, clears the note and cancels the reservation.
+        await chmod(settingsDir, 0o755);
+        await sw.click();
+        await expect(toast('Claude Sub turned off')).toBeVisible({ timeout: 15000 });
+        await waitFor(async () => (await page.getByText(off, { exact: true }).count()) === 0, 'failure message cleared', 20000, 500);
+        await waitFor(async () => (await readHistory()).some((h) => h.agentId === u5.id && h.reason === 'provider_off'), 'provider_off', 60000, 500);
+        await sw.click();
+        await expect(toast('Claude Sub turned on')).toBeVisible({ timeout: 15000 });
+        // A save from a client whose revision is stale is a conflict: the message offers Reload.
+        await writeFile(join(settingsDir, 'providers.json'), JSON.stringify({ version: 2, values: { disabledProviders: [] } }, null, 2));
+        await sw.click();
+        const conflict = 'Settings changed elsewhere. Reload and try again.';
+        await expect(page.getByText(conflict, { exact: true }).first()).toBeVisible({ timeout: 15000 });
+        await expect(sw).toBeChecked();
+        await page.getByRole('button', { name: 'Reload', exact: true }).click();
+        await waitFor(async () => (await page.getByText(conflict, { exact: true }).count()) === 0, 'conflict message cleared', 20000, 500);
+        await sw.click();
+        await expect(toast('Claude Sub turned off')).toBeVisible({ timeout: 15000 });
+        await sw.click();
+        await expect(toast('Claude Sub turned on')).toBeVisible({ timeout: 15000 });
+        // Labs fails the same way and keeps its saved value.
+        const labs = page.getByRole('switch', { name: /Retry after a provider overload/ });
+        const labsOn = await labs.isChecked();
+        await chmod(settingsDir, 0o555);
+        await labs.click();
+        const labsMsg = `Couldn’t turn ${labsOn ? 'off' : 'on'} Retry after a provider overload. Try again.`;
+        await expect(page.getByText(labsMsg, { exact: true }).first()).toBeVisible({ timeout: 15000 });
+        labsOn ? await expect(labs).toBeChecked() : await expect(labs).not.toBeChecked();
+        // The continue prompt fails and keeps the draft.
+        const DRAFT = 'UI-DRAFT-' + Math.random().toString(36).slice(2, 7);
+        const prompt = page.getByRole('textbox', { name: 'Continue prompt' });
+        await prompt.fill(DRAFT);
+        await page.getByRole('button', { name: 'Save', exact: true }).click();
+        await expect(page.getByText('Couldn’t save the continue prompt. Try again.', { exact: true }).first()).toBeVisible({ timeout: 15000 });
+        await expect(prompt).toHaveValue(DRAFT);
+        assert.doesNotMatch(await page.locator('body').innerText(), RAW);
+        await chmod(settingsDir, 0o755);
+        await page.getByRole('button', { name: 'Reset to default' }).click().catch(() => {});
+        await sleep(1000);
+        await writeSettings('resume', 1, { continuePrompt: null });
+      } finally {
+        await chmod(settingsDir, 0o755).catch(() => {});
+      }
+      return 'friendly toast + inline message, switch and reservation unchanged, no raw path; retry turned it off; conflict offered Reload; Labs and continue prompt kept their values';
     });
 
     // ---- item 15: the Auto Resume screen ------------------------------------------------------
