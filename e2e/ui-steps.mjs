@@ -183,6 +183,8 @@ export async function uiPhase(ctx) {
     const u5 = await mkAgent('UI save failure', 'claude-sub');
     const RAW = /EACCES|\.tmp\b|plugin-settings|requestType|handler_error|Request failed/;
     const readOnlyDirs = !isWin && process.getuid?.() !== 0;
+    // The note beside the control, not the toast (the host renders toasts as alerts).
+    const inline = (text) => page.locator(`xpath=//*[normalize-space(text())="${text}" and not(ancestor-or-self::*[@role="alert"])]`);
     if (!readOnlyDirs) note(17, S, 'settings save failures', 'skipped: a read-only directory cannot be simulated on Windows or as root');
     else await guarded(17, 'a failed settings save shows a plain message, keeps the switch and the reservation, and a retry clears it', async () => {
       await hit(u5, 'claude');
@@ -197,7 +199,7 @@ export async function uiPhase(ctx) {
         const off = 'Couldn’t turn off Claude Sub. Try again.';
         await expect(page.getByRole('alert').filter({ hasText: off })).toBeVisible({ timeout: 15000 });
         await expect(page.getByRole('alert').filter({ hasText: off })).toHaveCount(1);
-        await expect(page.getByText(off, { exact: true }).first()).toBeVisible();
+        await expect(inline(off)).toBeVisible();
         await expect(sw).toBeChecked();
         assert.doesNotMatch(await page.locator('body').innerText(), RAW);
         await shot('ui-17-save-failed');
@@ -207,7 +209,7 @@ export async function uiPhase(ctx) {
         await chmod(settingsDir, 0o755);
         await sw.click();
         await expect(toast('Claude Sub turned off')).toBeVisible({ timeout: 15000 });
-        await waitFor(async () => (await page.getByText(off, { exact: true }).count()) === 0, 'failure message cleared', 20000, 500);
+        await waitFor(async () => (await inline(off).count()) === 0, 'failure message cleared', 20000, 500);
         await waitFor(async () => (await readHistory()).some((h) => h.agentId === u5.id && h.reason === 'provider_off'), 'provider_off', 60000, 500);
         await sw.click();
         await expect(toast('Claude Sub turned on')).toBeVisible({ timeout: 15000 });
@@ -215,11 +217,11 @@ export async function uiPhase(ctx) {
         await writeFile(join(settingsDir, 'providers.json'), JSON.stringify({ version: 2, values: { disabledProviders: [] } }, null, 2));
         await sw.click();
         const conflict = 'Settings changed elsewhere. Reload and try again.';
-        await expect(page.getByText(conflict, { exact: true }).first()).toBeVisible({ timeout: 15000 });
+        await expect(inline(conflict)).toBeVisible({ timeout: 15000 });
         await expect(page.getByRole('alert').filter({ hasText: conflict })).toHaveCount(1);
         await expect(sw).toBeChecked();
         await page.getByRole('button', { name: 'Reload', exact: true }).click();
-        await waitFor(async () => (await page.getByText(conflict, { exact: true }).count()) === 0, 'conflict message cleared', 20000, 500);
+        await waitFor(async () => (await inline(conflict).count()) === 0, 'conflict message cleared', 20000, 500);
         await sw.click();
         await expect(toast('Claude Sub turned off')).toBeVisible({ timeout: 15000 });
         await sw.click();
@@ -230,14 +232,14 @@ export async function uiPhase(ctx) {
         await chmod(settingsDir, 0o555);
         await labs.click();
         const labsMsg = `Couldn’t turn ${labsOn ? 'off' : 'on'} Retry after a provider overload. Try again.`;
-        await expect(page.getByText(labsMsg, { exact: true }).first()).toBeVisible({ timeout: 15000 });
+        await expect(inline(labsMsg)).toBeVisible({ timeout: 15000 });
         labsOn ? await expect(labs).toBeChecked() : await expect(labs).not.toBeChecked();
         // The continue prompt fails and keeps the draft.
         const DRAFT = 'UI-DRAFT-' + Math.random().toString(36).slice(2, 7);
         const prompt = page.getByRole('textbox', { name: 'Continue prompt' });
         await prompt.fill(DRAFT);
         await page.getByRole('button', { name: 'Save', exact: true }).click();
-        await expect(page.getByText('Couldn’t save the continue prompt. Try again.', { exact: true }).first()).toBeVisible({ timeout: 15000 });
+        await expect(inline('Couldn’t save the continue prompt. Try again.')).toBeVisible({ timeout: 15000 });
         await expect(prompt).toHaveValue(DRAFT);
         assert.doesNotMatch(await page.locator('body').innerText(), RAW);
         await chmod(settingsDir, 0o755);
