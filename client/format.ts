@@ -1,6 +1,6 @@
 import type { DiscoveredProvider, HistoryEntry, HistoryOutcome, HistoryReason, RescheduleResult, ResumeNowResult, ScheduledJob, SetNoteResult, Waiting } from "../shared/rpc";
 import { DEFAULT_CONTINUE_PROMPT } from "../shared/prompt";
-import { MAX_ATTEMPTS, RETRY_DELAYS_MS, rescheduleWindow } from "../shared/schedule";
+import { MAX_ATTEMPTS, RETRY_DELAYS_MS, rescheduleWindow, wholeMinuteAtOrAfter } from "../shared/schedule";
 
 const PROVIDER_LABELS: Record<string, string> = {
   codex: "Codex",
@@ -181,23 +181,28 @@ export function dayChoices(dueAt: string, now: number): DayChoice[] {
   return own > 1 ? [...choices, { offset: own, label: dayLabel(dueAt, now) }] : choices;
 }
 
-/** "07:30", "7:30" or "0730" on the day `offset` days from today, local time; null if unreadable. */
-export function timeOnDay(text: string, offset: number, now: number): string | null {
+/** The hours and minutes a time text names, however it is spelled; null if unreadable. */
+function parseTime(text: string): { hours: number; minutes: number } | null {
   const match = /^\s*(\d{1,2}):?(\d{2})\s*$/.exec(text);
   if (!match) return null;
   const hours = Number(match[1]);
   const minutes = Number(match[2]);
   if (hours > 23 || minutes > 59) return null;
+  return { hours, minutes };
+}
+
+/** "07:30", "7:30" or "0730" on the day `offset` days from today, local time; null if unreadable. */
+export function timeOnDay(text: string, offset: number, now: number): string | null {
+  const time = parseTime(text);
+  if (!time) return null;
   const date = new Date(now);
   date.setDate(date.getDate() + offset);
-  date.setHours(hours, minutes, 0, 0);
+  date.setHours(time.hours, time.minutes, 0, 0);
   return date.toISOString();
 }
 
-const ceilMinute = (time: number) => Math.ceil(time / 60_000) * 60_000;
-
 function tooEarlyLabel(job: ScheduledJob, earliest: number): string {
-  const at = clockLabel(new Date(ceilMinute(earliest)).toISOString());
+  const at = clockLabel(new Date(wholeMinuteAtOrAfter(earliest)).toISOString());
   return job.resetAt ? `Too early — the limit resets at ${clockLabel(job.resetAt)}. Earliest is ${at}.` : `Too early — earliest is ${at}.`;
 }
 
@@ -210,6 +215,41 @@ export function rescheduleProblem(job: ScheduledJob, dueAt: string, now: number)
   if (target < earliest) return tooEarlyLabel(job, earliest);
   if (target > latest) return TOO_LATE;
   return null;
+}
+
+/** A time editor's entry: the typed text and the chosen day, counted from today. */
+export interface TimeEntry {
+  text: string;
+  day: number;
+}
+
+/** What the time editor opens with: the reservation's own minute, on its day (today when it is already past). */
+export function timeEditorStart(job: ScheduledJob, now: number): TimeEntry {
+  return { text: clockLabel(job.dueAt), day: Math.max(0, dayOffset(job.dueAt, now)) };
+}
+
+export interface TimeEdit {
+  /** The time the editor stands for: the reservation's own, seconds and all, while unchanged; null when unreadable. */
+  dueAt: string | null;
+  /** The entry is on the opening day and names the opening hour and minute, however it is spelled. */
+  unchanged: boolean;
+  problem: string | null;
+}
+
+/**
+ * The typed time on the chosen day. Unchanged means the entry's day and its hour and minute match the
+ * opening entry's, whatever the text's spelling; it keeps the reservation's own time, seconds and all.
+ * Any other minute is checked as the server would.
+ */
+export function timeEdit(job: ScheduledJob, start: TimeEntry, entry: TimeEntry, now: number): TimeEdit {
+  const typed = parseTime(entry.text);
+  if (!typed) return { dueAt: null, unchanged: false, problem: "Enter a time like 07:30." };
+  const opened = parseTime(start.text);
+  if (opened && entry.day === start.day && typed.hours === opened.hours && typed.minutes === opened.minutes) {
+    return { dueAt: job.dueAt, unchanged: true, problem: null };
+  }
+  const dueAt = timeOnDay(entry.text, entry.day, now)!;
+  return { dueAt, unchanged: false, problem: rescheduleProblem(job, dueAt, now) };
 }
 
 const SENDING = "This agent is continuing now.";

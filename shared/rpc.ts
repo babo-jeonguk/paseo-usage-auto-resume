@@ -54,8 +54,9 @@ export const RescheduleResultSchema = z.discriminatedUnion("changed", [
     changed: z.literal(false),
     /**
      * `changed`: the job already ran, was canceled or replaced, or moved since it was shown.
-     * `sending`: the continue is being delivered. `too-early`: before `earliest` (the limit
-     * reset plus grace, or a minute from now). `too-late`: more than a week out.
+     * `sending`: the continue is being delivered. `too-early`: before the limit reset plus
+     * grace, or a minute from now; `earliest` is the first whole minute at or after that.
+     * `too-late`: more than a week out.
      */
     reason: z.enum(["changed", "sending", "too-early", "too-late"]),
     earliest: z.string().optional(),

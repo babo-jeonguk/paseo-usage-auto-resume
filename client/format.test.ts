@@ -27,6 +27,8 @@ import {
   resumeNowToast,
   sortProviders,
   summaryLabels,
+  timeEdit,
+  timeEditorStart,
   timeOnDay,
 } from "./format";
 
@@ -243,6 +245,62 @@ test("a new time before the reset or over a week out is explained before it is s
   );
   assert.equal(rescheduleProblem(job({}), new Date(2026, 9, 13, 18, 2).toISOString(), now), "Pick a time within 7 days.");
   assert.equal(rescheduleProblem(job({}), new Date(2026, 9, 13, 18, 1).toISOString(), now), null);
+});
+
+test("the time editor opens on the reservation's own minute and day", () => {
+  assert.deepEqual(timeEditorStart(job({ dueAt: new Date(2026, 9, 6, 18, 53, 27).toISOString() }), now), { text: "18:53", day: 0 });
+  assert.deepEqual(timeEditorStart(job({ dueAt: new Date(2026, 9, 9, 4, 13, 9).toISOString() }), now), { text: "04:13", day: 3 });
+});
+
+// The editor as opened at `now`, then typed into; `at` is when its state is read.
+const edit = (row: ScheduledJob, text: string, day: number, at = now) => timeEdit(row, timeEditorStart(row, now), { text, day }, at);
+
+test("a reservation's own time is never too early, even when its seconds put it before the first whole minute", () => {
+  // Planned from a reset with seconds, as an older or current plan saves it: reset 18:51:27, due 18:53:27.
+  const limited = job({ resetAt: new Date(2026, 9, 6, 18, 51, 27).toISOString(), dueAt: new Date(2026, 9, 6, 18, 53, 27).toISOString() });
+  assert.equal(
+    rescheduleProblem(limited, new Date(2026, 9, 6, 18, 53).toISOString(), now),
+    "Too early — the limit resets at 18:51. Earliest is 18:54.",
+    "18:53:00 alone is before the window",
+  );
+  assert.deepEqual(edit(limited, "18:53", 0), { dueAt: limited.dueAt, unchanged: true, problem: null });
+  assert.deepEqual(edit(limited, "1853", 0), { dueAt: limited.dueAt, unchanged: true, problem: null }, "another spelling of the same minute");
+  // A changed minute is checked: the shown earliest saves, the minute before it is refused.
+  assert.deepEqual(edit(limited, "18:54", 0), { dueAt: new Date(2026, 9, 6, 18, 54).toISOString(), unchanged: false, problem: null });
+  assert.deepEqual(edit(limited, "18:52", 0), {
+    dueAt: new Date(2026, 9, 6, 18, 52).toISOString(),
+    unchanged: false,
+    problem: "Too early — the limit resets at 18:51. Earliest is 18:54.",
+  });
+  // Only the day changed: the same text on another day is a new time and is checked as one.
+  assert.deepEqual(edit(limited, "18:53", 1), { dueAt: new Date(2026, 9, 7, 18, 53).toISOString(), unchanged: false, problem: null });
+  assert.deepEqual(edit(limited, "7.30", 0), { dueAt: null, unchanged: false, problem: "Enter a time like 07:30." });
+});
+
+test("an overload retry's jittered time and a verification check within the minute open as valid", () => {
+  const retry = job({ kind: "overload", dueAt: new Date(2026, 9, 6, 17, 1, 41, 512).toISOString() });
+  assert.deepEqual(edit(retry, "17:01", 0), { dueAt: retry.dueAt, unchanged: true, problem: null }, "the jitter is kept, not resampled or rounded");
+  const check = job({ waiting: "usage", dueAt: new Date(2026, 9, 6, 17, 1, 30).toISOString() });
+  assert.deepEqual(edit(check, "17:01", 0), { dueAt: check.dueAt, unchanged: true, problem: null });
+  assert.equal(edit(check, "17:00", 0).problem, "Too early — earliest is 17:02.");
+});
+
+test("an untouched editor stays unchanged after midnight passes while it is open", () => {
+  // Opened at 23:59:55 for 00:30:27 tomorrow; read again five seconds after midnight.
+  const opened = new Date(2026, 9, 6, 23, 59, 55).getTime();
+  const late = job({ dueAt: new Date(2026, 9, 7, 0, 30, 27).toISOString() });
+  const start = timeEditorStart(late, opened);
+  assert.deepEqual(start, { text: "00:30", day: 1 });
+  assert.deepEqual(timeEdit(late, start, start, new Date(2026, 9, 7, 0, 0, 5).getTime()), { dueAt: late.dueAt, unchanged: true, problem: null });
+});
+
+test("a reservation already past, even from yesterday, opens unchanged and saves as is", () => {
+  const overdue = job({ dueAt: new Date(2026, 9, 5, 18, 53, 27).toISOString() });
+  assert.deepEqual(timeEditorStart(overdue, now), { text: "18:53", day: 0 });
+  assert.deepEqual(edit(overdue, "18:53", 0), { dueAt: overdue.dueAt, unchanged: true, problem: null });
+  assert.deepEqual(edit(overdue, "18:53", 0, new Date(2026, 9, 6, 19, 0).getTime()), { dueAt: overdue.dueAt, unchanged: true, problem: null }, "after today's 18:53 too");
+  // Typed into, it is a new time today, checked as one.
+  assert.deepEqual(edit(overdue, "18:54", 0), { dueAt: new Date(2026, 9, 6, 18, 54).toISOString(), unchanged: false, problem: null });
 });
 
 test("the server's refusals read the same way", () => {

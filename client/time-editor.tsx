@@ -3,7 +3,7 @@ import { Icon, TextInput } from "@getpaseo/plugin/client/react-native";
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { ScheduledJob } from "../shared/rpc";
-import { clockLabel, dayChoices, dayOffset, relativeLabel, relativeSpoken, rescheduleProblem, timeOnDay } from "./format";
+import { dayChoices, relativeLabel, relativeSpoken, timeEdit, timeEditorStart } from "./format";
 import { SpokenText } from "./spoken-text";
 
 type Theme = PluginScreenProps["theme"];
@@ -45,7 +45,7 @@ function createTimeEditorStyles(theme: Theme, compact: boolean) {
   };
 }
 
-/** Replaces the time line while a time is typed; the server still has the final say. */
+/** Replaces the time line while a time is typed. It opens on the reservation's own time, which saves as is; the server has the final say on any other. */
 export function TimeEditor(props: {
   job: ScheduledJob;
   now: number;
@@ -61,13 +61,16 @@ export function TimeEditor(props: {
   const { job, now, theme } = props;
   const styles = createTimeEditorStyles(theme, props.compact);
   const choices = dayChoices(job.dueAt, now);
-  const [text, setText] = useState(() => clockLabel(job.dueAt));
-  const [day, setDay] = useState(() => Math.max(0, dayOffset(job.dueAt, now)));
-  const dueAt = timeOnDay(text, day, now);
-  const problem = dueAt ? rescheduleProblem(job, dueAt, now) : "Enter a time like 07:30.";
+  const [start] = useState(() => timeEditorStart(job, now));
+  const [text, setText] = useState(start.text);
+  const [day, setDay] = useState(start.day);
+  const { dueAt, unchanged, problem } = timeEdit(job, start, { text, day }, now);
   const blocked = !!problem || !!props.locked;
   const save = () => {
-    if (dueAt && !blocked) props.onSave(dueAt);
+    if (blocked) return;
+    // The reservation's own time: nothing moves and nothing is recorded, so saving only closes the editor.
+    if (unchanged) props.onCancel();
+    else if (dueAt) props.onSave(dueAt);
   };
   // A third day (a weekly reset) does not fit beside the field and buttons on a phone.
   const daysBelow = props.stackDays || (props.compact && choices.length > 2);

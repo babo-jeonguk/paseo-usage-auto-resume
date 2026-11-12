@@ -674,9 +674,9 @@ export function createResumer(options: {
         return undefined;
       }
       if (!current) return undefined;
-      const { earliest, latest } = rescheduleWindow(current.resetAt, at.getTime());
+      const { earliest, earliestMinute, latest } = rescheduleWindow(current.resetAt, at.getTime());
       if (target.getTime() < earliest) {
-        result = { changed: false, reason: "too-early", earliest: new Date(earliest).toISOString() };
+        result = { changed: false, reason: "too-early", earliest: new Date(earliestMinute).toISOString() };
         return undefined;
       }
       if (target.getTime() > latest) {

@@ -1658,6 +1658,26 @@ test("without a known reset, the earliest new time is a minute from now", async 
   assert.equal((await resumer.reschedule("a1", await pinOf(store, "a1", "2026-10-06T03:15:00.000Z"), "2026-10-06T03:01:00.000Z")).changed, true);
 });
 
+test("a reset with seconds is refused before its first whole minute and accepted at it", async () => {
+  const { resumer } = await setup({});
+  const dueAt = "2026-10-06T03:07:27.000Z";
+  await store.update("a1", () => ({
+    agentId: "a1", provider: "codex", resetAt: "2026-10-06T03:05:27.000Z", dueAt,
+    baseline: null, attempts: 0, state: "pending", enabled: true, retries: 0,
+  }));
+
+  assert.deepEqual(await resumer.reschedule("a1", await pinOf(store, "a1", dueAt), "2026-10-06T03:07:00.000Z"), {
+    changed: false,
+    reason: "too-early",
+    earliest: "2026-10-06T03:08:00.000Z",
+  });
+  assert.deepEqual(await resumer.reschedule("a1", await pinOf(store, "a1", dueAt), "2026-10-06T03:08:00.000Z"), {
+    changed: true,
+    dueAt: "2026-10-06T03:08:00.000Z",
+  });
+  assert.equal((await store.list())[0]?.dueAt, "2026-10-06T03:08:00.000Z");
+});
+
 test("rescheduling a job that moved, ran, or is being sent reports why nothing changed", async () => {
   const { api, resumer } = await setup({ a1: { provider: "codex" } });
   await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);

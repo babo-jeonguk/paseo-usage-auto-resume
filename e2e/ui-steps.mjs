@@ -97,6 +97,47 @@ export async function uiPhase(ctx) {
       return `${seen.join(', ')}, then Change time -> ${(await jobOf(u1.id)).dueAt} (typed ${hhmm(target)}); each moved the reservation's own due time`;
     });
 
+    // A due time with seconds, as a reset with seconds plans it: the typed hh:mm:00 alone is before reset + 2 minutes.
+    await guarded(4, 'composer Change time opens clean on a due time with seconds; Cancel and unchanged Save move nothing; the shown earliest saves', async () => {
+      const due = Math.floor((Date.now() + 40 * 60000) / 60000) * 60000 + 27000;
+      const first = Math.ceil(due / 60000) * 60000;
+      // Off, so a save that wrongly went to the server would also show up as turned on.
+      await editJob(u1.id, { resetAt: iso(due - 120000), dueAt: iso(due), enabled: false });
+      await openConversation(u1);
+      const panel = await openPanel(u1);
+      await expect(panel.getByText(hhmm(due), { exact: true })).toBeVisible({ timeout: 30000 });
+      await panel.getByRole('button', { name: 'Change time', exact: true }).click();
+      const box = panel.getByRole('textbox', { name: /^New time for / });
+      const save = panel.getByRole('button', { name: 'Save time', exact: true });
+      // Before any edit: the reservation's own time, no error, Save on.
+      await expect(box).toHaveValue(hhmm(due));
+      await expect(panel.getByText(/^Too early/)).toHaveCount(0);
+      await expect(save).toBeEnabled();
+      await shot('ui-2b-editor-unchanged');
+      await panel.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await expect(box).toBeHidden({ timeout: 15000 });
+      await panel.getByRole('button', { name: 'Change time', exact: true }).click();
+      await expect(save).toBeEnabled();
+      await save.click();
+      await expect(box).toBeHidden({ timeout: 15000 });
+      await sleep(2000);
+      const kept = await jobOf(u1.id);
+      assert.equal(kept.dueAt, iso(due), 'Cancel and an unchanged save keep the due time, seconds and all');
+      assert.equal(kept.enabled, false, 'an unchanged save does not turn the reservation on');
+      await expect(toast('Resume time updated')).toHaveCount(0);
+      // A minute before the reservation's own is refused with the first whole minute; that minute saves.
+      await panel.getByRole('button', { name: 'Change time', exact: true }).click();
+      await box.fill(hhmm(due - 60000));
+      await expect(panel.getByText(`Too early — the limit resets at ${hhmm(due - 120000)}. Earliest is ${hhmm(first)}.`, { exact: true })).toBeVisible({ timeout: 10000 });
+      await expect(save).toBeDisabled();
+      await box.fill(hhmm(first));
+      await expect(save).toBeEnabled();
+      await save.click();
+      await waitFor(async () => (await jobOf(u1.id)).dueAt === iso(first), 'earliest whole minute saved', 20000, 300);
+      assert.equal((await jobOf(u1.id)).enabled, true, 'a changed time turns the reservation on');
+      return `opened on ${hhmm(due)} (${iso(due)}) with Save on and no error; Cancel and unchanged Save kept it off at that time; ${hhmm(due - 60000)} refused, earliest ${hhmm(first)} saved and turned on`;
+    });
+
     // ---- item 5 in the UI: extra instructions + custom prompt --------------------------------
     const u2 = await mkAgent('UI note and prompt');
     await guarded(5, 'extra instructions (composer) + custom continue prompt (settings) are sent together; note deleted', async () => {
@@ -356,6 +397,38 @@ export async function uiPhase(ctx) {
       await shot('ui-8-screen-row');
       assert.deepEqual(await jobOf(r2.id), other, 'the other reservation changed');
       return `+10m -> ${bumped.slice(11, 16)}Z, Change time -> ${(await jobOf(r1.id)).dueAt} (typed ${hhmm(target)}), note ${NOTE} shown on the row; "${T2}" unchanged`;
+    });
+
+    // The sidebar row shares the composer's editor: the same due time with seconds opens clean there too.
+    await guarded(15, 'screen row Change time opens clean on a due time with seconds; Cancel and unchanged Save move nothing', async () => {
+      const saved = await jobOf(r1.id);
+      const due = Math.floor((Date.now() + 50 * 60000) / 60000) * 60000 + 27000;
+      await editJob(r1.id, { resetAt: iso(due - 120000), dueAt: iso(due), enabled: false });
+      try {
+        await openScreen();
+        const open = page.getByRole('button', { name: `Change time for ${T1}, now ${hhmm(due)}`, exact: true });
+        await open.click({ timeout: 30000 });
+        const box = page.getByRole('textbox', { name: `New time for ${T1}`, exact: true });
+        const save = page.getByRole('button', { name: 'Save time', exact: true });
+        await expect(box).toHaveValue(hhmm(due));
+        await expect(page.getByText(/^Too early/)).toHaveCount(0);
+        await expect(save).toBeEnabled();
+        await shot('ui-8b-screen-editor-unchanged');
+        await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+        await expect(box).toBeHidden({ timeout: 15000 });
+        await open.click();
+        await expect(save).toBeEnabled();
+        await save.click();
+        await expect(box).toBeHidden({ timeout: 15000 });
+        await sleep(2000);
+        const kept = await jobOf(r1.id);
+        assert.equal(kept.dueAt, iso(due), 'Cancel and an unchanged save keep the due time, seconds and all');
+        assert.equal(kept.enabled, false, 'an unchanged save does not turn the reservation on');
+        return `row opened on ${hhmm(due)} (${iso(due)}) with Save on and no error; Cancel and unchanged Save kept it off at that time`;
+      } finally {
+        await editJob(r1.id, { resetAt: saved.resetAt, dueAt: saved.dueAt, enabled: saved.enabled });
+        await waitFor(async () => (await jobOf(r1.id))?.dueAt === saved.dueAt, `${T1} restored`, 20000, 300);
+      }
     });
 
     await guarded(15, 'screen row Open goes to its conversation', async () => {

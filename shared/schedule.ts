@@ -11,14 +11,22 @@ export const RETRY_DELAYS_MS = [15, 30, 60].map((minutes) => minutes * 60_000);
 /** Bounds actual automatic continues; read-only verification checks do not consume retries. */
 export const MAX_ATTEMPTS = 24;
 
+/** The first whole minute at or after `time`; a typed time has no seconds, so this is the earliest one a user can enter. */
+export function wholeMinuteAtOrAfter(time: number): number {
+  return Math.ceil(time / 60_000) * 60_000;
+}
+
 /**
  * The times a user may move a job to. Sending before the reset would only hit the limit
  * again, so the earliest is the reset plus grace, and never sooner than a minute from now.
+ * `earliestMinute` is the first whole minute at or after it: the earliest time an editor shows or offers.
  */
-export function rescheduleWindow(resetAt: string | null, now: number): { earliest: number; latest: number } {
+export function rescheduleWindow(resetAt: string | null, now: number): { earliest: number; earliestMinute: number; latest: number } {
   const soonest = now + MIN_DELAY_MS;
+  const earliest = resetAt ? Math.max(soonest, Date.parse(resetAt) + GRACE_MS) : soonest;
   return {
-    earliest: resetAt ? Math.max(soonest, Date.parse(resetAt) + GRACE_MS) : soonest,
+    earliest,
+    earliestMinute: wholeMinuteAtOrAfter(earliest),
     latest: now + MAX_AHEAD_MS,
   };
 }
