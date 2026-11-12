@@ -88,6 +88,8 @@ interface FakeOptions {
   claudeAliasEnv?: Record<string, string>;
   readSettings?: () => Promise<ProviderSettings | null>;
   readResumeSettings?: () => Promise<ResumeSettings | null>;
+  /** Paseo's provider snapshot, read on each call; without it the snapshot lists no providers. */
+  providerSnapshot?: () => Array<{ provider: string; label?: string }>;
 }
 
 /** Daemon stand-in: agent snapshots by ID, recorded sends, and no way to create agents. */
@@ -170,6 +172,7 @@ function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOption
       }),
     },
     providers: {
+      snapshot: async () => ({ entries: options.providerSnapshot?.() ?? [] }),
       listUsage: async () => {
         usageReads += 1;
         await options.duringListUsage?.();
@@ -1957,6 +1960,78 @@ test("history marks an archived agent so its conversation is not offered to open
     { agentId: "a2", workspaceId: "w2", archived: false },
     { agentId: "a1", workspaceId: "w1", archived: true },
   ]);
+});
+
+test("list and history name a provider by its current label in Paseo, keeping its ID", async () => {
+  const { api, resumer, agents } = await setup(
+    { a1: { provider: "codex-reserve", title: "Fix login", workspaceId: "w1" } },
+    { providerSnapshot: () => [{ provider: "codex-reserve", label: "Codex Reserve" }] },
+  );
+  await resumer.onTurnEnded(turnEnded("a1", "codex-reserve", failed(CODEX_LIMIT)), api);
+  const [shown] = await resumer.listScheduled(api);
+  assert.equal(shown?.provider, "codex-reserve");
+  assert.equal(shown?.providerLabel, "Codex Reserve");
+  assert.equal("providerLabel" in (await store.list())[0]!, false, "the label is not stored");
+
+  agents.set("a1", { provider: "codex-reserve", title: "Fix login", workspaceId: "w1", lastUserMessageAt: "2026-10-06T03:30:00.000Z" });
+  await resumer.onTurnStarted("a1", api);
+  const [row] = await resumer.listHistory(api);
+  assert.equal(row?.provider, "codex-reserve");
+  assert.equal(row?.providerLabel, "Codex Reserve");
+  assert.equal("providerLabel" in (await history.list())[0]!, false, "the label is not stored");
+});
+
+test("a renamed provider shows its new label on the next refresh", async () => {
+  let label = "Codex Reserve";
+  const { api, resumer } = await setup(
+    { a1: { provider: "codex-reserve" } },
+    { providerSnapshot: () => [{ provider: "codex-reserve", label }] },
+  );
+  await resumer.onTurnEnded(turnEnded("a1", "codex-reserve", failed(CODEX_LIMIT)), api);
+  assert.equal((await resumer.listScheduled(api))[0]?.providerLabel, "Codex Reserve");
+  label = "Codex Work";
+  assert.equal((await resumer.listScheduled(api))[0]?.providerLabel, "Codex Work");
+});
+
+test("a provider Paseo no longer lists, or an unreadable snapshot, leaves rows without a label", async () => {
+  const listed = await setup(
+    { a1: { provider: "codex-reserve" } },
+    { providerSnapshot: () => [] },
+  );
+  await listed.resumer.onTurnEnded(turnEnded("a1", "codex-reserve", failed(CODEX_LIMIT)), listed.api);
+  const [shown] = await listed.resumer.listScheduled(listed.api);
+  assert.equal(shown?.provider, "codex-reserve");
+  assert.equal("providerLabel" in shown!, false);
+
+  const broken = await setup(
+    { a2: { provider: "codex-reserve" } },
+    { providerSnapshot: () => { throw new Error("daemon busy"); } },
+  );
+  await broken.resumer.onTurnEnded(turnEnded("a2", "codex-reserve", failed(CODEX_LIMIT)), broken.api);
+  const [brokenShown] = await broken.resumer.listScheduled(broken.api);
+  assert.equal(brokenShown?.provider, "codex-reserve");
+  assert.equal("providerLabel" in brokenShown!, false);
+
+  broken.agents.set("a2", { provider: "codex-reserve", lastUserMessageAt: "2026-10-06T03:30:00.000Z" });
+  await broken.resumer.onTurnStarted("a2", broken.api);
+  const [row] = await broken.resumer.listHistory(broken.api);
+  assert.equal(row?.provider, "codex-reserve");
+  assert.equal("providerLabel" in row!, false);
+});
+
+test("a missing or blank provider label is left off the row", async () => {
+  for (const label of [undefined, "  "]) {
+    clock = START;
+    const { api, resumer } = await setup(
+      { a1: { provider: "codex-reserve" } },
+      { providerSnapshot: () => [{ provider: "codex-reserve", label }] },
+    );
+    await resumer.onTurnEnded(turnEnded("a1", "codex-reserve", failed(CODEX_LIMIT)), api);
+    const [shown] = await resumer.listScheduled(api);
+    assert.equal(shown?.provider, "codex-reserve", String(label));
+    assert.equal("providerLabel" in shown!, false, String(label));
+    await store.update("a1", () => null);
+  }
 });
 
 test("a history that cannot be written never stops a continue", async () => {

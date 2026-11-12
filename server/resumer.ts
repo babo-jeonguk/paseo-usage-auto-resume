@@ -11,7 +11,7 @@ import type { JobStore, ResumeJob } from "./store";
 import { captureLaunch, createSubscriptionReader, subscriptionModel, unknownCheck, type LaunchContext, type SubscriptionCheck, type SubscriptionReader } from "./subscription";
 import { RETRY_DELAYS_MS, rescheduleWindow } from "../shared/schedule";
 import { DEFAULT_PROVIDER_SETTINGS, DEFAULT_RESUME_SETTINGS, isProviderOn, type ProviderSettings, type ResumeSettings, type UsageSource } from "../shared/settings";
-import { cliFor } from "./providers";
+import { cliFor, providerLabels } from "./providers";
 import { isExhausted } from "./quota";
 import { continuePrompt, DEFAULT_CONTINUE_PROMPT } from "../shared/prompt";
 
@@ -556,17 +556,20 @@ export function createResumer(options: {
   /** Jobs still ahead, with the agent's title and project for display. */
   async function listScheduled(api: ResumerApi): Promise<ScheduledJob[]> {
     const jobs = (await store.list()).filter((job) => job.state === "pending" || job.state === "sending");
+    const labels = providerLabels(api);
     const rows = await Promise.all(
       jobs.map(async (job): Promise<ScheduledJob> => {
         const loaded = await api.agents
           .ref(job.agentId)
           .refresh()
           .catch(() => null);
+        const label = (await labels).get(job.provider);
         return {
           ...(job.kind ? { kind: job.kind } : {}),
           id: job.id,
           agentId: job.agentId,
           provider: job.provider,
+          ...(label ? { providerLabel: label } : {}),
           workspaceId: loaded?.agent.workspaceId ?? null,
           title: loaded ? titleOf(loaded.agent) : null,
           projectName: loaded?.project?.projectName ?? null,
@@ -586,15 +589,19 @@ export function createResumer(options: {
   /** Recent results, newest first, named and placed by the live agent when it still exists. */
   async function listHistory(api: ResumerApi): Promise<HistoryRow[]> {
     const entries = await history.list();
+    const labels = providerLabels(api);
     const ids = [...new Set(entries.map((entry) => entry.agentId))];
     const agents = new Map(await Promise.all(ids.map(async (id) => {
       const loaded = await api.agents.ref(id).refresh().catch(() => null);
       return [id, loaded?.agent ?? null] as const;
     })));
+    const labelOf = await labels;
     return entries.map((entry) => {
       const agent = agents.get(entry.agentId);
+      const label = labelOf.get(entry.provider);
       return {
         ...entry,
+        ...(label ? { providerLabel: label } : {}),
         title: (agent && titleOf(agent)) || entry.title,
         workspaceId: agent?.workspaceId ?? null,
         archived: !!agent?.archivedAt,
