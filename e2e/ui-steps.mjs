@@ -331,9 +331,11 @@ export async function uiPhase(ctx) {
 
     await guarded(15, 'header names an earlier verification check before the next continue, matching row order', async () => {
       const saved = await jobOf(r2.id);
-      const due1 = Date.parse((await jobOf(r1.id)).dueAt);
-      // A check five minutes before T1's continue; still in the future, so no tick acts on it.
-      const checkAt = due1 - 5 * 60000;
+      // Five minutes before the earliest enabled pending continue, whatever earlier steps left behind; still in the future, so no tick acts on it.
+      const conts = (await readJobs()).filter((j) => j.agentId !== r2.id && j.state === 'pending' && j.enabled && !j.waiting).sort((a, b) => a.dueAt.localeCompare(b.dueAt));
+      assert.ok(conts[0], 'no enabled pending continue to seed the check before');
+      const checkAt = Date.parse(conts[0].dueAt) - 5 * 60000;
+      assert.ok(checkAt > Date.now() + 2 * 60000, `earliest continue ${conts[0].dueAt} is too close to now for a check 5 minutes before it to stay in the future`);
       await editJob(r2.id, { waiting: 'usage', resetAt: null, dueAt: iso(checkAt) });
       try {
         await openScreen();
