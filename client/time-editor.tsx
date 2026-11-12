@@ -3,7 +3,7 @@ import { Icon, TextInput } from "@getpaseo/plugin/client/react-native";
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { ScheduledJob } from "../shared/rpc";
-import { clockLabel, dayChoices, dayOffset, relativeLabel, rescheduleProblem, timeOnDay } from "./format";
+import { clockLabel, dayChoices, dayOffset, relativeLabel, relativeSpoken, rescheduleProblem, timeOnDay } from "./format";
 
 type Theme = PluginScreenProps["theme"];
 
@@ -140,7 +140,9 @@ export function TimeEditor(props: {
           {problem}
         </Text>
       ) : (
-        <Text style={styles.editHint}>{job.waiting ? "Checks again" : "Continues"} {relativeLabel(dueAt!, now)}.</Text>
+        <Text style={styles.editHint} accessibilityLabel={`${job.waiting ? "Checks again" : "Continues"} ${relativeSpoken(dueAt!, now)}.`}>
+          {job.waiting ? "Checks again" : "Continues"} {relativeLabel(dueAt!, now)}.
+        </Text>
       )}
     </View>
   );

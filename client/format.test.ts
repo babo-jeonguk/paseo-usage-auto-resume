@@ -22,6 +22,7 @@ import {
   providerLabel,
   refusalLabel,
   relativeLabel,
+  relativeSpoken,
   rescheduleProblem,
   resumeNowToast,
   sortProviders,
@@ -43,6 +44,10 @@ const job = (overrides: Partial<ScheduledJob>): ScheduledJob => ({
   ...overrides,
 });
 const now = new Date(2026, 9, 6, 17, 1).getTime();
+const MIN = 60_000;
+const HOUR = 60 * MIN;
+/** `ms` after `now`, as a due time. */
+const after = (ms: number) => new Date(now + ms).toISOString();
 
 test("composer labels distinguish off, sending, verification and later calendar days", () => {
   assert.equal(composerLabel(job({}), now), "Resume 18:53");
@@ -59,6 +64,39 @@ test("countdowns round up to the minute", () => {
   assert.equal(relativeLabel(new Date(2026, 9, 6, 17, 30, 30).toISOString(), now), "in 30m");
   assert.equal(relativeLabel(new Date(2026, 9, 6, 19, 1).toISOString(), now), "in 2h");
   assert.equal(relativeLabel(new Date(2026, 9, 6, 16, 0).toISOString(), now), "now");
+});
+
+test("countdowns of a day or more switch to days and hours, rounded up to the hour", () => {
+  assert.equal(relativeLabel(after(0), now), "now");
+  assert.equal(relativeLabel(after(-5 * MIN), now), "now");
+  assert.equal(relativeLabel(after(1 * MIN), now), "in 1m");
+  assert.equal(relativeLabel(after(59 * MIN), now), "in 59m");
+  assert.equal(relativeLabel(after(60 * MIN), now), "in 1h");
+  assert.equal(relativeLabel(after(23 * HOUR + 59 * MIN), now), "in 23h 59m");
+  assert.equal(relativeLabel(after(24 * HOUR), now), "in 1d");
+  assert.equal(relativeLabel(after(24 * HOUR + 1 * MIN), now), "in 1d 1h");
+  assert.equal(relativeLabel(after(26 * HOUR + 2 * MIN), now), "in 1d 3h");
+  assert.equal(relativeLabel(after(47 * HOUR + 30 * MIN), now), "in 2d");
+  assert.equal(relativeLabel(after(72 * HOUR), now), "in 3d");
+  assert.equal(relativeLabel(after(167 * HOUR + 59 * MIN), now), "in 7d");
+  assert.equal(relativeLabel(after(168 * HOUR), now), "in 7d");
+  assert.equal(relativeLabel(after(168 * HOUR + 1 * MIN), now), "in 7d 1h");
+  assert.equal(relativeLabel(after(168 * HOUR + 59 * MIN), now), "in 7d 1h");
+  assert.equal(relativeLabel(after(169 * HOUR), now), "in 7d 1h");
+  // Seconds round the minute up first, which carries 23h 59m 30s over the day boundary.
+  assert.equal(relativeLabel(after(23 * HOUR + 59 * MIN + 30_000), now), "in 1d");
+});
+
+test("spoken countdowns use whole words for the same days, hours and minutes", () => {
+  assert.equal(relativeSpoken(after(0), now), "now");
+  assert.equal(relativeSpoken(after(1 * MIN), now), "in 1 minute");
+  assert.equal(relativeSpoken(after(25 * MIN), now), "in 25 minutes");
+  assert.equal(relativeSpoken(after(60 * MIN), now), "in 1 hour");
+  assert.equal(relativeSpoken(after(2 * HOUR + 2 * MIN), now), "in 2 hours 2 minutes");
+  assert.equal(relativeSpoken(after(24 * HOUR), now), "in 1 day");
+  assert.equal(relativeSpoken(after(26 * HOUR + 2 * MIN), now), "in 1 day 3 hours");
+  assert.equal(relativeSpoken(after(168 * HOUR), now), "in 7 days");
+  assert.equal(relativeSpoken(after(168 * HOUR + 59 * MIN), now), "in 7 days 1 hour");
 });
 
 test("days are named relative to today", () => {

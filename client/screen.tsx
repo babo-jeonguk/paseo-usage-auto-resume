@@ -26,6 +26,7 @@ import {
   providerLabel,
   refusalLabel,
   relativeLabel,
+  relativeSpoken,
   SCHEDULE_CHANGED,
   summaryLabels,
   waitingLabel,
@@ -223,8 +224,10 @@ function JobRow(props: {
   // The row offers only the first delay; the composer offers all of them.
   const bump = delayChoices(job, now)[0]!;
   const bumpUnavailable = busy || !!bump.problem;
-  const countdown = job.kind === "overload" ? `Retry ${relativeLabel(job.dueAt, now)}` : job.resetAt ? relativeLabel(job.dueAt, now) : `${relativeLabel(job.dueAt, now)} · reset unknown`;
-  const status = busy ? "Continuing…" : on ? waitingLabel(job) ?? countdown : "Skipped";
+  // `left` is the time until the due time: compact on screen, in words for screen readers.
+  const statusLine = (left: string) =>
+    busy ? "Continuing…" : on ? waitingLabel(job) ?? (job.kind === "overload" ? `Retry ${left}` : job.resetAt ? left : `${left} · reset unknown`) : "Skipped";
+  const status = statusLine(relativeLabel(job.dueAt, now));
   const resetSpoken = job.kind === "overload" ? "overload retry" : job.resetAt ? `limit resets at ${clockLabel(job.resetAt)}` : "reset time unknown, checks again";
   // Beside the other controls on wide layouts; on a phone it ends the title line instead, so
   // the time and title keep the width they had.
@@ -268,7 +271,7 @@ function JobRow(props: {
               >
                 <Text style={[styles.time, { color: tone }, timeLocked ? null : styles.timeEditable]}>{clockLabel(job.dueAt)}</Text>
               </Pressable>
-              <Text style={styles.relative}>{status}</Text>
+              <Text style={styles.relative} accessibilityLabel={statusLine(relativeSpoken(job.dueAt, now))}>{status}</Text>
             </View>
           )}
           <View style={styles.titleLine}>

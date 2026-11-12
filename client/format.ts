@@ -40,13 +40,32 @@ export function clockLabel(iso: string): string {
   return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+/**
+ * Days, hours and minutes left until `iso`, never less than the real wait; null once it is due.
+ * Rounded up to the minute, and from a day on up to the hour, so a weekly reset reads "in 7d 1h", not "in 7d".
+ */
+function timeLeft(iso: string, now: number): { days: number; hours: number; minutes: number } | null {
+  const total = Math.ceil((Date.parse(iso) - now) / 60_000);
+  if (total <= 0) return null;
+  if (total < 24 * 60) return { days: 0, hours: Math.floor(total / 60), minutes: total % 60 };
+  const hours = Math.ceil(total / 60);
+  return { days: Math.floor(hours / 24), hours: hours % 24, minutes: 0 };
+}
+
+/** Time left until `iso`: "in 25m", "in 2h 2m", then "in 1d 2h" from a day on. */
 export function relativeLabel(iso: string, now: number): string {
-  const minutes = Math.ceil((Date.parse(iso) - now) / 60_000);
-  if (minutes <= 0) return "now";
-  if (minutes < 60) return `in ${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  return rest ? `in ${hours}h ${rest}m` : `in ${hours}h`;
+  const left = timeLeft(iso, now);
+  if (!left) return "now";
+  return `in ${[left.days && `${left.days}d`, left.hours && `${left.hours}h`, left.minutes && `${left.minutes}m`].filter(Boolean).join(" ")}`;
+}
+
+const spokenUnit = (count: number, unit: string) => (count ? `${count} ${unit}${count === 1 ? "" : "s"}` : null);
+
+/** `relativeLabel` in words, for screen readers: "in 25 minutes", "in 7 days 1 hour". */
+export function relativeSpoken(iso: string, now: number): string {
+  const left = timeLeft(iso, now);
+  if (!left) return "now";
+  return `in ${[spokenUnit(left.days, "day"), spokenUnit(left.hours, "hour"), spokenUnit(left.minutes, "minute")].filter(Boolean).join(" ")}`;
 }
 
 function startOfDay(time: number): number {

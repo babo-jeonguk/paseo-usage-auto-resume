@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { listScheduledRpc, rescheduleRpc, resumeNowRpc, setEnabledRpc, type ScheduledJob } from "../shared/rpc";
-import { clockLabel, dayLabel, delayChoices, notePreview, RESUME_NOW_UNFINISHED, refusalLabel, relativeLabel, resumeNowToast, SCHEDULE_CHANGED, waitingLabel } from "./format";
+import { clockLabel, dayLabel, delayChoices, notePreview, RESUME_NOW_UNFINISHED, refusalLabel, relativeLabel, relativeSpoken, resumeNowToast, SCHEDULE_CHANGED, waitingLabel } from "./format";
 import { editorLocks } from "./edit-session";
 import { NoteEditor } from "./note-editor";
 import { historyQueryKey, jobsQueryKey } from "./query-keys";
@@ -135,9 +135,10 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
                 <Icon name="Pencil" size={16} color={colors.foregroundMuted} />
               </Pressable>
             </View>
-            <Text style={muted}>{job.sending ? "Continuing…" : !job.enabled ? "Off"
-              : waitingLabel(job) ?? `${job.kind === "overload" ? "Retries" : "Continues"} ${relativeLabel(job.dueAt, now)}`}</Text>
-            {job.waiting ? <Text style={muted}>Next check {relativeLabel(job.dueAt, now)}</Text> : null}
+            <Text style={muted} accessibilityLabel={stateLine(job, relativeSpoken(job.dueAt, now))}>{stateLine(job, relativeLabel(job.dueAt, now))}</Text>
+            {job.waiting ? (
+              <Text style={muted} accessibilityLabel={`Next check ${relativeSpoken(job.dueAt, now)}`}>Next check {relativeLabel(job.dueAt, now)}</Text>
+            ) : null}
             <View style={{ flexDirection: "row", gap: 6, marginTop: 6 }}>
               {delayChoices(job, now).map((choice) => {
                 const unavailable = changeLocked || !!choice.problem;
@@ -185,6 +186,11 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
       </>}
     </View>
   );
+}
+
+/** The panel's state line; `left` is the time until the due time, compact on screen or in words for screen readers. */
+function stateLine(job: ScheduledJob, left: string): string {
+  return job.sending ? "Continuing…" : !job.enabled ? "Off" : waitingLabel(job) ?? `${job.kind === "overload" ? "Retries" : "Continues"} ${left}`;
 }
 
 /** Resume now asks once more in place: a sent continue cannot be taken back, and the delays sit right above. */
