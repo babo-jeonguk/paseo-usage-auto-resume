@@ -128,7 +128,36 @@ test("verification checks are displayed separately from promised continues", () 
     title: "1 agent waiting for verification", detail: "Next check at 18:53",
   });
   assert.deepEqual(summaryLabels([job({ waiting: "auth" }), job({ dueAt: new Date(2026, 9, 6, 20, 0).toISOString() })]), {
-    title: "1 agent will continue", detail: "Next at 20:00 · 1 waiting",
+    title: "1 agent will continue", detail: "Next check 18:53 · Next at 20:00",
+  });
+});
+
+test("the header names both the next check and the next continue in time order", () => {
+  const at = (hours: number, minutes: number, seconds = 0) => new Date(2026, 9, 6, hours, minutes, seconds).toISOString();
+  assert.deepEqual(summaryLabels([job({ waiting: "usage", dueAt: at(19, 58) }), job({ dueAt: at(21, 45) })]), {
+    title: "1 agent will continue", detail: "Next check 19:58 · Next at 21:45",
+  });
+  assert.deepEqual(summaryLabels([job({ dueAt: at(20, 0) }), job({ waiting: "auth", dueAt: at(21, 0) })]), {
+    title: "1 agent will continue", detail: "Next at 20:00 · Next check 21:00",
+  });
+  assert.deepEqual(summaryLabels([job({ waiting: "usage", dueAt: at(21, 45, 0) }), job({ dueAt: at(21, 45, 30) })]), {
+    title: "1 agent will continue", detail: "Next check and resume at 21:45",
+  });
+  assert.deepEqual(summaryLabels([job({ waiting: "usage", dueAt: new Date(2026, 9, 6, 21, 45).toISOString() }), job({ dueAt: new Date(2026, 9, 8, 21, 45).toISOString() })]), {
+    title: "1 agent will continue", detail: "Next check 21:45 · Next at 21:45",
+  });
+  assert.deepEqual(summaryLabels([job({ enabled: false, dueAt: at(18, 53) }), job({ waiting: "usage", dueAt: at(19, 58) }), job({ dueAt: at(21, 45) })]), {
+    title: "1 agent will continue", detail: "Next check 19:58 · Next at 21:45 · 1 skipped",
+  });
+});
+
+test("a turned-off check or a continue being sent does not add a misleading check time", () => {
+  const at = (hours: number, minutes: number) => new Date(2026, 9, 6, hours, minutes).toISOString();
+  assert.deepEqual(summaryLabels([job({ enabled: false, waiting: "usage", dueAt: at(18, 53) }), job({ dueAt: at(20, 0) })]), {
+    title: "1 agent will continue", detail: "Next at 20:00 · 1 skipped",
+  });
+  assert.deepEqual(summaryLabels([job({ sending: true, dueAt: at(18, 53) }), job({ waiting: "usage", dueAt: at(20, 0) })]), {
+    title: "1 agent will continue", detail: "Next at 18:53 · Next check 20:00",
   });
 });
 

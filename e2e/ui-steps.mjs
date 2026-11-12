@@ -195,6 +195,30 @@ export async function uiPhase(ctx) {
       return `"${T1}" under ${want1}, "${T2}" under ${want2}`;
     });
 
+    await guarded(15, 'header names an earlier verification check before the next continue, matching row order', async () => {
+      const saved = await jobOf(r2.id);
+      const due1 = Date.parse((await jobOf(r1.id)).dueAt);
+      // A check five minutes before T1's continue; still in the future, so no tick acts on it.
+      const checkAt = due1 - 5 * 60000;
+      await editJob(r2.id, { waiting: 'usage', resetAt: null, dueAt: iso(checkAt) });
+      try {
+        await openScreen();
+        const on = (await readJobs()).filter((j) => j.state === 'pending' && j.enabled).sort((a, b) => a.dueAt.localeCompare(b.dueAt));
+        const firstCheck = on.find((j) => j.waiting), firstContinue = on.find((j) => !j.waiting);
+        assert.ok(firstCheck && firstContinue && Date.parse(firstCheck.dueAt) < Date.parse(firstContinue.dueAt), 'seeded check should be the earlier event');
+        const want = `Next check ${hhmm(Date.parse(firstCheck.dueAt))} · Next at ${hhmm(Date.parse(firstContinue.dueAt))}`;
+        await expect(page.getByText(want, { exact: true })).toBeVisible({ timeout: 30000 });
+        const top = async (title) => (await page.getByRole('button', { name: new RegExp(`^Change time for ${title}, now `) }).boundingBox())?.y ?? NaN;
+        const [y2, y1] = [await top(T2), await top(T1)];
+        assert.ok(y2 < y1, `check row "${T2}" (y=${y2}) should be above continue row "${T1}" (y=${y1})`);
+        await shot('ui-7b-screen-next-check');
+        return `header "${want}"; "${T2}" check row above "${T1}" continue row`;
+      } finally {
+        await editJob(r2.id, { waiting: undefined, resetAt: saved.resetAt, dueAt: saved.dueAt });
+        await waitFor(async () => (await jobOf(r2.id))?.dueAt === saved.dueAt && !(await jobOf(r2.id))?.waiting, `${T2} restored`, 20000, 300);
+      }
+    });
+
     const NOTE = 'UI-ROW-NOTE-' + Math.random().toString(36).slice(2, 7);
     await guarded(15, 'screen row: +10m, Change time and extra instructions change only that reservation', async () => {
       await openScreen();
@@ -248,7 +272,7 @@ export async function uiPhase(ctx) {
       await page.getByRole('switch', { name: new RegExp(`^Continue ${T1} automatically at `) }).click();
       await waitFor(async () => (await jobOf(r1.id))?.enabled === false, 'switched off', 20000, 300);
       // The header detail; Recent activity's summary also ends in "· 1 skipped".
-      await expect(page.getByText(/^Next (check )?at \d\d:\d\d( · \d+ waiting)? · 1 skipped$/)).toBeVisible({ timeout: 15000 });
+      await expect(page.getByText(/^(Next (check )?at \d\d:\d\d|Next check \d\d:\d\d · Next at \d\d:\d\d|Next at \d\d:\d\d · Next check \d\d:\d\d|Next check and resume at \d\d:\d\d) · 1 skipped$/)).toBeVisible({ timeout: 15000 });
       const sent0 = continues('claude').length;
       await editJob(r1.id, { resetAt: iso(Date.now() - 120000), dueAt: iso(Date.now() - 60000) });
       await waitFor(async () => (await readHistory()).some((h) => h.agentId === r1.id && h.outcome === 'skipped'), 'skipped', 240000, 1000);

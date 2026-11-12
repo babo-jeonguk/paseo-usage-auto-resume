@@ -103,18 +103,32 @@ export function groupByDay(jobs: readonly ScheduledJob[], now: number): DayGroup
   return groups;
 }
 
-/** Headline and detail for the list, e.g. "2 agents will continue" / "Next at 18:53 · 1 skipped". */
+/** Both times when a check and a continue exist; collapsed only when they fall in the same minute. */
+function bothLabel(checkAt: string, resumeAt: string): string {
+  const checkTime = clockLabel(checkAt);
+  const resumeTime = clockLabel(resumeAt);
+  const sameMinute = Math.floor(Date.parse(checkAt) / 60_000) === Math.floor(Date.parse(resumeAt) / 60_000);
+  if (sameMinute) return `Next check and resume at ${checkTime}`;
+  if (Date.parse(checkAt) < Date.parse(resumeAt)) return `Next check ${checkTime} · Next at ${resumeTime}`;
+  return `Next at ${resumeTime} · Next check ${checkTime}`;
+}
+
+/** Headline and detail for the list, e.g. "2 agents will continue" / "Next check 19:58 · Next at 21:45 · 1 skipped". */
 export function summaryLabels(jobs: readonly ScheduledJob[]): { title: string; detail: string | null } {
   const on = jobs.filter((job) => job.enabled);
   const skipped = jobs.length - on.length;
   const skippedLabel = skipped > 0 ? `${skipped} skipped` : null;
   if (on.length === 0) return { title: "All turned off", detail: null };
-  const scheduled = on.filter((job) => !job.waiting);
-  const waiting = on.length - scheduled.length;
-  const title = scheduled.length ? (scheduled.length === 1 ? "1 agent will continue" : `${scheduled.length} agents will continue`)
-    : `${waiting} agent${waiting === 1 ? "" : "s"} waiting for verification`;
-  const next = scheduled.length ? `Next at ${clockLabel(scheduled[0]!.dueAt)}` : `Next check at ${clockLabel(on[0]!.dueAt)}`;
-  return { title, detail: [next, scheduled.length && waiting ? `${waiting} waiting` : null, skippedLabel].filter(Boolean).join(" · ") };
+  const continues = on.filter((job) => !job.waiting);
+  const checks = on.filter((job) => job.waiting);
+  const title = continues.length ? (continues.length === 1 ? "1 agent will continue" : `${continues.length} agents will continue`)
+    : `${checks.length} agent${checks.length === 1 ? "" : "s"} waiting for verification`;
+  const check = checks[0];
+  const resume = continues[0];
+  const next = !check ? `Next at ${clockLabel(resume!.dueAt)}`
+    : !resume ? `Next check at ${clockLabel(check.dueAt)}`
+      : bothLabel(check.dueAt, resume.dueAt);
+  return { title, detail: [next, skippedLabel].filter(Boolean).join(" · ") };
 }
 
 export function waitingLabel(job: ScheduledJob): string | null {

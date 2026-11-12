@@ -65,7 +65,7 @@ function createStyles(theme: Theme, compact: boolean) {
       alignSelf: "center" as const,
     },
     header: { flexDirection: "row" as const, alignItems: "center" as const, gap: 8, marginBottom: 24 },
-    headerText: { flex: 1, gap: 4 },
+    headerText: { flex: 1, minWidth: 0, gap: 4 },
     summary: { color: colors.foreground, fontSize: 18, fontWeight: "600" as const },
     summaryDetail: { color: colors.foregroundMuted, fontSize: 14, fontVariant: ["tabular-nums" as const] },
     iconButton: {
