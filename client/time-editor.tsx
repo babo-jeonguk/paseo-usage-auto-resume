@@ -45,7 +45,11 @@ function createTimeEditorStyles(theme: Theme, compact: boolean) {
   };
 }
 
-/** Replaces the time line while a time is typed. It opens on the reservation's own time, which saves as is; the server has the final say on any other. */
+/**
+ * Replaces the time line while a time is typed. It opens on the reservation's own time, which saves as is;
+ * the server has the final say on any other. Days are counted from the moment it opened, while the window
+ * check follows the current time.
+ */
 export function TimeEditor(props: {
   job: ScheduledJob;
   now: number;
@@ -60,8 +64,9 @@ export function TimeEditor(props: {
 }) {
   const { job, now, theme } = props;
   const styles = createTimeEditorStyles(theme, props.compact);
-  const choices = dayChoices(job.dueAt, now);
   const [start] = useState(() => timeEditorStart(job, now));
+  // The days the user picked from stay the same calendar days while the editor is open.
+  const choices = dayChoices(job.dueAt, start.openedAt);
   const [text, setText] = useState(start.text);
   const [day, setDay] = useState(start.day);
   const { dueAt, unchanged, problem } = timeEdit(job, start, { text, day }, now);

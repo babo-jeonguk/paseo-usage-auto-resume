@@ -248,8 +248,8 @@ test("a new time before the reset or over a week out is explained before it is s
 });
 
 test("the time editor opens on the reservation's own minute and day", () => {
-  assert.deepEqual(timeEditorStart(job({ dueAt: new Date(2026, 9, 6, 18, 53, 27).toISOString() }), now), { text: "18:53", day: 0 });
-  assert.deepEqual(timeEditorStart(job({ dueAt: new Date(2026, 9, 9, 4, 13, 9).toISOString() }), now), { text: "04:13", day: 3 });
+  assert.deepEqual(timeEditorStart(job({ dueAt: new Date(2026, 9, 6, 18, 53, 27).toISOString() }), now), { text: "18:53", day: 0, openedAt: now });
+  assert.deepEqual(timeEditorStart(job({ dueAt: new Date(2026, 9, 9, 4, 13, 9).toISOString() }), now), { text: "04:13", day: 3, openedAt: now });
 });
 
 // The editor as opened at `now`, then typed into; `at` is when its state is read.
@@ -285,18 +285,31 @@ test("an overload retry's jittered time and a verification check within the minu
   assert.equal(edit(check, "17:00", 0).problem, "Too early — earliest is 17:02.");
 });
 
-test("an untouched editor stays unchanged after midnight passes while it is open", () => {
+test("an editor open across midnight keeps the days it offered when it opened", () => {
   // Opened at 23:59:55 for 00:30:27 tomorrow; read again five seconds after midnight.
   const opened = new Date(2026, 9, 6, 23, 59, 55).getTime();
+  const afterMidnight = new Date(2026, 9, 7, 0, 0, 5).getTime();
   const late = job({ dueAt: new Date(2026, 9, 7, 0, 30, 27).toISOString() });
   const start = timeEditorStart(late, opened);
-  assert.deepEqual(start, { text: "00:30", day: 1 });
-  assert.deepEqual(timeEdit(late, start, start, new Date(2026, 9, 7, 0, 0, 5).getTime()), { dueAt: late.dueAt, unchanged: true, problem: null });
+  assert.deepEqual(start, { text: "00:30", day: 1, openedAt: opened });
+  assert.deepEqual(timeEdit(late, start, start, afterMidnight), { dueAt: late.dueAt, unchanged: true, problem: null });
+  // Tomorrow as offered at 23:59 is still October 7, not the day after it.
+  assert.deepEqual(timeEdit(late, start, { text: "00:45", day: 1 }, afterMidnight), {
+    dueAt: new Date(2026, 9, 7, 0, 45).toISOString(),
+    unchanged: false,
+    problem: null,
+  });
+  // Today as offered at 23:59 is October 6, now past, and is checked against the current time.
+  assert.deepEqual(timeEdit(late, start, { text: "23:59", day: 0 }, afterMidnight), {
+    dueAt: new Date(2026, 9, 6, 23, 59).toISOString(),
+    unchanged: false,
+    problem: "Too early — earliest is 00:02.",
+  });
 });
 
 test("a reservation already past, even from yesterday, opens unchanged and saves as is", () => {
   const overdue = job({ dueAt: new Date(2026, 9, 5, 18, 53, 27).toISOString() });
-  assert.deepEqual(timeEditorStart(overdue, now), { text: "18:53", day: 0 });
+  assert.deepEqual(timeEditorStart(overdue, now), { text: "18:53", day: 0, openedAt: now });
   assert.deepEqual(edit(overdue, "18:53", 0), { dueAt: overdue.dueAt, unchanged: true, problem: null });
   assert.deepEqual(edit(overdue, "18:53", 0, new Date(2026, 9, 6, 19, 0).getTime()), { dueAt: overdue.dueAt, unchanged: true, problem: null }, "after today's 18:53 too");
   // Typed into, it is a new time today, checked as one.
