@@ -47,7 +47,8 @@ function createTimeEditorStyles(theme: Theme, compact: boolean) {
 /**
  * Replaces the time line while a time is typed. The draft lives with the surface, so a row drawn again
  * keeps it. It opens on the reservation's own time, which saves as is; the server has the final say on
- * any other. Days are counted from the moment it opened, while the window check follows the current time.
+ * any other. Days are counted from the moment it opened; the window check reads the current time on each
+ * render, not this surface's clock.
  */
 export function TimeEditor(props: {
   job: ScheduledJob;
@@ -70,7 +71,7 @@ export function TimeEditor(props: {
   const { text, day } = entry;
   // The days the user picked from stay the same calendar days while the editor is open.
   const choices = dayChoices(job.dueAt, start.openedAt);
-  const { dueAt, unchanged, problem } = timeEdit(job, start, entry, now);
+  const { dueAt, unchanged, problem } = timeEdit(job, start, entry);
   const blocked = !!problem || !!props.locked;
   const save = () => {
     if (blocked) return;

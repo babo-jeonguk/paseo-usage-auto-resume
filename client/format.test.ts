@@ -299,6 +299,23 @@ test("an overload retry's jittered time and a verification check within the minu
   assert.equal(edit(check, "17:00", 0).problem, "Too early — earliest is 17:02.");
 });
 
+test("without a time given, the window is checked against the clock when the editor is read, not a surface's last tick", (t) => {
+  // A surface's clock ticks every 10–15 s; here it last ticked at 17:00:55 and the real time is 17:01:05.
+  const surfaceTick = new Date(2026, 9, 6, 17, 0, 55).getTime();
+  const real = new Date(2026, 9, 6, 17, 1, 5).getTime();
+  t.mock.method(Date, "now", () => real);
+  const check = job({ waiting: "usage", dueAt: new Date(2026, 9, 6, 17, 30).toISOString() });
+  const start = timeEditorStart(check, surfaceTick);
+  // The server would refuse 17:02 now (earliest 17:03), so the editor must too, and name 17:03.
+  assert.deepEqual(timeEdit(check, start, { text: "17:02", day: 0 }), {
+    dueAt: new Date(2026, 9, 6, 17, 2).toISOString(),
+    unchanged: false,
+    problem: "Too early — earliest is 17:03.",
+  });
+  assert.equal(timeEdit(check, start, { text: "17:03", day: 0 }).problem, null, "the earliest it names saves");
+  assert.deepEqual(timeEdit(check, start, start), { dueAt: check.dueAt, unchanged: true, problem: null }, "the opening time still saves as is");
+});
+
 test("an editor open across midnight keeps the days it offered when it opened", () => {
   // Opened at 23:59:55 for 00:30:27 tomorrow; read again five seconds after midnight.
   const opened = new Date(2026, 9, 6, 23, 59, 55).getTime();

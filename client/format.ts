@@ -248,12 +248,13 @@ export interface TimeEdit {
 }
 
 /**
- * The typed time on the chosen day, counted from when the editor opened (`start.openedAt`), never from
- * `now`; only the window check follows the current time. Unchanged means the entry's day and its hour and
- * minute match the opening entry's, whatever the text's spelling; it keeps the reservation's own time,
- * seconds and all. Any other minute is checked as the server would.
+ * The typed time on the chosen day, counted from when the editor opened (`start.openedAt`), not from
+ * `now`; the window check reads the current time when it is called, or `now` when one is passed.
+ * Unchanged means the entry's day and its hour and minute match the opening entry's, whatever the
+ * text's spelling; it keeps the reservation's own time, seconds and all. Any other minute is checked as
+ * the server would.
  */
-export function timeEdit(job: ScheduledJob, start: TimeEditorStart, entry: TimeEntry, now: number): TimeEdit {
+export function timeEdit(job: ScheduledJob, start: TimeEditorStart, entry: TimeEntry, now?: number): TimeEdit {
   const typed = parseTime(entry.text);
   if (!typed) return { dueAt: null, unchanged: false, problem: "Enter a time like 07:30." };
   const opened = parseTime(start.text);
@@ -261,7 +262,7 @@ export function timeEdit(job: ScheduledJob, start: TimeEditorStart, entry: TimeE
     return { dueAt: job.dueAt, unchanged: true, problem: null };
   }
   const dueAt = timeOnDay(entry.text, entry.day, start.openedAt)!;
-  return { dueAt, unchanged: false, problem: rescheduleProblem(job, dueAt, now) };
+  return { dueAt, unchanged: false, problem: rescheduleProblem(job, dueAt, now ?? Date.now()) };
 }
 
 const SENDING = "This agent is continuing now.";
