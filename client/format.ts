@@ -8,10 +8,14 @@ const PROVIDER_LABELS: Record<string, string> = {
   "claude-main": "Claude Main",
   antigravity: "Antigravity",
   "antigravity-main": "Antigravity Main",
+  opencode: "OpenCode",
 };
 
-export function providerLabel(provider: string): string {
-  return PROVIDER_LABELS[provider] ?? provider;
+/** A row's provider chip: Paseo's current name, else the built-in one, else the ID, so older servers and removed providers still read. */
+export function providerLabel(row: { provider: string; providerLabel?: string }): string {
+  const named = row.providerLabel?.trim();
+  if (named) return named;
+  return Object.hasOwn(PROVIDER_LABELS, row.provider) ? PROVIDER_LABELS[row.provider]! : row.provider;
 }
 
 /** The CLI's own provider first, then the ones built on it by name. */

@@ -2008,13 +2008,15 @@ test("a provider Paseo no longer lists, or an unreadable snapshot, leaves rows w
     { providerSnapshot: () => { throw new Error("daemon busy"); } },
   );
   await broken.resumer.onTurnEnded(turnEnded("a2", "codex-reserve", failed(CODEX_LIMIT)), broken.api);
-  const [brokenShown] = await broken.resumer.listScheduled(broken.api);
+  const brokenShown = (await broken.resumer.listScheduled(broken.api)).find((job) => job.agentId === "a2");
+  assert.ok(brokenShown);
   assert.equal(brokenShown?.provider, "codex-reserve");
   assert.equal("providerLabel" in brokenShown!, false);
 
   broken.agents.set("a2", { provider: "codex-reserve", lastUserMessageAt: "2026-10-06T03:30:00.000Z" });
   await broken.resumer.onTurnStarted("a2", broken.api);
-  const [row] = await broken.resumer.listHistory(broken.api);
+  const row = (await broken.resumer.listHistory(broken.api)).find((entry) => entry.agentId === "a2");
+  assert.ok(row);
   assert.equal(row?.provider, "codex-reserve");
   assert.equal("providerLabel" in row!, false);
 });

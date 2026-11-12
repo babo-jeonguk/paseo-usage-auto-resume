@@ -122,6 +122,8 @@ function createStyles(theme: Theme, compact: boolean) {
       borderRadius: 4,
       paddingHorizontal: 6,
       paddingVertical: 2,
+      flexShrink: 1,
+      maxWidth: "100%" as const,
     },
     chipText: { color: colors.foreground, fontSize: 12, fontWeight: "500" as const },
     metaText: { color: colors.foregroundMuted, fontSize: 12, flexShrink: 1 },
@@ -287,7 +289,9 @@ function JobRow(props: {
           ) : null}
           <View style={styles.meta}>
             <View style={styles.chip}>
-              <Text style={styles.chipText}>{providerLabel(job.provider)}</Text>
+              <Text style={styles.chipText} numberOfLines={1}>
+                {providerLabel(job)}
+              </Text>
             </View>
             {place ? (
               <Text style={styles.metaText} numberOfLines={1}>
@@ -410,7 +414,9 @@ function HistorySection(props: {
                   </Text>
                   <View style={styles.historyMeta}>
                     <View style={styles.chip}>
-                      <Text style={styles.chipText}>{providerLabel(entry.provider)}</Text>
+                      <Text style={styles.chipText} numberOfLines={1}>
+                        {providerLabel(entry)}
+                      </Text>
                     </View>
                     <Text style={styles.metaText} numberOfLines={1}>
                       {title}

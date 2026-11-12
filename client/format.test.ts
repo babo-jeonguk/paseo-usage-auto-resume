@@ -161,13 +161,28 @@ test("a turned-off check or a continue being sent does not add a misleading chec
   });
 });
 
-test("labels for provider and place", () => {
-  assert.equal(providerLabel("claude-main"), "Claude Main");
-  assert.equal(providerLabel("antigravity"), "Antigravity");
-  assert.equal(providerLabel("antigravity-main"), "Antigravity Main");
+test("labels for place", () => {
   assert.equal(placeLabel(job({ projectName: "DoneFolio", workspaceName: "DoneFolio" })), "DoneFolio");
   assert.equal(placeLabel(job({ projectName: "DoneFolio", workspaceName: "issue-233" })), "DoneFolio · issue-233");
   assert.equal(placeLabel(job({})), null);
+});
+
+test("provider chips use Paseo's current name, then the built-in name, then the ID", () => {
+  assert.equal(providerLabel({ provider: "claude" }), "Claude");
+  assert.equal(providerLabel({ provider: "codex" }), "Codex");
+  assert.equal(providerLabel({ provider: "antigravity" }), "Antigravity");
+  assert.equal(providerLabel({ provider: "opencode" }), "OpenCode");
+  assert.equal(providerLabel({ provider: "claude-main" }), "Claude Main");
+  assert.equal(providerLabel({ provider: "antigravity-main" }), "Antigravity Main");
+  assert.equal(providerLabel({ provider: "claude-sub", providerLabel: "Claude Sub" }), "Claude Sub");
+  assert.equal(providerLabel({ provider: "codex-reserve", providerLabel: "Codex Reserve" }), "Codex Reserve");
+  assert.equal(providerLabel({ provider: "codex-sub", providerLabel: "  Codex Sub  " }), "Codex Sub");
+  assert.equal(providerLabel({ provider: "claude-main", providerLabel: "Work account" }), "Work account");
+  assert.equal(providerLabel({ provider: "codex-reserve" }), "codex-reserve");
+  assert.equal(providerLabel({ provider: "claude-main" }), "Claude Main");
+  assert.equal(providerLabel({ provider: "claude", providerLabel: "   " }), "Claude");
+  assert.equal(providerLabel({ provider: "claude-sub", providerLabel: "" }), "claude-sub");
+  assert.equal(providerLabel({ provider: "constructor" }), "constructor");
 });
 
 const provider = (overrides: Partial<DiscoveredProvider>): DiscoveredProvider => ({

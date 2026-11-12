@@ -167,6 +167,15 @@ export async function uiPhase(ctx) {
     const u4 = await mkAgent('UI provider off', 'claude-sub');
     await guarded(9, 'Settings switch turns Claude Sub off: its pending reservation is canceled at once', async () => {
       await hit(u4, 'claude');
+      // The row's chip names the profile as Paseo does, at phone width too, with the row's switch still on screen.
+      await page.setViewportSize({ width: 390, height: 844 });
+      await openScreen();
+      const row = page.getByRole('switch', { name: /^Continue UI provider off automatically at / });
+      await expect(row).toBeInViewport({ timeout: 30000 });
+      await expect(page.getByText('Claude Sub', { exact: true }).first()).toBeVisible();
+      assert.equal(await page.getByText('claude-sub', { exact: true }).count(), 0);
+      await shot('ui-5-provider-label-phone');
+      await page.setViewportSize({ width: 1440, height: 960 });
       await openSettings();
       await expect(page.getByText(/1 pending reservation/)).toBeVisible({ timeout: 30000 });
       await shot('ui-5-settings-pending');
@@ -175,7 +184,7 @@ export async function uiPhase(ctx) {
       assert.equal(await jobOf(u4.id), undefined);
       await page.getByRole('switch', { name: /Claude Sub/ }).click();
       await sleep(1500);
-      return 'history canceled/provider_off right after the switch; switched back on';
+      return 'chip "Claude Sub" at 390px; history canceled/provider_off right after the switch; switched back on';
     });
 
     // ---- item 17 in the UI: settings save failures ----------------------------------------
@@ -364,6 +373,7 @@ export async function uiPhase(ctx) {
       await expect(header).toBeVisible({ timeout: 60000 });
       const summary = await header.innerText();
       await header.click();
+      await expect(page.getByText('Claude Sub', { exact: true }).first()).toBeVisible({ timeout: 15000 });
       const seen = [];
       for (const text of ['Continued · Resume now', 'Continued', 'Skipped · turned off', 'Canceled · provider turned off', 'Canceled · a newer message']) {
         const found = await page.getByText(text, { exact: true }).first().isVisible().catch(() => false);
@@ -371,7 +381,7 @@ export async function uiPhase(ctx) {
       }
       await shot('ui-6-recent-activity');
       assert.ok(seen.filter((s) => s.endsWith(':y')).length >= 4, seen.join(' '));
-      return `header "${summary.replace(/\s+/g, ' ')}"; rows ${seen.join(', ')}`;
+      return `header "${summary.replace(/\s+/g, ' ')}"; rows ${seen.join(', ')}; chip "Claude Sub"`;
     });
   } finally {
     if (pageErrors.length) note(0, S, 'browser page errors', pageErrors.slice(0, 5).join(' | '));
