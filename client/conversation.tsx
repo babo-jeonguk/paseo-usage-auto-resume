@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { listScheduledRpc, rescheduleRpc, resumeNowRpc, setEnabledRpc, type ScheduledJob } from "../shared/rpc";
 import { clockLabel, dayLabel, delayChoices, notePreview, RESUME_NOW_UNFINISHED, refusalLabel, relativeLabel, relativeSpoken, resumeNowToast, SCHEDULE_CHANGED, waitingLabel } from "./format";
-import { editorLocks } from "./edit-session";
+import { editorLocks, openEditor } from "./edit-session";
 import { NoteEditor } from "./note-editor";
 import { SpokenText } from "./spoken-text";
 import { historyQueryKey, jobsQueryKey } from "./query-keys";
@@ -131,7 +131,7 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
               <Text style={clockText(colors)}>{clockLabel(job.dueAt)}</Text>
               <Pressable
                 accessibilityRole="button" accessibilityLabel="Change time" accessibilityState={{ disabled: changeLocked }}
-                disabled={changeLocked} hitSlop={6} onPress={() => dispatch({ type: "open", kind: "time", job, now })}
+                disabled={changeLocked} hitSlop={6} onPress={() => dispatch(openEditor("time", job))}
                 style={({ pressed }) => ({ ...pressFeedback(colors, pressed, changeLocked), width: 32, height: 32, borderRadius: 6, alignItems: "center", justifyContent: "center" })}
               >
                 <Icon name="Pencil" size={16} color={colors.foregroundMuted} />
@@ -174,7 +174,7 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
         ) : preview ? (
           <Pressable
             accessibilityRole="button" accessibilityLabel="Edit extra instructions" accessibilityHint={preview}
-            accessibilityState={{ disabled: noteLocked }} disabled={noteLocked} onPress={() => dispatch({ type: "open", kind: "note", job, now })}
+            accessibilityState={{ disabled: noteLocked }} disabled={noteLocked} onPress={() => dispatch(openEditor("note", job))}
             style={({ pressed }) => ({ ...pressFeedback(colors, pressed, noteLocked), flexDirection: "row", alignItems: "flex-start", gap: 8, padding: 10, borderRadius: 6, borderWidth: 1, borderColor: colors.border })}
           >
             <Icon name="NotebookPen" size={16} color={colors.foregroundMuted} />
@@ -184,7 +184,7 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
             </View>
             <Icon name="Pencil" size={16} color={colors.foregroundMuted} />
           </Pressable>
-        ) : button("Add extra instructions", () => dispatch({ type: "open", kind: "note", job, now }), "NotebookPen", noteLocked)}
+        ) : button("Add extra instructions", () => dispatch(openEditor("note", job)), "NotebookPen", noteLocked)}
         {/* A sibling of the editor, so its key must not repeat the editor's. */}
         <ResumeNow key={`resume-now-${job.dueAt}`} theme={theme} disabled={changeLocked} pending={resume.isPending}
           onSend={() => resume.mutate(job)} />

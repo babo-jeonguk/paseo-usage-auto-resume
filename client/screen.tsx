@@ -33,7 +33,7 @@ import {
 } from "./format";
 import { Toggle } from "./toggle";
 import { TimeEditor } from "./time-editor";
-import { editorLocks, type EditEvent, type EditSession } from "./edit-session";
+import { editorLocks, openEditor, type EditEvent, type EditSession } from "./edit-session";
 import { useEditSession } from "./use-edit-session";
 import { NoteEditor } from "./note-editor";
 import { notifyScheduleChanged } from "./schedule-changes";
@@ -241,7 +241,7 @@ function JobRow(props: {
       accessibilityState={{ disabled: noteLocked }}
       disabled={noteLocked}
       hitSlop={4}
-      onPress={() => dispatch({ type: "open", kind: "note", job, now })}
+      onPress={() => dispatch(openEditor("note", job))}
       style={({ pressed }) => [props.compact ? styles.metaButton : styles.iconButton, noteLocked ? styles.disabled : null, pressed ? styles.pressed : null]}
     >
       <Icon name="NotebookPen" size={props.compact ? 16 : 18} color={job.note ? theme.colors.accent : theme.colors.foregroundMuted} />
@@ -272,7 +272,7 @@ function JobRow(props: {
                 accessibilityState={{ disabled: timeLocked }}
                 disabled={timeLocked}
                 hitSlop={8}
-                onPress={() => dispatch({ type: "open", kind: "time", job, now })}
+                onPress={() => dispatch(openEditor("time", job))}
               >
                 <Text style={[styles.time, { color: tone }, timeLocked ? null : styles.timeEditable]}>{clockLabel(job.dueAt)}</Text>
               </Pressable>

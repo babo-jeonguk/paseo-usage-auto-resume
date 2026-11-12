@@ -27,6 +27,7 @@ export interface EditSession {
   problem: string | null;
 }
 
+/** Surfaces build an open event with `openEditor`, which reads the clock as the editor opens. */
 export type EditEvent =
   | { type: "open"; kind: EditorKind; job: ScheduledJob; now: number }
   | { type: "type"; text: string }
@@ -39,6 +40,13 @@ export type EditEvent =
   | { type: "escape" }
   | { type: "moved"; reservation: string }
   | { type: "sync"; jobs: readonly ScheduledJob[] };
+
+/**
+ * Records the moment the editor is opened, because a time editor counts its days from it.
+ */
+export function openEditor(kind: EditorKind, job: ScheduledJob): EditEvent {
+  return { type: "open", kind, job, now: Date.now() };
+}
 
 /**
  * One editor at a time. While extra instructions are open nothing else opens, so typed text is

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ScheduledJob } from "../shared/rpc";
-import { editorLocks, editSession, type EditEvent, type EditSession } from "./edit-session";
+import { editorLocks, editSession, openEditor, type EditEvent, type EditSession } from "./edit-session";
 
 const DUE = "2026-10-06T05:02:00.000Z";
 const job = (fields: Partial<ScheduledJob> = {}): ScheduledJob => ({
@@ -138,4 +138,15 @@ test("an open editor's locks", () => {
   assert.deepEqual(editorLocks(null), { time: false, note: false });
   assert.deepEqual(editorLocks(run(open("time"))), { time: false, note: true });
   assert.deepEqual(editorLocks(run(open("note"))), { time: true, note: true });
+});
+
+test("opening an editor records the moment it is opened, not the surface's last clock tick", () => {
+  // A surface's clock ticks every few seconds; one sampled at 23:59:55 must not anchor an editor opened after midnight.
+  for (const editor of ["time", "note"] as const) {
+    const before = Date.now();
+    const event = openEditor(editor, job());
+    const after = Date.now();
+    assert.ok(event.type === "open" && event.now >= before && event.now <= after, editor);
+    assert.deepEqual({ ...event, now: 0 }, { type: "open", kind: editor, job: job(), now: 0 });
+  }
 });
