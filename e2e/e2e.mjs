@@ -31,7 +31,8 @@ const GIT_SOURCE = args.source ?? 'git:babo-jeonguk/paseo-usage-auto-resume';
 const OLD_REF = args.from ?? 'v1.2.2', NEW_REF = args.to ?? 'main';
 let oldRevision = '';
 const PLUGIN = 'usage-auto-resume';
-const DEFAULT_MARK = 'usage limit should now be reset';
+// Must stay in sync with DEFAULT_CONTINUE_PROMPT in shared/prompt.ts.
+const DEFAULT_MARK = 'Continue the unfinished work from where it stopped.';
 
 const cliDir = args.cli;
 const tools = createRequire(join(cliDir, 'package.json'));

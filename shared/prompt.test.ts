@@ -2,6 +2,9 @@ import { detectLimitStop } from "../server/limit";
 import { detectOverloadStop } from "../server/overload";
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { continuePrompt, DEFAULT_CONTINUE_PROMPT, OVERLOAD_CONTINUE_PROMPT } from "./prompt";
 
 test("without a custom prompt or a note, the built-in prompt is sent alone", () => {
@@ -43,4 +46,11 @@ test("overload ignores customization, appends the note, and neither built-in pro
       }
     }
   }
+});
+
+test("the E2E harness counts continues by a phrase the built-in prompt still contains", () => {
+  const harness = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "e2e", "e2e.mjs"), "utf8");
+  const mark = /^const DEFAULT_MARK = (['"])(.+)\1;$/m.exec(harness)?.[2];
+  assert.ok(mark, "e2e/e2e.mjs no longer declares DEFAULT_MARK as a string literal");
+  assert.ok(DEFAULT_CONTINUE_PROMPT.includes(mark), `DEFAULT_MARK "${mark}" is not in the built-in continue prompt`);
 });
