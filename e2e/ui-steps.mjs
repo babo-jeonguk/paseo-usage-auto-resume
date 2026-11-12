@@ -312,6 +312,27 @@ export async function uiPhase(ctx) {
       }
     });
 
+    await guarded(15, 'screen row shows a weekly wait in days and speaks it in words', async () => {
+      // 167h 30m rounds up to 168h, so the row keeps reading "in 7d" for the whole step.
+      const weekly = Date.now() + (167 * 60 + 30) * 60000;
+      await editJob(r2.id, { resetAt: iso(weekly - 120000), dueAt: iso(weekly) });
+      await openScreen();
+      const change = page.getByRole('button', { name: `Change time for ${T2}, now ${hhmm(weekly)}`, exact: true });
+      await expect(change).toBeVisible({ timeout: 30000 });
+      // The status follows the time button; what a sighted user reads is its aria-hidden part on the web.
+      const shown = await change.evaluate((el) => {
+        const status = el.nextElementSibling;
+        return (status?.querySelector('[aria-hidden="true"]') ?? status)?.textContent ?? null;
+      });
+      assert.equal(shown, 'in 7d');
+      // What a screen reader gets for the time line: the button and the countdown in words, no "7d".
+      const tree = await change.locator('xpath=..').ariaSnapshot();
+      assert.match(tree, /^- text: in 7 days$/m, tree);
+      assert.doesNotMatch(tree, /\b\d+[dhm]\b/, tree);
+      await shot('ui-7c-screen-weekly');
+      return `"${T2}" shows "${shown}"; accessibility tree: ${tree.replace(/\n/g, ' | ')}`;
+    });
+
     const NOTE = 'UI-ROW-NOTE-' + Math.random().toString(36).slice(2, 7);
     await guarded(15, 'screen row: +10m, Change time and extra instructions change only that reservation', async () => {
       await openScreen();

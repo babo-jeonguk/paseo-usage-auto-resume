@@ -7,6 +7,7 @@ import { listScheduledRpc, rescheduleRpc, resumeNowRpc, setEnabledRpc, type Sche
 import { clockLabel, dayLabel, delayChoices, notePreview, RESUME_NOW_UNFINISHED, refusalLabel, relativeLabel, relativeSpoken, resumeNowToast, SCHEDULE_CHANGED, waitingLabel } from "./format";
 import { editorLocks } from "./edit-session";
 import { NoteEditor } from "./note-editor";
+import { SpokenText } from "./spoken-text";
 import { historyQueryKey, jobsQueryKey } from "./query-keys";
 import { accentText, bodyText, chipText, clockText, headingText, mutedText } from "./text-styles";
 import { filled, outlined, pressFeedback } from "./button-styles";
@@ -135,9 +136,13 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
                 <Icon name="Pencil" size={16} color={colors.foregroundMuted} />
               </Pressable>
             </View>
-            <Text style={muted} accessibilityLabel={stateLine(job, relativeSpoken(job.dueAt, now))}>{stateLine(job, relativeLabel(job.dueAt, now))}</Text>
+            <SpokenText style={muted} spoken={stateLine(job, relativeSpoken(job.dueAt, now))}>
+              {stateLine(job, relativeLabel(job.dueAt, now))}
+            </SpokenText>
             {job.waiting ? (
-              <Text style={muted} accessibilityLabel={`Next check ${relativeSpoken(job.dueAt, now)}`}>Next check {relativeLabel(job.dueAt, now)}</Text>
+              <SpokenText style={muted} spoken={`Next check ${relativeSpoken(job.dueAt, now)}`}>
+                Next check {relativeLabel(job.dueAt, now)}
+              </SpokenText>
             ) : null}
             <View style={{ flexDirection: "row", gap: 6, marginTop: 6 }}>
               {delayChoices(job, now).map((choice) => {

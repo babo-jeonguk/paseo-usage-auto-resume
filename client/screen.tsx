@@ -38,6 +38,7 @@ import { useEditSession } from "./use-edit-session";
 import { NoteEditor } from "./note-editor";
 import { notifyScheduleChanged } from "./schedule-changes";
 import { historyQueryKey, jobsQueryKey } from "./query-keys";
+import { SpokenText } from "./spoken-text";
 
 type Theme = PluginScreenProps["theme"];
 
@@ -273,7 +274,9 @@ function JobRow(props: {
               >
                 <Text style={[styles.time, { color: tone }, timeLocked ? null : styles.timeEditable]}>{clockLabel(job.dueAt)}</Text>
               </Pressable>
-              <Text style={styles.relative} accessibilityLabel={statusLine(relativeSpoken(job.dueAt, now))}>{status}</Text>
+              <SpokenText style={styles.relative} spoken={statusLine(relativeSpoken(job.dueAt, now))}>
+                {status}
+              </SpokenText>
             </View>
           )}
           <View style={styles.titleLine}>

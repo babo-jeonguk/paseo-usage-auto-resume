@@ -71,7 +71,7 @@ Each run writes `results.json` (one row per checked item), `daemon.log` and `mod
 | 12 | Recent activity and history |
 | 13 | Rolling back to `--from` |
 | 14 | No plugin errors in the daemon log |
-| 15 | The Auto Resume screen: day sections, a row's +10m, Change time, extra instructions, Open and switch, and Turn all off/on (`--ui 1`) |
+| 15 | The Auto Resume screen: day sections, a weekly wait shown as days and spoken in words, a row's +10m, Change time, extra instructions, Open and switch, and Turn all off/on (`--ui 1`) |
 | 16 | A reservation whose agent a daemon restart closed is continued at its due time |
 | 17 | A settings save that fails (read-only settings directory, or a conflict) shows a plain message and changes nothing; Reload and a retry recover (`--ui 1`, not on Windows or as root) |
 
