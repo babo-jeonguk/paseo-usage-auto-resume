@@ -30,6 +30,8 @@ export function useSaveFeedback(settings: SaveState) {
     failureFor: (key: string): SaveFailure | null => (failed?.key === key ? failure : null),
     /** Runs one save; a failure is reported once, a success clears any earlier failure. */
     run: async (key: string, target: SaveTarget, save: () => Promise<boolean>): Promise<boolean> => {
+      // The previous failure must not pick up this save's error text under the wrong control.
+      setFailed(null);
       const ok = await save();
       setFailed(ok ? null : { target, key, attempt: ++attempts.current });
       return ok;

@@ -19,6 +19,7 @@ type ReadyResumeSettings = Extract<SettingsState<typeof ResumeSettingsSchema>, {
 type Theme = PluginSurfaceProps["theme"];
 
 const CLI_NAMES = { claude: "Claude", codex: "Codex", antigravity: "Antigravity", opencode: "OpenCode" } as const;
+const OVERLOAD_RETRY_LABEL = "Retry after a provider overload";
 
 /** The failed save's message beside its control. Not a live region: the toast already announces it. */
 function SaveFailureNote({ failure, feedback, saving, colors }: { failure: SaveFailure | null; feedback: SaveFeedback; saving: boolean; colors: Theme["colors"] }) {
@@ -226,10 +227,10 @@ function ResumeSettings({ theme }: { theme: Theme }) {
           </View>
           <SettingsCard>
             <SettingsSwitch
-              label="Retry after a provider overload"
+              label={OVERLOAD_RETRY_LABEL}
               value={settings.values.overloadRetry}
               disabled={settings.saving}
-              onValueChange={(overloadRetry) => void feedback.run("labs", { kind: "switch", label: "Retry after a provider overload", on: overloadRetry }, () => settings.save({ ...settings.values, overloadRetry }, settings.revision))}
+              onValueChange={(overloadRetry) => void feedback.run("labs", { kind: "switch", label: OVERLOAD_RETRY_LABEL, on: overloadRetry }, () => settings.save({ ...settings.values, overloadRetry }, settings.revision))}
             />
           </SettingsCard>
           <SaveFailureNote failure={feedback.failureFor("labs")} feedback={feedback} saving={settings.saving} colors={colors} />

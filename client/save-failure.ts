@@ -8,8 +8,8 @@ export interface SaveFailure {
   reload: boolean;
 }
 
-// Paseo reports a revision conflict ("Settings changed on another client. Reload before saving again.") and a schema-version mismatch only as text; both ask for a reload.
-const CONFLICT = /\breload\b/i;
+// Paseo reports a revision conflict ("Settings changed on another client. Reload before saving again.") and a schema-version mismatch ("Reload or reset settings before saving a different schema version") only as text; both ask for a reload.
+const CONFLICT = /changed on another client|before saving a different schema version/i;
 
 export function saveFailure(error: string | null, target: SaveTarget): SaveFailure {
   if (error && CONFLICT.test(error)) {

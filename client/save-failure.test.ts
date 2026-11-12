@@ -52,6 +52,13 @@ test("a revision conflict asks for a reload whatever was being saved", () => {
   });
 });
 
+test("an error that merely mentions reloading is not a conflict", () => {
+  assert.deepEqual(saveFailure("Failed to reload plugin state", { kind: "unknown" }), {
+    message: "Couldn’t save the setting. Try again.",
+    reload: false,
+  });
+});
+
 test("the raw error never reaches the message", () => {
   const raw = "Request failed: EACCES: permission denied, open '/tmp/a/providers.json.3f2a9c1e-1111-2222-3333-444455556666.tmp' requestType=plugin.rpc.invoke.request code=handler_error";
   const targets = [

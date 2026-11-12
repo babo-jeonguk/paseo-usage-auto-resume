@@ -196,6 +196,7 @@ export async function uiPhase(ctx) {
         await sw.click();
         const off = 'Couldn’t turn off Claude Sub. Try again.';
         await expect(page.getByRole('alert').filter({ hasText: off })).toBeVisible({ timeout: 15000 });
+        await expect(page.getByRole('alert').filter({ hasText: off })).toHaveCount(1);
         await expect(page.getByText(off, { exact: true }).first()).toBeVisible();
         await expect(sw).toBeChecked();
         assert.doesNotMatch(await page.locator('body').innerText(), RAW);
@@ -215,6 +216,7 @@ export async function uiPhase(ctx) {
         await sw.click();
         const conflict = 'Settings changed elsewhere. Reload and try again.';
         await expect(page.getByText(conflict, { exact: true }).first()).toBeVisible({ timeout: 15000 });
+        await expect(page.getByRole('alert').filter({ hasText: conflict })).toHaveCount(1);
         await expect(sw).toBeChecked();
         await page.getByRole('button', { name: 'Reload', exact: true }).click();
         await waitFor(async () => (await page.getByText(conflict, { exact: true }).count()) === 0, 'conflict message cleared', 20000, 500);
