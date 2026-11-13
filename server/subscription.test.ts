@@ -160,6 +160,9 @@ test("an uncaptured session is checked as the daemon and provider configuration 
     const read = createSubscriptionReader({
       codex: async () => ({ account: { account: { type: "chatgpt" } }, config: { config: { model_provider: "openai" } }, authStatus: { authMethod: "chatgpt" } }),
       fetch: async () => response({ ...baseUsage, model_usage: { [model]: { available: false, available_at: until } } }),
+      // Like Claude, an API key the CLI is launched with is what auth status reports.
+      run: async (_command, _args, options) => JSON.stringify(options.env.ANTHROPIC_API_KEY
+        ? { loggedIn: true, authMethod: "api_key", apiProvider: "firstParty" } : { loggedIn: false }),
     });
     const check = await read(api({ "codex-sub": { extends: "codex", env: { CODEX_HOME: home } } }), agent("codex-sub"), "codex", at);
     assert.equal(check.auth, "subscription");
