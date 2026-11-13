@@ -358,6 +358,12 @@ test("Codex's explicit usage permission decides when given; otherwise the stoppe
   const specific = await check();
   assert.equal(specific.status, "limited");
   assert.deepEqual(specific.windows?.map((window) => window.resetAt), ["2026-10-17T00:00:00.000Z"], "the stopped model's bucket wins");
+  snapshot = { rateLimits: rateLimits({ ordinaryUsageAllowed: false, rateLimitsByLimitId: { codex_astra: { limitId: "codex_astra", normalModelSlug: model,
+    primary: { usedPercent: 10, resetsAt: reset("2026-10-17T00:00:00Z") }, secondary: null } } }) };
+  const refused = await check();
+  assert.equal(refused.status, "limited");
+  assert.ok(refused.windows?.some((window) => window.usedPct === 100 && window.resetAt === "2026-10-16T14:14:22.000Z"),
+    "a refusal renews with whichever bucket is used up, even the shared one");
   snapshot = { rateLimits: rateLimits({ rateLimits: { limitId: "codex", primary: null, secondary: null, credits: { hasCredits: true } } }) };
   assert.equal((await check()).status, "unknown", "credits alone never mean ready");
 });

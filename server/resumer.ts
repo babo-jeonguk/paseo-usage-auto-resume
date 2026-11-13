@@ -141,8 +141,7 @@ export function createResumer(options: {
     const remembered = launches.get(agentId);
     return remembered ? { launch: remembered.context, tokens: remembered.tokens } : { launch: saved, tokens: undefined };
   };
-  const inspect = async (api: ResumerApi, agent: PaseoAgent, source: UsageSource, at: Date, saved: LaunchContext | undefined, mode?: "identity" | "usage") => {
-    const { launch, tokens } = launchOf(agent.id, saved);
+  const inspect = async (api: ResumerApi, agent: PaseoAgent, source: UsageSource, at: Date, { launch, tokens }: ReturnType<typeof launchOf>, mode?: "identity" | "usage") => {
     try { return await readSubscription(api, agent, source, at, launch, mode, tokens); }
     catch { return unknownCheck(); }
   };
@@ -231,10 +230,11 @@ export function createResumer(options: {
     // continue it counts as one more.
     const waits = (row: ResumeJob | null | undefined) => !!row && row.state !== "sent";
     if (options.onlyIfNone && waits(previous)) return;
-    const { launch } = launchOf(agent.id, previous?.launch);
+    const session = launchOf(agent.id, previous?.launch);
+    const { launch } = session;
     const at = now();
     // A notice or capacity failure supplies the schedule; bind identity without reading usage.
-    const check = await inspect(api, agent, source, at, previous?.launch, stated || options.overload ? "identity" : "usage");
+    const check = await inspect(api, agent, source, at, session, stated || options.overload ? "identity" : "usage");
     if (check.auth === "api") {
       // Only a reservation still waiting is canceled; a continue already sent was reported.
       launches.delete(agent.id);
@@ -437,7 +437,7 @@ export function createResumer(options: {
     const title = agent && titleOf(agent);
     const gate = agentGate(job, agent, mode);
     if (gate) return gated(gate, title);
-    const check = await inspect(api, agent!, source, at, job.launch);
+    const check = await inspect(api, agent!, source, at, launchOf(job.agentId, job.launch));
     if (check.auth === "api") return cancel({ ...API_ROUTE, title });
     if (job.identity && check.identity && job.identity !== check.identity) {
       return cancel({ ...ACCOUNT_CHANGED, title });

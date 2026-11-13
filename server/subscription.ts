@@ -114,24 +114,19 @@ export function createSubscriptionReader(deps: {
   const readAgyUsage = createAgyUsageReader({ run: deps.run, now: deps.now });
   const readOpenCodeUsage = createOpenCodeUsageReader({ fetch: deps.fetch });
 
-  const json = async (url: string, headers: Record<string, string>) => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), TIMEOUT);
-    try {
-      const response = await fetchApi(url, { headers, signal: controller.signal, redirect: "error" });
-      if (!response.ok) throw new Error("Usage unavailable");
-      return record(await response.json());
-    } finally { clearTimeout(timer); }
-  };
-
-  /** A status and body for an endpoint whose refusal carries meaning. */
+  /** A status and body, for an endpoint whose refusal carries meaning. */
   const answer = async (url: string, headers: Record<string, string>) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), TIMEOUT);
     try {
       const response = await fetchApi(url, { headers, signal: controller.signal, redirect: "error" });
-      return { status: response.status, body: record(await response.json().catch(() => null)) };
+      return { ok: response.ok, status: response.status, body: await response.json().catch(() => undefined) };
     } finally { clearTimeout(timer); }
+  };
+  const json = async (url: string, headers: Record<string, string>) => {
+    const { ok, body } = await answer(url, headers);
+    if (!ok || body === undefined) throw new Error("Usage unavailable");
+    return record(body);
   };
 
   return async (api, agent, source, at, launch, mode = "usage", tokens) => {
@@ -220,12 +215,12 @@ export function createSubscriptionReader(deps: {
           Authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20", Accept: "application/json",
         };
         const profile = await answer("https://api.anthropic.com/api/oauth/profile", headers);
-        if (profile.status === 403 && record(record(profile.body.error).details).error_code === "oauth_scope_insufficient") {
+        if (profile.status === 403 && record(record(record(profile.body).error).details).error_code === "oauth_scope_insufficient") {
           // Valid, but scoped to model requests: follow the notice like Antigravity, bound to this token.
           return { auth: "subscription", status: "ready", identity: hash(source, fingerprint("CLAUDE_CODE_OAUTH_TOKEN", token), model) };
         }
         if (profile.status !== 200) return unknownCheck();
-        const account = record(profile.body.account), organization = record(profile.body.organization);
+        const account = record(record(profile.body).account), organization = record(record(profile.body).organization);
         if (!account.uuid || !organization.uuid) return unknownCheck();
         verifiedIdentity = hash(source, account.uuid, organization.uuid, model);
         if (mode === "identity") return { auth: "subscription", status: "unknown", identity: verifiedIdentity };
@@ -295,14 +290,16 @@ export function codexRateLimits(response: unknown, accountRead: Record<string, u
   const routed = string(record(accountRead.workspaceRouting).chatgptAccountId);
   if (!accountId || !userId || (routed && routed !== accountId)) return { auth: "subscription", status: "unknown" };
   const identity = hash("codex", accountId, userId, model);
-  const buckets = Object.values(record(limits.rateLimitsByLimitId)).map(record);
-  const bucket = buckets.find((entry) => entry.normalModelSlug === model) ?? record(limits.rateLimits);
-  const windows = ["primary", "secondary"].flatMap((id) => {
+  const windowsOf = (bucket: Record<string, unknown>): QuotaWindow[] => ["primary", "secondary"].flatMap((id) => {
     const value = record(bucket[id]), used = number(value.usedPercent);
     return used === undefined ? [] : [{ id: `${string(bucket.limitId) ?? "codex"}:${id}`, usedPct: used, resetAt: instant(value.resetsAt) }];
   });
+  const shared = windowsOf(record(limits.rateLimits));
+  const specific = Object.values(record(limits.rateLimitsByLimitId)).map(record).find((entry) => entry.normalModelSlug === model);
+  const windows = specific ? windowsOf(specific) : shared;
   if (limits.ordinaryUsageAllowed === true) return { auth: "subscription", status: "ready", identity, windows };
-  if (limits.ordinaryUsageAllowed === false) return { auth: "subscription", status: "limited", identity, windows };
+  // The refusal does not say which bucket is used up, so either one's renewal counts.
+  if (limits.ordinaryUsageAllowed === false) return { auth: "subscription", status: "limited", identity, windows: specific ? [...windows, ...shared] : windows };
   return rolling(windows, identity);
 }
 
