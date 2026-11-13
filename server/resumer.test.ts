@@ -2093,7 +2093,7 @@ test("Business raw response goes through auth, exact-model reset, persisted rest
   await signIn(home, "auth.json", { auth_mode: "chatgpt", tokens: { access_token: "private-access-token", account_id: "business-workspace" } });
   let available = false;
   const readSubscription = createSubscriptionReader({
-    codex: async () => ({ account: { account: { type: "chatgpt" } }, config: { config: { model_provider: "openai" } } }),
+    codex: async () => ({ account: { account: { type: "chatgpt" } }, config: { config: { model_provider: "openai" } }, authStatus: { authMethod: "chatgpt" } }),
     fetch: async () => new Response(JSON.stringify({
       account_id: "business-workspace", rate_limit_reached_type: { type: "workspace_member_credits_depleted" },
       spend_control: { reached: false }, credits: { has_credits: false },

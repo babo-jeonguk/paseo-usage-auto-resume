@@ -22,8 +22,8 @@
 
 | Provider | 보내기 전에 |
 | --- | --- |
-| Codex | ChatGPT 구독 사용량이 남았는지 확인합니다. |
-| Claude | claude.ai 구독 사용량이 남았는지 확인합니다. |
+| Codex | ChatGPT 구독 사용량이 남았는지 확인합니다. 워크스페이스 액세스 토큰(`CODEX_ACCESS_TOKEN`)도 마찬가지입니다. |
+| Claude | claude.ai 구독 사용량이 남았는지 확인합니다. 사용량을 읽을 수 없는 setup token(`CLAUDE_CODE_OAUTH_TOKEN`)이면 한도 안내를 따릅니다. |
 | Antigravity | 가능하면 모델의 쿼터를 확인하고, 확인할 수 없으면 한도 안내를 따릅니다. |
 | OpenCode | Go: Go 사용량 창을 확인합니다. 무료 모델: OpenCode가 무료 사용 한도와 함께 기록한 리셋 시각까지 기다립니다. |
 

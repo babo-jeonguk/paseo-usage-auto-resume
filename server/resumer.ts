@@ -8,7 +8,7 @@ import { detectLimitStop } from "./limit";
 import type { HistoryRow, RescheduleResult, ResumeNowResult, ScheduledJob, SetNoteResult, Waiting } from "../shared/rpc";
 import type { HistoryStore } from "./history";
 import type { JobStore, ResumeJob } from "./store";
-import { captureLaunch, createSubscriptionReader, subscriptionModel, unknownCheck, type LaunchContext, type SubscriptionCheck, type SubscriptionReader } from "./subscription";
+import { captureLaunch, captureTokens, createSubscriptionReader, subscriptionModel, unknownCheck, type LaunchContext, type LaunchTokens, type SubscriptionCheck, type SubscriptionReader } from "./subscription";
 import { RETRY_DELAYS_MS, rescheduleWindow } from "../shared/schedule";
 import { DEFAULT_PROVIDER_SETTINGS, DEFAULT_RESUME_SETTINGS, isProviderOn, type ProviderSettings, type ResumeSettings, type UsageSource } from "../shared/settings";
 import { cliFor, providerLabels } from "./providers";
@@ -130,16 +130,26 @@ export function createResumer(options: {
   const random = options.random ?? Math.random;
   let paseo: ResumerApi | null = null;
   let ticking = false;
-  const launches = new Map<string, LaunchContext>();
+  /**
+   * Each agent's latest session: the context a reservation saves, and beside it the automation
+   * token values, which stay in this map and are never saved or logged.
+   */
+  const launches = new Map<string, { context: LaunchContext; tokens: LaunchTokens }>();
   const readSubscription = options.readSubscription ?? createSubscriptionReader();
-  const inspect = async (api: ResumerApi, agent: PaseoAgent, source: UsageSource, at: Date, launch?: LaunchContext, mode?: "identity" | "usage") => {
-    try { return await readSubscription(api, agent, source, at, launch, mode); }
+  /** The session the agent opened in this process, else the context its reservation saved. */
+  const launchOf = (agentId: string, saved: LaunchContext | undefined) => {
+    const remembered = launches.get(agentId);
+    return remembered ? { launch: remembered.context, tokens: remembered.tokens } : { launch: saved, tokens: undefined };
+  };
+  const inspect = async (api: ResumerApi, agent: PaseoAgent, source: UsageSource, at: Date, saved: LaunchContext | undefined, mode?: "identity" | "usage") => {
+    const { launch, tokens } = launchOf(agent.id, saved);
+    try { return await readSubscription(api, agent, source, at, launch, mode, tokens); }
     catch { return unknownCheck(); }
   };
 
   // Only the fields read here, so the request type can grow across Paseo versions.
   function rememberSession(request: Pick<PluginSessionOpenRequest, "agentId" | "purpose" | "env">): void {
-    if (request.purpose === "interactive") launches.set(request.agentId, captureLaunch(request));
+    if (request.purpose === "interactive") launches.set(request.agentId, { context: captureLaunch(request), tokens: captureTokens(request) });
   }
 
   async function loadAgent(api: ResumerApi, agentId: string): Promise<PaseoAgent | null> {
@@ -221,10 +231,10 @@ export function createResumer(options: {
     // continue it counts as one more.
     const waits = (row: ResumeJob | null | undefined) => !!row && row.state !== "sent";
     if (options.onlyIfNone && waits(previous)) return;
-    const launch = launches.get(agent.id) ?? previous?.launch;
+    const { launch } = launchOf(agent.id, previous?.launch);
     const at = now();
     // A notice or capacity failure supplies the schedule; bind identity without reading usage.
-    const check = await inspect(api, agent, source, at, launch, stated || options.overload ? "identity" : "usage");
+    const check = await inspect(api, agent, source, at, previous?.launch, stated || options.overload ? "identity" : "usage");
     if (check.auth === "api") {
       // Only a reservation still waiting is canceled; a continue already sent was reported.
       launches.delete(agent.id);
@@ -427,7 +437,7 @@ export function createResumer(options: {
     const title = agent && titleOf(agent);
     const gate = agentGate(job, agent, mode);
     if (gate) return gated(gate, title);
-    const check = await inspect(api, agent!, source, at, launches.get(job.agentId) ?? job.launch);
+    const check = await inspect(api, agent!, source, at, job.launch);
     if (check.auth === "api") return cancel({ ...API_ROUTE, title });
     if (job.identity && check.identity && job.identity !== check.identity) {
       return cancel({ ...ACCOUNT_CHANGED, title });
