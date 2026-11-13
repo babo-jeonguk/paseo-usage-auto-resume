@@ -51,6 +51,7 @@ if (args.join(' ') === 'auth status --json') {
     else if (m.method === 'account/read') result = {account:{type:s.authFailure?'':s.api?'apiKey':'chatgpt',
       email:'fixture@example.invalid',planType:s.plan}};
     else if (m.method === 'config/read') result = {config:{model_provider:'openai'}};
+    else if (m.method === 'getAuthStatus') result = {authMethod:s.authFailure?null:s.api?'apikey':'chatgpt',authToken:null,requiresOpenaiAuth:true};
     else { process.exitCode = 42; return; }
     process.stdout.write(JSON.stringify({id:m.id,result}) + '\n');
   });

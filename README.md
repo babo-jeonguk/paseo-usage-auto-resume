@@ -22,8 +22,8 @@ Actual Paseo web interface with sample reservations. Each row shows what is sche
 
 | Provider | Before sending |
 | --- | --- |
-| Codex | Checks that your ChatGPT subscription has usage left. |
-| Claude | Checks that your claude.ai subscription has usage left. |
+| Codex | Checks that your ChatGPT subscription has usage left, also for a workspace access token (`CODEX_ACCESS_TOKEN`). |
+| Claude | Checks that your claude.ai subscription has usage left. With a setup token (`CLAUDE_CODE_OAUTH_TOKEN`), which cannot read usage, follows the limit message. |
 | Antigravity | Checks the model's quota when available; otherwise follows the limit message. |
 | OpenCode | Go: checks the Go usage windows. Free models: waits for the reset time OpenCode recorded with the free-usage limit. |
 

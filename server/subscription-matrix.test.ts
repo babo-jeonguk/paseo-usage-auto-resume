@@ -17,12 +17,20 @@ const SESSION = "2026-10-18T05:00:00.000Z";
 const WEEK = "2026-10-23T00:00:00.000Z";
 const DUE = "2026-10-23T00:02:00.000Z";
 const epoch = (iso: string) => Date.parse(iso) / 1000;
+/** Routes a variable alone decides, because the CLI's own report cannot show them. */
 const API_ROUTES = [
-  ["codex", ["CODEX_API_KEY", "CODEX_ACCESS_TOKEN", "OPENAI_BASE_URL"]],
-  ["claude", ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"]],
+  ["codex", ["OPENAI_BASE_URL"]],
+  ["claude", ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"]],
   ["antigravity", ["GEMINI_API_KEY", "AGY_ADC_AUTH", "GOOGLE_GEMINI_BASE_URL"]],
 ] as const;
-const cleanAuthEnv = Object.fromEntries(["OPENAI_API_KEY", ...API_ROUTES.flatMap(([, keys]) => [...keys])].map((key) => [key, ""]));
+/** Decided by what the CLI reports, never by the variable alone. */
+const REPORTED = ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN",
+  "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"];
+const cleanAuthEnv = Object.fromEntries([...REPORTED, ...API_ROUTES.flatMap(([, keys]) => [...keys])].map((key) => [key, ""]));
+// Synthetic automation tokens. Only these prefixes load in the fake CLIs below.
+const SETUP_TOKEN = "sk-ant-oat01-fixture-setup-token";
+const ACCESS_TOKEN = "at-fixture-access-token";
+const switchedOn = (value: string | undefined) => !!value && value !== "0" && value !== "false";
 
 // Synthetic contract fixtures: plan labels exercise the absence of plan-name gating.
 // They are NOT captures from paid accounts and do not prove live plan compatibility.
@@ -40,7 +48,14 @@ async function harness(t: TestContext, source: UsageSource, plan: string) {
     : { claudeAiOauth: { accessToken: token, expiresAt: Date.parse(WEEK) + 86_400_000 } });
   await writeFile(authPath, credentials);
   let clock = new Date(START);
-  const state = { ready: false, outage: false, changed: false, nativeOrgId: true, fetches: 0, usageFetches: 0, accountType: "chatgpt" };
+  const state = {
+    ready: false, outage: false, changed: false, nativeOrgId: true, fetches: 0, usageFetches: 0, accountType: "chatgpt",
+    /** What Codex's getAuthStatus reports for a loaded credential. */
+    codexAuth: "chatgpt", userId: "user-a",
+    /** Claude's auth status cannot be read. */
+    reportUnreadable: false, revoked: false, probes: 0,
+  };
+  const providerEnv: Record<string, string> = { ...cleanAuthEnv, CODEX_HOME: home, CLAUDE_CONFIG_DIR: home, CLAUDE_SECURESTORAGE_CONFIG_DIR: home };
   const sent: Array<{ agentId: string; text: string }> = [];
   const agent = {
     id: "same-agent", provider, cwd: dir, model, status: "idle", updatedAt: START,
@@ -49,7 +64,7 @@ async function harness(t: TestContext, source: UsageSource, plan: string) {
   const api = {
     config: { get: async () => ({ config: { providers: {
       [provider]: { extends: `${source}-base` },
-      [`${source}-base`]: { extends: source, env: { ...cleanAuthEnv, CODEX_HOME: home, CLAUDE_CONFIG_DIR: home, CLAUDE_SECURESTORAGE_CONFIG_DIR: home } },
+      [`${source}-base`]: { extends: source, env: providerEnv },
     } } }) },
     agents: {
       list: async () => ({ entries: [], pageInfo: { hasMore: false } }),
@@ -62,12 +77,38 @@ async function harness(t: TestContext, source: UsageSource, plan: string) {
   } as unknown as ResumerApi;
   const read = createSubscriptionReader({
     readClaudeCredentials: createClaudeCredentialReader({ platform: "linux" }),
-    codex: async () => ({
-      account: { account: { type: state.accountType, planType: plan } },
-      config: { config: { model_provider: "openai" } },
-    }),
-    run: async (_command, args) => {
+    codex: async (_command, _args, options) => {
+      state.probes++;
+      const envToken = options.env.CODEX_ACCESS_TOKEN;
+      // Like Codex, an environment token masks the saved login, and one that cannot load leaves no account.
+      if (envToken && !envToken.startsWith("at-fixture") && !envToken.startsWith("agent-fixture")) {
+        return { account: { account: null, requiresOpenaiAuth: true }, config: { config: { model_provider: "openai" } },
+          authStatus: { authMethod: null, authToken: null } };
+      }
+      const accessToken = state.codexAuth === "personalAccessToken" || state.codexAuth === "agentIdentity";
+      const { session, week } = usedNow();
+      return {
+        account: { account: { type: state.accountType, planType: plan }, userId: state.userId,
+          workspaceRouting: state.codexAuth === "personalAccessToken" ? { chatgptAccountId: "workspace-a" } : null },
+        config: { config: { model_provider: "openai" } },
+        authStatus: { authMethod: state.codexAuth, authToken: null },
+        rateLimits: accessToken && !state.outage ? {
+          accountId: state.changed ? "workspace-b" : "workspace-a", ordinaryUsageAllowed: null,
+          rateLimits: { limitId: "codex", primary: { usedPercent: session, resetsAt: epoch(SESSION) }, secondary: { usedPercent: week, resetsAt: epoch(WEEK) } },
+          rateLimitsByLimitId: {},
+        } : undefined,
+      };
+    },
+    run: async (_command, args, options) => {
       assert.deepEqual(args, ["auth", "status", "--json"]);
+      state.probes++;
+      if (state.reportUnreadable) throw new Error("CLI exited with 1");
+      // Claude's own precedence: cloud switches, then an API key, then a setup token, then a saved login.
+      const env = options.env;
+      const cloud = (["BEDROCK", "VERTEX", "FOUNDRY"] as const).find((name) => switchedOn(env[`CLAUDE_CODE_USE_${name}`]));
+      if (cloud) return JSON.stringify({ loggedIn: true, authMethod: "third_party", apiProvider: cloud.toLowerCase() });
+      if (env.ANTHROPIC_API_KEY) return JSON.stringify({ loggedIn: true, authMethod: "api_key", apiProvider: "firstParty" });
+      if (env.CLAUDE_CODE_OAUTH_TOKEN) return JSON.stringify({ loggedIn: true, authMethod: "oauth_token", apiProvider: "firstParty", loginExpiresAt: null });
       return JSON.stringify({ loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty",
         subscriptionType: plan, email: "fixture@example.invalid", ...(state.nativeOrgId ? { orgId: state.changed ? "org-b" : "org-a" } : {}),
       });
@@ -76,10 +117,19 @@ async function harness(t: TestContext, source: UsageSource, plan: string) {
       state.fetches++;
       if (String(url).endsWith("/usage")) state.usageFetches++;
       assert.equal(options?.redirect, "error");
-      assert.equal((options?.headers as Record<string, string>).Authorization, `Bearer ${token}`);
+      const authorization = (options?.headers as Record<string, string>).Authorization;
+      if (authorization.startsWith("Bearer sk-ant-oat01-")) {
+        // Measured: a setup token is valid for model requests but may not read the profile.
+        assert.ok(String(url).endsWith("/profile"), "a setup token only checks the profile");
+        if (state.revoked || !authorization.startsWith("Bearer sk-ant-oat01-fixture")) {
+          return new Response(JSON.stringify({ type: "error", error: { type: "authentication_error" } }), { status: 401 });
+        }
+        return new Response(JSON.stringify({ type: "error", error: { type: "permission_error",
+          details: { error_code: "oauth_scope_insufficient" } } }), { status: 403 });
+      }
+      assert.equal(authorization, `Bearer ${token}`);
       if (state.outage) return new Response("unavailable", { status: 503 });
-      const used = state.ready ? 0 : 100;
-      const sessionUsed = clock.getTime() >= Date.parse(SESSION) ? 0 : used;
+      const { session: sessionUsed, week: used } = usedNow();
       let payload: unknown;
       if (source === "codex") {
         payload = { account_id: state.changed ? "workspace-b" : "workspace-a", plan_type: plan,
@@ -100,6 +150,10 @@ async function harness(t: TestContext, source: UsageSource, plan: string) {
       return new Response(JSON.stringify(payload), { status: 200 });
     },
   });
+  function usedNow() {
+    const week = state.ready ? 0 : 100;
+    return { week, session: clock.getTime() >= Date.parse(SESSION) ? 0 : week };
+  }
   const storePath = join(dir, "jobs.json");
   const store = createJobStore(storePath);
   const makeResumer = () => createResumer({ store: createJobStore(storePath), now: () => clock, readSubscription: read });
@@ -110,7 +164,7 @@ async function harness(t: TestContext, source: UsageSource, plan: string) {
       ? "Individual quota reached. Resets in 120h." : "Usage limit reached" } },
     timeline: [],
   };
-  return { state, agent, api, store, resumer, makeResumer, sent, event, authPath, credentials,
+  return { state, agent, api, store, storePath, resumer, makeResumer, sent, event, authPath, credentials, providerEnv,
     setTime: (value: string) => { clock = new Date(value); },
   };
 }
@@ -305,4 +359,245 @@ test("Codex synthetic: native account selection disambiguates OPENAI_API_KEY and
   await h.resumer.onTurnEnded(h.event, h.api);
   assert.deepEqual(await h.store.list(), []);
   assert.equal(h.state.fetches, fetches, "the API login must never fetch subscription usage");
+});
+
+const RESET = "2026-10-18T05:00:00.000Z";
+const AFTER_RESET = "2026-10-18T05:02:00.000Z";
+const statedNotice = { kind: "failed", error: { message: "Usage limit reached. Try again in 5 hours." } } as const;
+const open = (h: Awaited<ReturnType<typeof harness>>, env: Record<string, string>) =>
+  h.resumer.rememberSession({ agentId: h.agent.id, purpose: "interactive", env });
+const tokenFree = async (h: Awaited<ReturnType<typeof harness>>) =>
+  assert.doesNotMatch(await readFile(h.storePath, "utf8"), /fixture-setup-token|fixture-access-token|fixture-rotated|agent-fixture/);
+
+test("Claude setup token: a stated reset continues once after it, through a restart that finds the same token", async (t) => {
+  const h = await harness(t, "claude", "team");
+  open(h, { CLAUDE_CODE_OAUTH_TOKEN: SETUP_TOKEN });
+  h.event.outcome = statedNotice;
+  await h.resumer.attach(h.api);
+  await h.resumer.onTurnEnded(h.event, h.api);
+  const [job] = await h.store.list();
+  assert.equal(job?.dueAt, AFTER_RESET);
+  assert.equal(job?.waiting, undefined);
+  assert.ok(job?.identity, "bound to the token's fingerprint");
+  await tokenFree(h);
+  h.providerEnv.CLAUDE_CODE_OAUTH_TOKEN = SETUP_TOKEN;
+  h.setTime(AFTER_RESET);
+  const restarted = h.makeResumer();
+  await restarted.attach(h.api);
+  await restarted.tick();
+  assert.deepEqual(h.sent, [{ agentId: h.agent.id, text: CONTINUE_PROMPT }]);
+  assert.equal(h.state.usageFetches, 0, "a setup token never reads usage");
+});
+
+test("Claude setup token: without a reset it continues after 15, 30 and 60 minutes, then gives up", async (t) => {
+  const h = await harness(t, "claude", "team");
+  open(h, { CLAUDE_CODE_OAUTH_TOKEN: SETUP_TOKEN });
+  await h.resumer.attach(h.api);
+  let at = Date.parse(START);
+  for (const minutes of [15, 30, 60]) {
+    await h.resumer.onTurnEnded(h.event, h.api);
+    const [job] = await h.store.list();
+    assert.equal(job?.dueAt, new Date(at + minutes * 60_000).toISOString());
+    at += minutes * 60_000;
+    h.setTime(new Date(at).toISOString());
+    await h.resumer.tick();
+  }
+  assert.equal(h.sent.length, 3);
+  await h.resumer.onTurnEnded(h.event, h.api);
+  assert.deepEqual(await h.store.list(), [], "the bounded sequence gives up");
+});
+
+test("Claude setup token: Resume now sends at once, and a token revoked by due time waits instead of sending", async (t) => {
+  const h = await harness(t, "claude", "team");
+  open(h, { CLAUDE_CODE_OAUTH_TOKEN: SETUP_TOKEN });
+  h.event.outcome = statedNotice;
+  await h.resumer.attach(h.api);
+  await h.resumer.onTurnEnded(h.event, h.api);
+  h.state.revoked = true;
+  h.setTime(AFTER_RESET);
+  await h.resumer.tick();
+  assert.deepEqual(h.sent, []);
+  const [waiting] = await h.store.list();
+  assert.equal(waiting?.waiting, "auth");
+  h.state.revoked = false;
+  assert.equal((await h.resumer.resumeNow(h.api, h.agent.id, await pinOf(h.store, h.agent.id, waiting!.dueAt))).result, "sent");
+  assert.equal(h.sent.length, 1);
+});
+
+test("Claude setup token: replacing the token cancels the reservation as an account change", async (t) => {
+  const h = await harness(t, "claude", "team");
+  open(h, { CLAUDE_CODE_OAUTH_TOKEN: SETUP_TOKEN });
+  h.event.outcome = statedNotice;
+  await h.resumer.attach(h.api);
+  await h.resumer.onTurnEnded(h.event, h.api);
+  open(h, { CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-fixture-replacement" });
+  h.setTime(AFTER_RESET);
+  await h.resumer.tick();
+  assert.deepEqual(h.sent, []);
+  assert.deepEqual(await h.store.list(), []);
+});
+
+test("Claude setup token with an API key: API billing from the report, and an unreadable report waits first", async (t) => {
+  const h = await harness(t, "claude", "team");
+  open(h, { CLAUDE_CODE_OAUTH_TOKEN: SETUP_TOKEN, ANTHROPIC_API_KEY: "fixture-api-key" });
+  await h.resumer.attach(h.api);
+  h.state.reportUnreadable = true;
+  await h.resumer.onTurnEnded(h.event, h.api);
+  assert.equal((await h.store.list())[0]?.waiting, "auth", "no report, no API-billing verdict");
+  h.state.reportUnreadable = false;
+  h.setTime("2026-10-18T00:15:00.000Z");
+  await h.resumer.tick();
+  assert.deepEqual(await h.store.list(), []);
+  assert.deepEqual(h.sent, []);
+  assert.equal(h.state.fetches, 0, "an API route never reads subscription endpoints");
+});
+
+for (const [name, value, route] of [
+  ["CLAUDE_CODE_USE_BEDROCK", "1", "api"], ["CLAUDE_CODE_USE_VERTEX", "1", "api"], ["CLAUDE_CODE_USE_FOUNDRY", "true", "api"],
+  ["CLAUDE_CODE_USE_BEDROCK", "0", "setup token"], ["CLAUDE_CODE_USE_VERTEX", "false", "setup token"],
+] as const) {
+  test(`Claude ${name}=${value} with a setup token is the ${route} route, as the report says`, async (t) => {
+    const h = await harness(t, "claude", "team");
+    open(h, { CLAUDE_CODE_OAUTH_TOKEN: SETUP_TOKEN, [name]: value });
+    h.event.outcome = statedNotice;
+    await h.resumer.attach(h.api);
+    await h.resumer.onTurnEnded(h.event, h.api);
+    if (route === "api") assert.deepEqual(await h.store.list(), []);
+    else assert.equal((await h.store.list())[0]?.dueAt, AFTER_RESET);
+  });
+}
+
+test("Claude ANTHROPIC_AUTH_TOKEN with a setup token is API billing before any probe", async (t) => {
+  const h = await harness(t, "claude", "team");
+  open(h, { CLAUDE_CODE_OAUTH_TOKEN: SETUP_TOKEN, ANTHROPIC_AUTH_TOKEN: "fixture-gateway-token" });
+  await h.resumer.onTurnEnded(h.event, h.api);
+  assert.deepEqual(await h.store.list(), []);
+  assert.equal(h.state.probes, 0);
+});
+
+for (const [label, codexAuth, env] of [
+  ["environment personal access token", "personalAccessToken", { CODEX_ACCESS_TOKEN: ACCESS_TOKEN }],
+  ["persisted personal access token", "personalAccessToken", {}],
+  ["legacy agent identity", "agentIdentity", { CODEX_ACCESS_TOKEN: "agent-fixture-identity" }],
+] as const) {
+  test(`Codex ${label}: exhausted windows renew, then one continue after verification, through a restart`, async (t) => {
+    const h = await harness(t, "codex", "business");
+    h.state.codexAuth = codexAuth;
+    await rm(h.authPath);
+    open(h, env);
+    await h.resumer.attach(h.api);
+    await h.resumer.onTurnEnded(h.event, h.api);
+    const [job] = await h.store.list();
+    assert.equal(job?.resetAt, WEEK);
+    assert.equal(job?.dueAt, DUE);
+    assert.ok(job?.identity);
+    await tokenFree(h);
+    if ("CODEX_ACCESS_TOKEN" in env) h.providerEnv.CODEX_ACCESS_TOKEN = env.CODEX_ACCESS_TOKEN;
+    const restarted = h.makeResumer();
+    h.setTime(DUE);
+    await restarted.attach(h.api);
+    assert.deepEqual(h.sent, [], "delivery rechecks quota before sending");
+    assert.equal((await h.store.list())[0]?.waiting, "usage");
+    h.state.ready = true;
+    h.setTime("2026-10-23T00:17:00.000Z");
+    await restarted.tick();
+    await restarted.tick();
+    assert.deepEqual(h.sent, [{ agentId: h.agent.id, text: CONTINUE_PROMPT }]);
+    assert.equal(h.state.fetches, 0, "no access token reaches plugin HTTP code");
+  });
+}
+
+test("Codex access token: rotation for the same seat keeps the reservation, another user cancels it", async (t) => {
+  const h = await harness(t, "codex", "business");
+  h.state.codexAuth = "personalAccessToken";
+  open(h, { CODEX_ACCESS_TOKEN: ACCESS_TOKEN });
+  await h.resumer.attach(h.api);
+  await h.resumer.onTurnEnded(h.event, h.api);
+  open(h, { CODEX_ACCESS_TOKEN: "at-fixture-rotated" });
+  h.setTime(DUE);
+  await h.resumer.tick();
+  assert.equal((await h.store.list())[0]?.waiting, "usage", "kept, still waiting for renewed usage");
+  h.state.userId = "user-b";
+  h.state.ready = true;
+  h.setTime("2026-10-23T00:17:00.000Z");
+  await h.resumer.tick();
+  assert.deepEqual(h.sent, []);
+  assert.deepEqual(await h.store.list(), []);
+});
+
+test("Codex ChatGPT login with CODEX_API_KEY in the environment resumes; a reported API key is API billing", async (t) => {
+  const h = await harness(t, "codex", "plus");
+  open(h, { CODEX_API_KEY: "fixture-api-key-for-other-tools" });
+  await h.resumer.attach(h.api);
+  await h.resumer.onTurnEnded(h.event, h.api);
+  assert.ok((await h.store.list())[0]?.identity);
+  h.state.codexAuth = "apikey";
+  h.setTime(DUE);
+  await h.resumer.tick();
+  assert.deepEqual(await h.store.list(), []);
+  assert.deepEqual(h.sent, []);
+});
+
+for (const source of ["claude", "codex"] as const) {
+  test(`${source} automation token: a restart without the matching token waits for verification`, async (t) => {
+    const h = await harness(t, source, "team");
+    if (source === "codex") { h.state.codexAuth = "personalAccessToken"; h.state.ready = true; }
+    const [name, value] = source === "codex" ? ["CODEX_ACCESS_TOKEN", ACCESS_TOKEN] : ["CLAUDE_CODE_OAUTH_TOKEN", SETUP_TOKEN];
+    open(h, { [name]: value });
+    h.event.outcome = statedNotice;
+    await h.resumer.attach(h.api);
+    await h.resumer.onTurnEnded(h.event, h.api);
+    const [job] = await h.store.list();
+    assert.ok(job?.identity, "verified while the session's token was in memory");
+    assert.equal(job?.waiting, undefined);
+    h.providerEnv[name] = value.replace("fixture", "fixture-other");
+    const restarted = h.makeResumer();
+    h.setTime(AFTER_RESET);
+    await restarted.attach(h.api);
+    await restarted.tick();
+    assert.deepEqual(h.sent, []);
+    assert.equal((await h.store.list())[0]?.waiting, "auth");
+  });
+}
+
+test("Codex access token: a token rotated for the same seat survives a restart that only has the new token", async (t) => {
+  const h = await harness(t, "codex", "business");
+  h.state.codexAuth = "personalAccessToken";
+  open(h, { CODEX_ACCESS_TOKEN: ACCESS_TOKEN });
+  await h.resumer.attach(h.api);
+  await h.resumer.onTurnEnded(h.event, h.api);
+  open(h, { CODEX_ACCESS_TOKEN: "at-fixture-rotated" });
+  h.setTime(DUE);
+  await h.resumer.tick();
+  assert.equal((await h.store.list())[0]?.waiting, "usage");
+  h.providerEnv.CODEX_ACCESS_TOKEN = "at-fixture-rotated";
+  const restarted = h.makeResumer();
+  h.state.ready = true;
+  h.setTime("2026-10-23T00:17:00.000Z");
+  await restarted.attach(h.api);
+  await restarted.tick();
+  await restarted.tick();
+  assert.deepEqual(h.sent, [{ agentId: h.agent.id, text: CONTINUE_PROMPT }], "the verified seat's latest token is what a restart looks for");
+  await tokenFree(h);
+});
+
+test("Codex access token: a blocked Resume now still saves the rotated token for a restart", async (t) => {
+  const h = await harness(t, "codex", "business");
+  h.state.codexAuth = "personalAccessToken";
+  open(h, { CODEX_ACCESS_TOKEN: ACCESS_TOKEN });
+  await h.resumer.attach(h.api);
+  await h.resumer.onTurnEnded(h.event, h.api);
+  const [job] = await h.store.list();
+  open(h, { CODEX_ACCESS_TOKEN: "at-fixture-rotated" });
+  assert.equal((await h.resumer.resumeNow(h.api, h.agent.id, await pinOf(h.store, h.agent.id, job!.dueAt))).result, "used_up");
+  const [blocked] = await h.store.list();
+  assert.equal(blocked?.dueAt, job?.dueAt, "a blocked Resume now leaves the time alone");
+  h.providerEnv.CODEX_ACCESS_TOKEN = "at-fixture-rotated";
+  const restarted = h.makeResumer();
+  h.state.ready = true;
+  h.setTime(DUE);
+  await restarted.attach(h.api);
+  await restarted.tick();
+  await restarted.tick();
+  assert.deepEqual(h.sent, [{ agentId: h.agent.id, text: CONTINUE_PROMPT }]);
 });
