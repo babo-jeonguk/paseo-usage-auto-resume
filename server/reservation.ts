@@ -132,7 +132,7 @@ const unchanged = (stored: ResumeJob, job: ResumeJob) =>
  * A due reservation that usage holds, moved to when it renews or can be checked again. The time
  * is no longer the user's; a renewal starts the retry sequence over.
  */
-export function postponed(current: ResumeJob, hold: { renewsAt: Date | null; waiting?: Waiting; identity?: string; at: Date; usedUp?: boolean }): ResumeJob {
+export function postponed(current: ResumeJob, hold: { renewsAt: Date | null; waiting?: Waiting; identity?: string; at: Date; usedUp?: boolean; launch?: ResumeJob["launch"] }): ResumeJob {
   return {
     ...current,
     ...(hold.usedUp && current.kind === "overload" ? { kind: undefined, overloadStep: undefined } : {}),
@@ -140,6 +140,7 @@ export function postponed(current: ResumeJob, hold: { renewsAt: Date | null; wai
     dueAt: dueFor(hold.renewsAt, hold.at),
     waiting: hold.renewsAt ? undefined : hold.waiting,
     identity: current.identity ?? hold.identity,
+    launch: hold.launch ?? current.launch,
     retries: hold.renewsAt || hold.usedUp && current.kind === "overload" ? 0 : current.retries,
     userChosenTime: undefined,
   };
@@ -155,7 +156,8 @@ export const switched = (current: ResumeJob, enabled: boolean): ResumeJob => ({ 
 export const noted = (current: ResumeJob, note: string): ResumeJob => ({ ...current, note: note || undefined });
 
 /** Claimed for sending: a crash from here on drops it rather than sending twice. */
-export const claimed = (current: ResumeJob, identity?: string): ResumeJob => ({ ...current, identity, waiting: undefined, state: "sending" });
+export const claimed = (current: ResumeJob, identity?: string, launch?: ResumeJob["launch"]): ResumeJob =>
+  ({ ...current, identity, launch: launch ?? current.launch, waiting: undefined, state: "sending" });
 
 /** Sent: the record stays until a turn finishes; what the user set for this continue is gone with it. */
 export const sent = (current: ResumeJob): ResumeJob => ({ ...current, state: "sent", note: undefined, userChosenTime: undefined });

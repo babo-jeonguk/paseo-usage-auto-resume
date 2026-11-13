@@ -146,6 +146,12 @@ export function createResumer(options: {
     catch { return unknownCheck(); }
   };
 
+  /**
+   * The session a check verified the reservation's account with. A token rotated for the same
+   * account is saved with it, so a restart that only has the new token still recognizes it.
+   */
+  const verifiedLaunch = (check: SubscriptionCheck, launch: LaunchContext | undefined) => check.identity ? launch : undefined;
+
   // Only the fields read here, so the request type can grow across Paseo versions.
   function rememberSession(request: Pick<PluginSessionOpenRequest, "agentId" | "purpose" | "env">): void {
     if (request.purpose === "interactive") launches.set(request.agentId, { context: captureLaunch(request), tokens: captureTokens(request) });
@@ -387,14 +393,14 @@ export function createResumer(options: {
    * A used-up window, or a stated reset still ahead, moves a due job to when it renews; unverified
    * auth or usage moves it to the next check. False when nothing holds it.
    */
-  async function postpone(job: ResumeJob, check: SubscriptionCheck, at: Date): Promise<boolean> {
+  async function postpone(job: ResumeJob, check: SubscriptionCheck, at: Date, launch: ResumeJob["launch"]): Promise<boolean> {
     const hold = usageHold(check, at);
     const stated = job.resetAt && Date.parse(job.resetAt) > at.getTime() ? new Date(job.resetAt) : null;
     const renewsAt = renewalFor(hold, stated);
     if (hold.kind === "ready" && !renewsAt) return false;
     const waiting = hold.kind === "unverified" ? hold.waiting : "usage";
     await store.update(job.agentId, (current) => current && isSameJob(current, job) && current.enabled
-      ? postponed(current, { renewsAt, waiting, identity: check.identity, at, usedUp: hold.kind === "used_up" }) : undefined);
+      ? postponed(current, { renewsAt, waiting, identity: check.identity, at, usedUp: hold.kind === "used_up", launch: verifiedLaunch(check, launch) }) : undefined);
     return true;
   }
 
@@ -437,7 +443,8 @@ export function createResumer(options: {
     const title = agent && titleOf(agent);
     const gate = agentGate(job, agent, mode);
     if (gate) return gated(gate, title);
-    const check = await inspect(api, agent!, source, at, launchOf(job.agentId, job.launch));
+    const session = launchOf(job.agentId, job.launch);
+    const check = await inspect(api, agent!, source, at, session);
     if (check.auth === "api") return cancel({ ...API_ROUTE, title });
     if (job.identity && check.identity && job.identity !== check.identity) {
       return cancel({ ...ACCOUNT_CHANGED, title });
@@ -447,7 +454,7 @@ export function createResumer(options: {
       const hold = usageHold(check, at);
       if (hold.kind === "used_up") return { result: "used_up", until: hold.renews?.toISOString() ?? null };
       if (hold.kind === "unverified") return { result: "unverified", waiting: hold.waiting };
-    } else if (await postpone(job, check, at)) {
+    } else if (await postpone(job, check, at, session.launch)) {
       return { result: "postponed" };
     }
     // The usage lookup takes seconds, and Paseo's send unarchives an agent, clears its permission
@@ -473,7 +480,7 @@ export function createResumer(options: {
       if (!current || !isSameJob(current, job) || (!manual && !current.enabled)) return undefined;
       won = true;
       note = current.note;
-      return claimed(current, check.identity);
+      return claimed(current, check.identity, verifiedLaunch(check, session.launch));
     });
     if (!won) return staleResult(latest);
     // Read once claimed, so a prompt saved while the agent was being checked is the one sent. A

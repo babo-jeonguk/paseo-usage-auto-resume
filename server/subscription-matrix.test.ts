@@ -559,3 +559,24 @@ for (const source of ["claude", "codex"] as const) {
     assert.equal((await h.store.list())[0]?.waiting, "auth");
   });
 }
+
+test("Codex access token: a token rotated for the same seat survives a restart that only has the new token", async (t) => {
+  const h = await harness(t, "codex", "business");
+  h.state.codexAuth = "personalAccessToken";
+  open(h, { CODEX_ACCESS_TOKEN: ACCESS_TOKEN });
+  await h.resumer.attach(h.api);
+  await h.resumer.onTurnEnded(h.event, h.api);
+  open(h, { CODEX_ACCESS_TOKEN: "at-fixture-rotated" });
+  h.setTime(DUE);
+  await h.resumer.tick();
+  assert.equal((await h.store.list())[0]?.waiting, "usage");
+  h.providerEnv.CODEX_ACCESS_TOKEN = "at-fixture-rotated";
+  const restarted = h.makeResumer();
+  h.state.ready = true;
+  h.setTime("2026-10-23T00:17:00.000Z");
+  await restarted.attach(h.api);
+  await restarted.tick();
+  await restarted.tick();
+  assert.deepEqual(h.sent, [{ agentId: h.agent.id, text: CONTINUE_PROMPT }], "the verified seat's latest token is what a restart looks for");
+  await tokenFree(h);
+});
