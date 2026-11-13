@@ -580,3 +580,24 @@ test("Codex access token: a token rotated for the same seat survives a restart t
   assert.deepEqual(h.sent, [{ agentId: h.agent.id, text: CONTINUE_PROMPT }], "the verified seat's latest token is what a restart looks for");
   await tokenFree(h);
 });
+
+test("Codex access token: a blocked Resume now still saves the rotated token for a restart", async (t) => {
+  const h = await harness(t, "codex", "business");
+  h.state.codexAuth = "personalAccessToken";
+  open(h, { CODEX_ACCESS_TOKEN: ACCESS_TOKEN });
+  await h.resumer.attach(h.api);
+  await h.resumer.onTurnEnded(h.event, h.api);
+  const [job] = await h.store.list();
+  open(h, { CODEX_ACCESS_TOKEN: "at-fixture-rotated" });
+  assert.equal((await h.resumer.resumeNow(h.api, h.agent.id, await pinOf(h.store, h.agent.id, job!.dueAt))).result, "used_up");
+  const [blocked] = await h.store.list();
+  assert.equal(blocked?.dueAt, job?.dueAt, "a blocked Resume now leaves the time alone");
+  h.providerEnv.CODEX_ACCESS_TOKEN = "at-fixture-rotated";
+  const restarted = h.makeResumer();
+  h.state.ready = true;
+  h.setTime(DUE);
+  await restarted.attach(h.api);
+  await restarted.tick();
+  await restarted.tick();
+  assert.deepEqual(h.sent, [{ agentId: h.agent.id, text: CONTINUE_PROMPT }]);
+});

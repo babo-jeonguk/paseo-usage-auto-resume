@@ -403,3 +403,13 @@ test("Codex's own auth status decides the route; CODEX_API_KEY, which its app-se
   assert.deepEqual(await read(api(), agent("codex"), "codex", at, flagOnly), { auth: "unknown", status: "unknown" });
   assert.equal(probes, 4, "an unavailable token is not probed");
 });
+
+test("a session the plugin never saw is checked with the token its daemon and provider configuration launch it with", async () => {
+  const { read, calls } = setupTokenReader(() => new Response(JSON.stringify(scopeDenied), { status: 403 }));
+  const check = await read(api({ "claude-ci": { extends: "claude", env: { CLAUDE_CODE_OAUTH_TOKEN: SETUP_TOKEN } } }),
+    agent("claude-ci", "claude-opus-4-6"), "claude", at);
+  assert.equal(check.status, "ready");
+  assert.equal(check.identity, (await read(api(), agent("claude", "claude-opus-4-6"), "claude", at, setupLaunch().launch, "usage", setupLaunch().tokens)).identity,
+    "bound to that token, as a captured session with it would be");
+  assert.equal(calls[0]?.authorization, `Bearer ${SETUP_TOKEN}`);
+});

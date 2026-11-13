@@ -452,6 +452,11 @@ export function createResumer(options: {
     if (manual) {
       // Only the account's own usage holds a continue the user asked for; the notice may be outdated.
       const hold = usageHold(check, at);
+      if (hold.kind !== "ready") {
+        // Blocked, it keeps its time and switch, but the session that verified it is still saved.
+        const launch = verifiedLaunch(check, session.launch);
+        if (launch) await store.update(job.agentId, (current) => current && same(current) ? { ...current, launch } : undefined);
+      }
       if (hold.kind === "used_up") return { result: "used_up", until: hold.renews?.toISOString() ?? null };
       if (hold.kind === "unverified") return { result: "unverified", waiting: hold.waiting };
     } else if (await postpone(job, check, at, session.launch)) {
