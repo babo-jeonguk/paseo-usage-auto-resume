@@ -1,6 +1,7 @@
 import type { PluginTurnOutcome } from "@getpaseo/plugin/server";
 import type { UsageSource } from "../shared/settings";
 import type { AgentTimelineItem } from "./paseo-types";
+import { closingAssistantText } from "./timeline";
 
 const CODEX_CAPACITY = "Selected model is at capacity. Please try a different model.";
 /**
@@ -11,26 +12,11 @@ const CODEX_CAPACITY = "Selected model is at capacity. Please try a different mo
 const CLAUDE_OVERLOAD = /^API Error: (?:529\b|Repeated 529 Overloaded errors\b|.*"type":"overloaded_error")/s;
 const EXCLUDED = /context[ _-](?:length|window)|(?:prompt|input) is too long|maximum context|too many (?:input )?tokens|insufficient[_ ]quota|credit[_ ]balance|billing|payment|prepaid|prepay|insufficient (?:funds|credits)|authentication|unauthorized|invalid[_ ]api[_ ]key|permission[_ ]denied/i;
 
-/** Claude alone reports its synthetic 529 notice as a completed turn. */
-function closingNotice(timeline: readonly AgentTimelineItem[]): string {
-  const last = timeline[timeline.length - 1];
-  if (last?.type !== "assistant_message") return "";
-  let text = last.text;
-  if (last.messageId) {
-    for (let index = timeline.length - 2; index >= 0; index--) {
-      const item = timeline[index];
-      if (item?.type !== "assistant_message" || item.messageId !== last.messageId) break;
-      text = item.text + text;
-    }
-  }
-  return text.trim();
-}
-
 /** Only final provider capacity failures; see the real-CLI, fake-API fixtures and docs/research/overload.md. */
 export function detectOverloadStop(outcome: PluginTurnOutcome, timeline: readonly AgentTimelineItem[], source: UsageSource): boolean {
   if (outcome.kind === "canceled") return false;
   const code = outcome.kind === "failed" ? outcome.error.code ?? "" : "";
-  const text = outcome.kind === "failed" ? outcome.error.message.trim() : source === "claude" ? closingNotice(timeline) : "";
+  const text = outcome.kind === "failed" ? outcome.error.message.trim() : source === "claude" ? closingAssistantText(timeline).trim() : "";
   if ((!text && !code) || EXCLUDED.test(`${code} ${text}`)) return false;
   switch (source) {
     case "codex": return outcome.kind === "failed" && text === CODEX_CAPACITY;

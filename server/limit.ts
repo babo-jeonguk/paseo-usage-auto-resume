@@ -1,5 +1,6 @@
 import type { AgentTimelineItem } from "./paseo-types";
 import type { PluginTurnOutcome } from "@getpaseo/plugin/server";
+import { closingAssistantText } from "./timeline";
 
 // Reset-time parsing follows panrafal/paseo-plugins chat-resume (shared/usage.ts, MIT) and
 // keefeere/paseo-continuity (server/classify.ts, MIT); detection is narrowed to limits that renew.
@@ -54,24 +55,6 @@ function latestTurn(timeline: readonly AgentTimelineItem[]): readonly AgentTimel
     if (timeline[index]?.type === "user_message") return timeline.slice(index + 1);
   }
   return timeline;
-}
-
-/**
- * Only the final assistant message can be the closing notice. Join chunks when their
- * non-empty message IDs agree, never a separate answer and Claude's synthetic notice.
- * Without IDs there is no evidence that adjacent items belong to the same message.
- */
-function closingAssistantText(turn: readonly AgentTimelineItem[]): string {
-  const last = turn[turn.length - 1];
-  if (last?.type !== "assistant_message") return "";
-  let text = last.text;
-  if (!last.messageId) return text;
-  for (let index = turn.length - 2; index >= 0; index -= 1) {
-    const item = turn[index];
-    if (item?.type !== "assistant_message" || item.messageId !== last.messageId) break;
-    text = item.text + text;
-  }
-  return text;
 }
 
 /** Texts that can carry a limit notice for this turn, most authoritative first. */
