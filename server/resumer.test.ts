@@ -310,6 +310,39 @@ test("startup scan also detects a separate limit notice after a long Claude answ
   assert.equal((await store.list())[0]?.dueAt, "2026-10-06T06:02:00.000Z");
 });
 
+const pluginRow: AgentTimelineItem = { type: "plugin", id: "r1", pluginId: "stats", kind: "turn-stats", version: 1, data: { ms: 42_000 } };
+
+test("a later turn end whose timeline still closes on the notice behind a plugin row keeps the reservation", async () => {
+  const { api, sent, resumer } = await setup({ m1: { provider: "claude" } });
+  await resumer.onTurnEnded(turnEnded("m1", "claude", { kind: "completed" }, claudeNotice(CLAUDE_LIMIT)), api);
+  const before = await store.list();
+  assert.equal(before[0]?.dueAt, "2026-10-06T06:02:00.000Z");
+
+  // Another plugin appends a row, then a background subagent's notification ends another turn.
+  await resumer.onTurnEnded(turnEnded("m1", "claude", { kind: "completed" }, [...claudeNotice(CLAUDE_LIMIT), pluginRow]), api);
+  assert.deepEqual(await store.list(), before);
+  assert.deepEqual(await recorded(), []);
+
+  clock = new Date("2026-10-06T06:02:00.000Z");
+  await resumer.tick();
+  assert.deepEqual(sent, [{ agentId: "m1", text: CONTINUE_PROMPT }]);
+});
+
+test("a turn that finishes with new output after the notice and a plugin row still cancels", async () => {
+  const { api, resumer } = await setup({ m1: { provider: "claude" } });
+  await resumer.onTurnEnded(turnEnded("m1", "claude", { kind: "completed" }, claudeNotice(CLAUDE_LIMIT)), api);
+  await resumer.onTurnEnded(turnEnded("m1", "claude", { kind: "completed" }, [
+    ...claudeNotice(CLAUDE_LIMIT), pluginRow, { type: "assistant_message", text: "The subagent finished; all tests pass." }, pluginRow,
+  ]), api);
+  assert.deepEqual(await store.list(), []);
+  assert.deepEqual(await recorded(), ["m1 canceled/turn_finished"]);
+});
+
+test("startup scan detects a limit notice behind a plugin row", async () => {
+  await setup({ m1: { provider: "claude" } }, { timelines: { m1: [...claudeNotice(CLAUDE_LIMIT), pluginRow] } });
+  assert.equal((await store.list())[0]?.dueAt, "2026-10-06T06:02:00.000Z");
+});
+
 test("a turn end reads the Claude notice from the agent's latest timeline", async () => {
   const { api, sent, timelineReads, resumer } = await setup({ m1: { provider: "claude" } });
   timelineReads.length = 0;
