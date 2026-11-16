@@ -15,6 +15,7 @@ import { cliFor, providerLabels } from "./providers";
 import { isExhausted } from "./quota";
 import { continuePrompt, DEFAULT_CONTINUE_PROMPT } from "../shared/prompt";
 import { readBackground } from "./background";
+import { isConnectionClosed, throwIfConnectionClosed } from "./connection";
 
 /** Kept for callers that compare against the built-in prompt; sends go through `continuePrompt`. */
 export const CONTINUE_PROMPT = DEFAULT_CONTINUE_PROMPT;
@@ -28,18 +29,6 @@ type TurnEnded = PluginLifecycleEvents["agent.turn_ended"];
 
 function log(message: string): void {
   console.log(`[usage-auto-resume] ${message}`);
-}
-
-/**
- * A connection the daemon closed is a shutdown, not a plugin failure. The client throws
- * `DaemonConnectionError` for a lost transport and a plain `Error("Daemon client closed")` once
- * its own runtime is closed.
- */
-function isConnectionClosed(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  return error.name === "DaemonConnectionError"
-    || error.message === "Daemon client closed"
-    || error.message.startsWith("Transport not connected");
 }
 
 const titleOf = (agent: Pick<PaseoAgent, "title">): string | null => agent.title?.trim() || null;
@@ -157,7 +146,11 @@ export function createResumer(options: {
   };
   const inspect = async (api: ResumerApi, agent: PaseoAgent, source: UsageSource, at: Date, { launch, tokens }: ReturnType<typeof launchOf>, mode?: "identity" | "usage") => {
     try { return await readSubscription(api, agent, source, at, launch, mode, tokens); }
-    catch { return unknownCheck(); }
+    catch (error) {
+      // An unreadable account is that check's fallback; a closed connection says nothing about it.
+      throwIfConnectionClosed(error);
+      return unknownCheck();
+    }
   };
 
   /** Whether Paseo treats the agent as background; a workspace read failure is logged once. */
@@ -192,18 +185,24 @@ export function createResumer(options: {
   }
 
   async function onTurnEnded(event: TurnEnded, api: ResumerApi): Promise<void> {
-    const { outcome } = event;
-    const observedAt = now();
-    let stop = null;
-    let overloaded = false;
-    if (outcome.kind !== "canceled") {
-      // The event carries an empty timeline, so the agent's own tail is read instead.
-      const timeline = await timelineTail(api, event.agent.id);
-      stop = detectLimitStop(outcome, timeline, observedAt);
-      if (!stop) overloaded = await isOverloadStop(api, event, timeline);
+    try {
+      const { outcome } = event;
+      const observedAt = now();
+      let stop = null;
+      let overloaded = false;
+      if (outcome.kind !== "canceled") {
+        // The event carries an empty timeline, so the agent's own tail is read instead.
+        const timeline = await timelineTail(api, event.agent.id);
+        stop = detectLimitStop(outcome, timeline, observedAt);
+        if (!stop) overloaded = await isOverloadStop(api, event, timeline);
+      }
+      const kind = turnEventOf(outcome.kind, !!stop, overloaded);
+      await onTurn(api, event.agent.id, kind, stop || overloaded ? { resetAt: stop?.resetAt ?? null, observedAt } : undefined);
+    } catch (error) {
+      // A daemon stopping mid-turn decides nothing here; the same turn may be seen after a restart.
+      if (isConnectionClosed(error)) return log("turn end stopped: the daemon connection closed");
+      throw error;
     }
-    const kind = turnEventOf(outcome.kind, !!stop, overloaded);
-    await onTurn(api, event.agent.id, kind, stop || overloaded ? { resetAt: stop?.resetAt ?? null, observedAt } : undefined);
   }
 
   /**
@@ -216,13 +215,19 @@ export function createResumer(options: {
       const source = cliFor((await api.config.get()).config, event.agent.provider);
       return !!source && detectOverloadStop(event.outcome, timeline, source);
     } catch (error) {
+      // An unreadable switch or CLI leaves the event Labs off would see; a closed connection
+      // says nothing about it, so it stops the turn end instead.
+      throwIfConnectionClosed(error);
       console.error(`[usage-auto-resume] could not check ${event.agent.id} for an overload`, String(error));
       return false;
     }
   }
 
   function onTurnStarted(agentId: string, api: ResumerApi): Promise<void> {
-    return onTurn(api, agentId, "started");
+    return onTurn(api, agentId, "started").catch((error) => {
+      if (isConnectionClosed(error)) return log(`turn start of ${agentId} stopped: the daemon connection closed`);
+      throw error;
+    });
   }
 
   /**
@@ -232,8 +237,14 @@ export function createResumer(options: {
    */
   async function onTurn(api: ResumerApi, agentId: string, event: TurnEvent, stop?: { resetAt: Date | null; observedAt: Date }): Promise<void> {
     const row = (await store.list()).find((job) => job.agentId === agentId) ?? null;
-    // An agent that cannot be read only loses the message check; a finished turn still clears.
-    const agent = row?.state === "pending" || event === "limit" || event === "overload" ? await loadAgent(api, agentId).catch(() => null) : null;
+    // An agent that cannot be read only loses the message check; a finished turn still clears. A
+    // closed connection says nothing about the agent, so the turn event stops instead.
+    const agent = row?.state === "pending" || event === "limit" || event === "overload"
+      ? await loadAgent(api, agentId).catch((error) => {
+        throwIfConnectionClosed(error);
+        return null;
+      })
+      : null;
     const action = turnAction(row, agent, event);
     // A reservation that replaced the one read is not this event's.
     const stillSeen = (current: ResumeJob | null, state: ResumeJob["state"]) => !!current && !!row && current.id === row.id && current.state === state;
@@ -334,6 +345,9 @@ export function createResumer(options: {
     try {
       page = await api.agents.ref(agentId).timeline.refetch({ direction: "tail", limit: TAIL_TIMELINE_ITEMS });
     } catch (error) {
+      // A timeline this one agent cannot supply counts as empty; a closed connection is not
+      // about the agent at all, so the scan or turn end stops there.
+      throwIfConnectionClosed(error);
       page = { error: String(error), entries: [] };
     }
     if (page.error) {
@@ -531,6 +545,9 @@ export function createResumer(options: {
       // A turn that starts after the last check is steered, not replaced, where the provider can.
       await api.agents.ref(job.agentId).send(continuePrompt({ custom, note, kind: job.kind }), { activeTurnBehavior: "steer" });
     } catch (error) {
+      // A send cut by the daemon closing may already have gone, and its claim is what the next
+      // start's recover() drops as interrupted. Only a real send failure is reported as one.
+      if (isConnectionClosed(error)) throw error;
       await store.update(job.agentId, (current) => (current?.state === "sending" && current.id === job.id ? null : undefined));
       console.error(`[usage-auto-resume] could not continue ${job.agentId}`, String(error));
       await record(job, { outcome: "send_failed", title, trigger });
@@ -592,9 +609,14 @@ export function createResumer(options: {
       const at = now();
       for (const job of await store.list()) {
         if (job.state !== "pending" || Date.parse(job.dueAt) > at.getTime()) continue;
-        await deliver(job, api, at, "auto").catch((error) =>
-          console.error(`[usage-auto-resume] resume check failed for ${job.agentId}`, String(error)),
-        );
+        try {
+          await deliver(job, api, at, "auto");
+        } catch (error) {
+          // The rest of this tick can read nothing either; the reservation stays as it was and
+          // the next tick after a reconnect tries again.
+          if (isConnectionClosed(error)) return log("due checks stopped: the daemon connection closed");
+          console.error(`[usage-auto-resume] resume check failed for ${job.agentId}`, String(error));
+        }
       }
     } finally {
       ticking = false;
@@ -622,7 +644,10 @@ export function createResumer(options: {
   function scanIfAttached(): Promise<void> {
     const api = paseo;
     if (!api) return Promise.resolve();
-    return scan(api).catch((error) => console.error("[usage-auto-resume] scan after enabling background agents failed", String(error)));
+    return scan(api).catch((error) => {
+      if (isConnectionClosed(error)) return log("rescan stopped: the daemon connection closed");
+      console.error("[usage-auto-resume] scan after enabling background agents failed", String(error));
+    });
   }
 
   /** A job left mid-send by a crash may already have been delivered, so it is dropped. */
@@ -639,10 +664,15 @@ export function createResumer(options: {
     const labels = providerLabels(api);
     const rows = await Promise.all(
       jobs.map(async (job): Promise<ScheduledJob> => {
+        // A disappeared agent only loses its title and project; a closed connection would make
+        // every row look gone, so the RPC fails instead.
         const loaded = await api.agents
           .ref(job.agentId)
           .refresh()
-          .catch(() => null);
+          .catch((error) => {
+            throwIfConnectionClosed(error);
+            return null;
+          });
         const label = (await labels).get(job.provider);
         return {
           ...(job.kind ? { kind: job.kind } : {}),
@@ -674,7 +704,10 @@ export function createResumer(options: {
     const labels = providerLabels(api);
     const ids = [...new Set(entries.map((entry) => entry.agentId))];
     const agents = new Map(await Promise.all(ids.map(async (id) => {
-      const loaded = await api.agents.ref(id).refresh().catch(() => null);
+      const loaded = await api.agents.ref(id).refresh().catch((error) => {
+        throwIfConnectionClosed(error);
+        return null;
+      });
       return [id, loaded ? { agent: loaded.agent, background: await isBackground(api, loaded.agent) } : null] as const;
     })));
     const labelOf = await labels;

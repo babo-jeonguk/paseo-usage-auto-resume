@@ -1,4 +1,5 @@
 import type { PaseoAgent, PaseoApi } from "./paseo-types";
+import { throwIfConnectionClosed } from "./connection";
 
 type WorkspaceReader = Pick<PaseoApi, "workspaces">;
 
@@ -7,8 +8,9 @@ type WorkspaceReader = Pick<PaseoApi, "workspaces">;
  * flags are fixed at creation, so one workspace read per agent is enough.
  *
  * The hook payload carries the agent's own background flag but not its workspace's, so callers pass
- * the agent snapshot they load. A workspace that cannot be read is reported and leaves the agent's
- * own flag to decide.
+ * the agent snapshot they load. When this workspace alone cannot be read, it is reported and the
+ * agent's own flag decides. A daemon connection the session lost is not an unreadable workspace:
+ * it says nothing about any agent, so it is rethrown for the caller to stop on.
  */
 export async function readBackground(
   api: WorkspaceReader,
@@ -22,6 +24,7 @@ export async function readBackground(
     const workspace = await api.workspaces.ref(workspaceId).refresh();
     return !!workspace?.background;
   } catch (error) {
+    throwIfConnectionClosed(error);
     onWorkspaceError(workspaceId, error);
     return false;
   }

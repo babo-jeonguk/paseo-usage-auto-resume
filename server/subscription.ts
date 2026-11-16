@@ -10,6 +10,7 @@ import { CLI_STOP_GRACE_MS, cliHome, runCli, spawnCli, stopProcessTree } from ".
 import { agyFallback, createAgyUsageReader } from "./agy-usage";
 import { createOpenCodeUsageReader } from "./opencode-usage";
 import { isExhausted, type QuotaWindow } from "./quota";
+import { throwIfConnectionClosed } from "./connection";
 
 const TIMEOUT = 15_000;
 /** Subscription credentials for unattended runs; probes use their values, which are never saved. */
@@ -243,8 +244,10 @@ export function createSubscriptionReader(deps: {
       if (mode === "identity") return { auth: "subscription", status: "unknown", identity: verifiedIdentity };
       const usage = await json("https://api.anthropic.com/api/oauth/usage", headers);
       return claudeUsage(usage, verifiedIdentity, model);
-    } catch {
-      // stderr and API bodies can contain credentials. Log neither.
+    } catch (error) {
+      // stderr and API bodies can contain credentials. Log neither. A closed daemon connection
+      // is not an unreadable account: the caller stops instead of treating it as unknown.
+      throwIfConnectionClosed(error);
       return verifiedIdentity ? { auth: "subscription", status: "unknown", identity: verifiedIdentity } : unknownCheck();
     }
   };

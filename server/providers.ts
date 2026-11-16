@@ -2,6 +2,7 @@ import type { PaseoApi } from "./paseo-types";
 import { accountEmail, type DaemonConfig } from "./usage";
 import type { DiscoveredProvider } from "../shared/rpc";
 import { USAGE_SOURCES, type UsageSource } from "../shared/settings";
+import { throwIfConnectionClosed } from "./connection";
 
 type ProvidersApi = Pick<PaseoApi, "config" | "providers">;
 
@@ -23,7 +24,10 @@ export async function providerLabels(api: Pick<PaseoApi, "providers">): Promise<
   let entries: Array<{ provider: string; label?: string | null }>;
   try {
     ({ entries } = await api.providers.snapshot());
-  } catch {
+  } catch (error) {
+    // A snapshot this daemon cannot give falls back to built-in names; a closed connection
+    // would misname every row, so the caller's read stops.
+    throwIfConnectionClosed(error);
     entries = [];
   }
   return new Map(entries.flatMap((entry) => {
