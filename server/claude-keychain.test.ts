@@ -91,8 +91,8 @@ for (const plan of ["pro", "max", "team"]) for (const window of ["five", "week"]
     const store = createJobStore(join(home, "jobs.json"));
     const make = () => createResumer({ store: createJobStore(join(home, "jobs.json")), now: () => new Date(clock), readSubscription: read });
     const resumer = make();
-    const event = { agent: { id: agent.id, provider: "claude", workspaceId: null, parentAgentId: null, cwd: "/tmp", title: null, metadata: {} }, turnId: "fixture-turn",
-      outcome: { kind: "completed" }, timeline: [] } as PluginLifecycleEvents["agent.turn_ended"];
+    const event = { agent: { id: agent.id, provider: "claude", workspaceId: null, parentAgentId: null, cwd: "/tmp", title: null, metadata: {}, background: false }, turnId: "fixture-turn",
+      outcome: { kind: "completed" } } as PluginLifecycleEvents["agent.turn_ended"];
     await resumer.onTurnEnded(event, host);
     assert.equal(reads, 0);
     assert.equal((await store.list())[0]?.dueAt, new Date(due).toISOString());
@@ -144,8 +144,8 @@ for (const failure of ["locked", "missing", "denied", "timeout", "malformed", "e
     }) } } as unknown as ResumerApi;
     const store = createJobStore(join(home, "jobs.json"));
     const resumer = createResumer({ store, now: () => new Date(clock), readSubscription: read });
-    await resumer.onTurnEnded({ agent: { id: agent.id, provider: "claude", workspaceId: null, parentAgentId: null, cwd: "/tmp", title: null, metadata: {} }, turnId: "fixture-turn",
-      outcome: { kind: "completed" }, timeline: [] }, host);
+    await resumer.onTurnEnded({ agent: { id: agent.id, provider: "claude", workspaceId: null, parentAgentId: null, cwd: "/tmp", title: null, metadata: {}, background: false }, turnId: "fixture-turn",
+      outcome: { kind: "completed" } }, host);
     clock += 62 * 60_000;
     await resumer.attach(host);
     assert.deepEqual(sent, []);

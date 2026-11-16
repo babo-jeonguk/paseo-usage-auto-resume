@@ -6,8 +6,9 @@ type WorkspaceReader = Pick<PaseoApi, "workspaces">;
  * Whether Paseo hides the agent as background: `agent.background || workspace.background`. Both
  * flags are fixed at creation, so one workspace read per agent is enough.
  *
- * The hook payload carries no background field, so callers pass the agent snapshot they load. A
- * workspace that cannot be read is reported and leaves the agent's own flag to decide.
+ * The hook payload carries the agent's own background flag but not its workspace's, so callers pass
+ * the agent snapshot they load. A workspace that cannot be read is reported and leaves the agent's
+ * own flag to decide.
  */
 export async function readBackground(
   api: WorkspaceReader,

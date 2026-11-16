@@ -226,10 +226,9 @@ function turnEnded(
 ): PluginLifecycleEvents["agent.turn_ended"] {
   turnTimelines.set(agentId, timeline);
   return {
-    agent: { id: agentId, workspaceId: "wks", parentAgentId: null, provider, cwd: "/repo", title: null, metadata: {} },
+    agent: { id: agentId, workspaceId: "wks", parentAgentId: null, provider, cwd: "/repo", title: null, metadata: {}, background: false },
     turnId: "turn-1",
     outcome,
-    timeline: [],
   };
 }
 
@@ -367,15 +366,15 @@ test("a turn end reads the Claude notice from the agent's latest timeline", asyn
   assert.deepEqual(sent, [{ agentId: "m1", text: CONTINUE_PROMPT }]);
 });
 
-test("the timeline a turn end carries is never read", async () => {
-  const { api, resumer } = await setup({ m1: { provider: "claude" }, m2: { provider: "claude" } });
-  // The event's own timeline is not read; the agent's timeline decides.
-  await resumer.onTurnEnded({ ...turnEnded("m1", "claude", { kind: "completed" }), timeline: claudeNotice(CLAUDE_LIMIT) }, api);
-  assert.deepEqual(await store.list(), []);
-  // A later Paseo may drop the field altogether.
-  const { timeline: _dropped, ...bare } = turnEnded("m2", "claude", { kind: "completed" }, claudeNotice(CLAUDE_LIMIT));
-  await resumer.onTurnEnded(bare as PluginLifecycleEvents["agent.turn_ended"], api);
-  assert.deepEqual((await store.list()).map((job) => job.agentId), ["m2"]);
+test("a turn end carries no timeline, so the agent's timeline read classifies it", async () => {
+  const { api, resumer, timelineReads } = await setup({ m1: { provider: "claude" } });
+  timelineReads.length = 0;
+  const event = turnEnded("m1", "claude", { kind: "completed" }, claudeNotice(CLAUDE_LIMIT));
+  assert.deepEqual(Object.keys(event).sort(), ["agent", "outcome", "turnId"]);
+  await resumer.onTurnEnded(event, api);
+
+  assert.deepEqual(timelineReads, [{ agentId: "m1", query: { direction: "tail", limit: 20 } }]);
+  assert.equal((await store.list())[0]?.dueAt, "2026-10-06T06:02:00.000Z");
 });
 
 test("a canceled turn reads no timeline", async () => {
