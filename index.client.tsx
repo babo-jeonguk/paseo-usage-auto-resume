@@ -5,7 +5,7 @@ import { ProviderSettingsScreen } from "./client/settings";
 import { installConversationControls } from "./client/conversations";
 import { ConversationControls } from "./client/conversation";
 
-// Same ID as the 0.10 sidebar item, so saved `/plugin/usage-auto-resume/scheduled` links keep opening it.
+// A stable ID, so saved `/plugin/usage-auto-resume/scheduled` links keep opening it.
 const SCREEN_ID = "scheduled";
 
 function AutoResumeItem({ currentScreen, openScreen }: PluginSidebarItemProps) {

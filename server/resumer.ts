@@ -14,6 +14,8 @@ import { DEFAULT_PROVIDER_SETTINGS, DEFAULT_RESUME_SETTINGS, isProviderOn, type 
 import { cliFor, providerLabels } from "./providers";
 import { isExhausted } from "./quota";
 import { continuePrompt, DEFAULT_CONTINUE_PROMPT } from "../shared/prompt";
+import { readBackground } from "./background";
+import { isConnectionClosed, throwIfConnectionClosed } from "./connection";
 
 /** Kept for callers that compare against the built-in prompt; sends go through `continuePrompt`. */
 export const CONTINUE_PROMPT = DEFAULT_CONTINUE_PROMPT;
@@ -22,7 +24,7 @@ export const CONTINUE_PROMPT = DEFAULT_CONTINUE_PROMPT;
 const SCAN_WINDOW_MS = 12 * 3_600_000;
 const TAIL_TIMELINE_ITEMS = 20;
 
-export type ResumerApi = Pick<PaseoApi, "agents" | "config" | "providers">;
+export type ResumerApi = Pick<PaseoApi, "agents" | "config" | "providers" | "workspaces">;
 type TurnEnded = PluginLifecycleEvents["agent.turn_ended"];
 
 function log(message: string): void {
@@ -67,6 +69,7 @@ function planFor(check: SubscriptionCheck, at: Date): Plan {
 }
 
 const providerOff = (provider: string) => canceled("provider_off", `automatic resume is turned off for ${provider}`);
+const backgroundOff = () => canceled("background_off", "automatic resume is turned off for background agents");
 
 /** The tick's attempt at a due job, or Resume now's on the user's request. */
 type DeliverMode = "auto" | "manual";
@@ -143,8 +146,22 @@ export function createResumer(options: {
   };
   const inspect = async (api: ResumerApi, agent: PaseoAgent, source: UsageSource, at: Date, { launch, tokens }: ReturnType<typeof launchOf>, mode?: "identity" | "usage") => {
     try { return await readSubscription(api, agent, source, at, launch, mode, tokens); }
-    catch { return unknownCheck(); }
+    catch (error) {
+      // An unreadable account is that check's fallback; a closed connection says nothing about it.
+      throwIfConnectionClosed(error);
+      return unknownCheck();
+    }
   };
+
+  /** Whether Paseo treats the agent as background; a workspace read failure is logged once. */
+  const unreadableWorkspaces = new Set<string>();
+  function isBackground(api: ResumerApi, agent: Pick<PaseoAgent, "id" | "background" | "workspaceId">): Promise<boolean> {
+    return readBackground(api, agent, (workspaceId, error) => {
+      if (unreadableWorkspaces.has(workspaceId)) return;
+      unreadableWorkspaces.add(workspaceId);
+      console.error(`[usage-auto-resume] could not read workspace ${workspaceId}; using the agent's own background flag`, String(error));
+    });
+  }
 
   /**
    * The session a check verified the reservation's account with. A token rotated for the same
@@ -168,18 +185,24 @@ export function createResumer(options: {
   }
 
   async function onTurnEnded(event: TurnEnded, api: ResumerApi): Promise<void> {
-    const { outcome } = event;
-    const observedAt = now();
-    let stop = null;
-    let overloaded = false;
-    if (outcome.kind !== "canceled") {
-      // The event's own timeline is deprecated and empty from Paseo 0.13, so it is never read.
-      const timeline = await timelineTail(api, event.agent.id);
-      stop = detectLimitStop(outcome, timeline, observedAt);
-      if (!stop) overloaded = await isOverloadStop(api, event, timeline);
+    try {
+      const { outcome } = event;
+      const observedAt = now();
+      let stop = null;
+      let overloaded = false;
+      if (outcome.kind !== "canceled") {
+        // The event carries an empty timeline, so the agent's own tail is read instead.
+        const timeline = await timelineTail(api, event.agent.id);
+        stop = detectLimitStop(outcome, timeline, observedAt);
+        if (!stop) overloaded = await isOverloadStop(api, event, timeline);
+      }
+      const kind = turnEventOf(outcome.kind, !!stop, overloaded);
+      await onTurn(api, event.agent.id, kind, stop || overloaded ? { resetAt: stop?.resetAt ?? null, observedAt } : undefined);
+    } catch (error) {
+      // A daemon stopping mid-turn decides nothing here; the same turn may be seen after a restart.
+      if (isConnectionClosed(error)) return log("turn end stopped: the daemon connection closed");
+      throw error;
     }
-    const kind = turnEventOf(outcome.kind, !!stop, overloaded);
-    await onTurn(api, event.agent.id, kind, stop || overloaded ? { resetAt: stop?.resetAt ?? null, observedAt } : undefined);
   }
 
   /**
@@ -192,13 +215,19 @@ export function createResumer(options: {
       const source = cliFor((await api.config.get()).config, event.agent.provider);
       return !!source && detectOverloadStop(event.outcome, timeline, source);
     } catch (error) {
+      // An unreadable switch or CLI leaves the event Labs off would see; a closed connection
+      // says nothing about it, so it stops the turn end instead.
+      throwIfConnectionClosed(error);
       console.error(`[usage-auto-resume] could not check ${event.agent.id} for an overload`, String(error));
       return false;
     }
   }
 
   function onTurnStarted(agentId: string, api: ResumerApi): Promise<void> {
-    return onTurn(api, agentId, "started");
+    return onTurn(api, agentId, "started").catch((error) => {
+      if (isConnectionClosed(error)) return log(`turn start of ${agentId} stopped: the daemon connection closed`);
+      throw error;
+    });
   }
 
   /**
@@ -208,8 +237,14 @@ export function createResumer(options: {
    */
   async function onTurn(api: ResumerApi, agentId: string, event: TurnEvent, stop?: { resetAt: Date | null; observedAt: Date }): Promise<void> {
     const row = (await store.list()).find((job) => job.agentId === agentId) ?? null;
-    // An agent that cannot be read only loses the message check; a finished turn still clears.
-    const agent = row?.state === "pending" || event === "limit" || event === "overload" ? await loadAgent(api, agentId).catch(() => null) : null;
+    // An agent that cannot be read only loses the message check; a finished turn still clears. A
+    // closed connection says nothing about the agent, so the turn event stops instead.
+    const agent = row?.state === "pending" || event === "limit" || event === "overload"
+      ? await loadAgent(api, agentId).catch((error) => {
+        throwIfConnectionClosed(error);
+        return null;
+      })
+      : null;
     const action = turnAction(row, agent, event);
     // A reservation that replaced the one read is not this event's.
     const stillSeen = (current: ResumeJob | null, state: ResumeJob["state"]) => !!current && !!row && current.id === row.id && current.state === state;
@@ -251,11 +286,14 @@ export function createResumer(options: {
     const plan: Plan = stated ? { kind: "reset", resetAt: stated } : planFor(check, at);
     const settings = await readSettings();
     if (!settings || !isProviderOn(agent.provider, settings)) return;
+    // A background agent is resumed only when the user turns that on.
+    const background = await isBackground(api, agent);
+    if (background && !settings.resumeBackground) return;
     if (options.overload && !(await overloadRetry())) return;
     const stop = {
       id: randomUUID(),
       agentId: agent.id, provider: agent.provider, plan, at: options.overload ? observedAt : at, baseline: agent.lastUserMessageAt ?? null,
-      identity: check.identity, model: subscriptionModel(agent), launch,
+      identity: check.identity, model: subscriptionModel(agent), launch, background,
     };
     // Assigned inside the callback, which TypeScript does not follow.
     let ended = null as { row: ResumeJob; outcome: Outcome } | null;
@@ -282,20 +320,23 @@ export function createResumer(options: {
 
   /**
    * The switches were read before the write, and turning one off sweeps only the reservations
-   * stored when it runs. Reading them again after the write closes that gap for an overload
-   * retry: a sweep that ran first is seen here as the switch being off, and one that runs later
-   * finds the row. The row stored now decides, as in the sweeps, so a retry planned again as a
-   * limit meanwhile is left alone. Limit reservations keep the behavior they had before Labs.
+   * stored when it runs. Reading them again after the write closes that gap for both switches: a
+   * sweep that ran first is seen here as the switch being off, and one that runs later finds the
+   * row. The row stored now decides, as in the sweeps, so one planned again or a switch turned
+   * back on meanwhile is left alone. Unreadable settings retire nothing.
    */
   async function retireIfSwitchedOff(job: ResumeJob): Promise<void> {
-    if (job.kind !== "overload") return;
-    const retry = (current: ResumeJob) => current.id === job.id && current.state === "pending" && current.kind === "overload";
+    const pending = (current: ResumeJob) => current.id === job.id && current.state === "pending";
     const settings = await readSettings();
     if (settings && !isProviderOn(job.provider, settings)) {
-      await retire(job.agentId, (current) => retry(current) && !isProviderOn(current.provider, settings), providerOff(job.provider));
-      return;
+      if (await retire(job.agentId, (current) => pending(current) && !isProviderOn(current.provider, settings), providerOff(job.provider))) return;
     }
-    if ((await overloadRetry()) === false) await retire(job.agentId, retry, canceled("overload_off", "overload retry turned off"));
+    if (settings && !settings.resumeBackground) {
+      if (await retire(job.agentId, (current) => pending(current) && current.background === true, backgroundOff())) return;
+    }
+    if ((await overloadRetry()) === false) {
+      await retire(job.agentId, (current) => pending(current) && current.kind === "overload", canceled("overload_off", "overload retry turned off"));
+    }
   }
 
   /** The agent's latest timeline items, oldest first; none, and a log line, when they cannot be read. */
@@ -304,6 +345,9 @@ export function createResumer(options: {
     try {
       page = await api.agents.ref(agentId).timeline.refetch({ direction: "tail", limit: TAIL_TIMELINE_ITEMS });
     } catch (error) {
+      // A timeline this one agent cannot supply counts as empty; a closed connection is not
+      // about the agent at all, so the scan or turn end stops there.
+      throwIfConnectionClosed(error);
       page = { error: String(error), entries: [] };
     }
     if (page.error) {
@@ -322,24 +366,22 @@ export function createResumer(options: {
     const settings = await readSettings();
     if (!settings) return;
     const { config } = await api.config.get();
-    // Visibility does not opt an agent out of recovery. Older host SDKs ignore this field.
+    // Visibility does not opt an agent out of recovery, so background work is scanned too.
     const filter = { statuses: ["idle", "error"] satisfies PaseoAgent["status"][], includeBackground: true };
     const query: NonNullable<Parameters<ResumerApi["agents"]["list"]>[0]> = {
       filter,
       sort: [{ key: "updated_at", direction: "desc" }],
       page: { limit: 200 },
     };
-    const { entries } = await api.agents.list(query).catch((error: unknown) => {
-      // A newer SDK connected to an older daemon explicitly rejects inclusive discovery.
-      if (!(error instanceof Error) || error.message !== "Update the host to use background workspaces.") throw error;
-      return api.agents.list({ ...query, filter: { statuses: filter.statuses } });
-    });
+    const { entries } = await api.agents.list(query);
     const since = now().getTime() - SCAN_WINDOW_MS;
     for (const { agent } of entries) {
       const source = isProviderOn(agent.provider, settings) ? cliFor(config, agent.provider) : null;
       if (!source || agent.archivedAt) continue;
       if (Date.parse(agent.updatedAt) < since) continue;
       if (agent.activeTurn || agent.pendingPermissions.length > 0 || agent.attentionReason === "permission") continue;
+      // Read the workspace only for agents that could be scheduled; it is not needed to filter.
+      if (!settings.resumeBackground && (await isBackground(api, agent))) continue;
       const observedAt = new Date(agent.updatedAt);
       let stop = null;
       if (agent.status === "error" && agent.lastError) {
@@ -441,8 +483,15 @@ export function createResumer(options: {
     };
     const agent = await loadAgent(api, job.agentId);
     const title = agent && titleOf(agent);
+    // Step 2 precedes the agent's state: the stored flag decides on its own, even when the agent
+    // is gone, and a row written before the switch existed reads the agent when it still exists.
+    if (!settings.resumeBackground && (job.background === true || (agent && (await isBackground(api, agent))))) {
+      return cancel({ ...backgroundOff(), title });
+    }
     const gate = agentGate(job, agent, mode);
     if (gate) return gated(gate, title);
+    // The post-usage re-check uses the same rule: the stored flag, or the agent for an older row.
+    const backgroundOf = async (latest: PaseoAgent): Promise<boolean> => job.background === true || await isBackground(api, latest);
     const session = launchOf(job.agentId, job.launch);
     const check = await inspect(api, agent!, source, at, session);
     if (check.auth === "api") return cancel({ ...API_ROUTE, title });
@@ -473,6 +522,7 @@ export function createResumer(options: {
     const currentSettings = await readSettings();
     if (!currentSettings) return { result: "unavailable" };
     if (!isProviderOn(job.provider, currentSettings)) return cancel({ ...providerOff(job.provider), title });
+    if (!currentSettings.resumeBackground && (await backgroundOf(latestAgent!))) return cancel({ ...backgroundOff(), title });
     // Assigned inside the callback, which TypeScript does not follow. The returned row cannot
     // tell: a row another attempt already claimed comes back unchanged, also as `sending`.
     // The note is taken from the claimed row, not `job`: one saved while the agent was being
@@ -495,6 +545,9 @@ export function createResumer(options: {
       // A turn that starts after the last check is steered, not replaced, where the provider can.
       await api.agents.ref(job.agentId).send(continuePrompt({ custom, note, kind: job.kind }), { activeTurnBehavior: "steer" });
     } catch (error) {
+      // A send cut by the daemon closing may already have gone, and its claim is what the next
+      // start's recover() drops as interrupted. Only a real send failure is reported as one.
+      if (isConnectionClosed(error)) throw error;
       await store.update(job.agentId, (current) => (current?.state === "sending" && current.id === job.id ? null : undefined));
       console.error(`[usage-auto-resume] could not continue ${job.agentId}`, String(error));
       await record(job, { outcome: "send_failed", title, trigger });
@@ -519,14 +572,22 @@ export function createResumer(options: {
 
   /**
    * Turning a provider off also retires the reservations it already has: it concerns the agent,
-   * so whatever pending reservation is stored when the write happens goes, moved or not.
+   * so whatever pending reservation is stored when the write happens goes, moved or not. The
+   * background switch works the same way; rows saved without the flag are decided at delivery.
    */
   async function reconcileProviders(): Promise<void> {
     const settings = await readSettings();
     if (!settings) return;
     for (const job of await store.list()) {
-      if (job.state !== "pending" || isProviderOn(job.provider, settings)) continue;
-      await retire(job.agentId, (current) => current.state === "pending" && !isProviderOn(current.provider, settings), providerOff(job.provider));
+      if (job.state !== "pending") continue;
+      const providerTurnedOff = !isProviderOn(job.provider, settings);
+      const backgroundTurnedOff = !settings.resumeBackground && job.background === true;
+      if (!providerTurnedOff && !backgroundTurnedOff) continue;
+      const outcome = providerTurnedOff ? providerOff(job.provider) : backgroundOff();
+      // The row stored when the write happens decides, so a reservation turned on again meanwhile stays.
+      await retire(job.agentId, (current) => current.state === "pending" && (providerTurnedOff
+        ? !isProviderOn(current.provider, settings)
+        : !settings.resumeBackground && current.background === true), outcome);
     }
   }
 
@@ -548,9 +609,14 @@ export function createResumer(options: {
       const at = now();
       for (const job of await store.list()) {
         if (job.state !== "pending" || Date.parse(job.dueAt) > at.getTime()) continue;
-        await deliver(job, api, at, "auto").catch((error) =>
-          console.error(`[usage-auto-resume] resume check failed for ${job.agentId}`, String(error)),
-        );
+        try {
+          await deliver(job, api, at, "auto");
+        } catch (error) {
+          // The rest of this tick can read nothing either; the reservation stays as it was and
+          // the next tick after a reconnect tries again.
+          if (isConnectionClosed(error)) return log("due checks stopped: the daemon connection closed");
+          console.error(`[usage-auto-resume] resume check failed for ${job.agentId}`, String(error));
+        }
       }
     } finally {
       ticking = false;
@@ -563,8 +629,25 @@ export function createResumer(options: {
     paseo = api;
     if (!first) return Promise.resolve();
     return reconcileProviders().then(reconcileOverload).then(() => scan(api))
-      .catch((error) => console.error("[usage-auto-resume] startup scan failed", String(error)))
+      .catch((error) => {
+        // The daemon stopping mid-scan is expected; only a real failure is an error.
+        if (isConnectionClosed(error)) log("startup scan stopped: the daemon connection closed");
+        else console.error("[usage-auto-resume] startup scan failed", String(error));
+      })
       .then(tick);
+  }
+
+  /**
+   * A setting that widens what is scanned (the background switch) looks for missed stops at once,
+   * when the API is attached; otherwise the next attach's scan covers it.
+   */
+  function scanIfAttached(): Promise<void> {
+    const api = paseo;
+    if (!api) return Promise.resolve();
+    return scan(api).catch((error) => {
+      if (isConnectionClosed(error)) return log("rescan stopped: the daemon connection closed");
+      console.error("[usage-auto-resume] scan after enabling background agents failed", String(error));
+    });
   }
 
   /** A job left mid-send by a crash may already have been delivered, so it is dropped. */
@@ -579,32 +662,44 @@ export function createResumer(options: {
   async function listScheduled(api: ResumerApi): Promise<ScheduledJob[]> {
     const jobs = (await store.list()).filter((job) => job.state === "pending" || job.state === "sending");
     const labels = providerLabels(api);
-    const rows = await Promise.all(
-      jobs.map(async (job): Promise<ScheduledJob> => {
-        const loaded = await api.agents
-          .ref(job.agentId)
-          .refresh()
-          .catch(() => null);
-        const label = (await labels).get(job.provider);
-        return {
-          ...(job.kind ? { kind: job.kind } : {}),
-          id: job.id,
-          agentId: job.agentId,
-          provider: job.provider,
-          ...(label ? { providerLabel: label } : {}),
-          workspaceId: loaded?.agent.workspaceId ?? null,
-          title: loaded ? titleOf(loaded.agent) : null,
-          projectName: loaded?.project?.projectName ?? null,
-          workspaceName: loaded?.project?.workspaceName ?? null,
-          resetAt: job.resetAt,
-          dueAt: job.dueAt,
-          enabled: job.enabled,
-          sending: job.state === "sending",
-          waiting: job.waiting,
-          note: job.note,
-        };
-      }),
-    );
+    const [rows] = await Promise.all([
+      Promise.all(
+        jobs.map(async (job): Promise<ScheduledJob> => {
+          // A disappeared agent only loses its title and project; a closed connection would make
+          // every row look gone, so the RPC fails instead.
+          const loaded = await api.agents
+            .ref(job.agentId)
+            .refresh()
+            .catch((error) => {
+              throwIfConnectionClosed(error);
+              return null;
+            });
+          const label = (await labels).get(job.provider);
+          return {
+            ...(job.kind ? { kind: job.kind } : {}),
+            id: job.id,
+            agentId: job.agentId,
+            provider: job.provider,
+            ...(label ? { providerLabel: label } : {}),
+            workspaceId: loaded?.agent.workspaceId ?? null,
+            title: loaded ? titleOf(loaded.agent) : null,
+            projectName: loaded?.project?.projectName ?? null,
+            workspaceName: loaded?.project?.workspaceName ?? null,
+            resetAt: job.resetAt,
+            dueAt: job.dueAt,
+            enabled: job.enabled,
+            sending: job.state === "sending",
+            waiting: job.waiting,
+            note: job.note,
+            // The stored flag is authoritative; a row written before it existed reads the agent.
+            background: job.background ?? (loaded ? await isBackground(api, loaded.agent) : false),
+          };
+        }),
+      ),
+      // Joined even when no row above needs a name, so a closed connection fails this request
+      // instead of rejecting with nobody listening.
+      labels,
+    ]);
     return rows.sort((left, right) => left.dueAt.localeCompare(right.dueAt));
   }
 
@@ -613,13 +708,21 @@ export function createResumer(options: {
     const entries = await history.list();
     const labels = providerLabels(api);
     const ids = [...new Set(entries.map((entry) => entry.agentId))];
-    const agents = new Map(await Promise.all(ids.map(async (id) => {
-      const loaded = await api.agents.ref(id).refresh().catch(() => null);
-      return [id, loaded?.agent ?? null] as const;
-    })));
-    const labelOf = await labels;
+    const [pairs, labelOf] = await Promise.all([
+      Promise.all(ids.map(async (id) => {
+        const loaded = await api.agents.ref(id).refresh().catch((error) => {
+          throwIfConnectionClosed(error);
+          return null;
+        });
+        return [id, loaded ? { agent: loaded.agent, background: await isBackground(api, loaded.agent) } : null] as const;
+      })),
+      // Joined beside the agent reads, so either failure reaches the caller as this request's.
+      labels,
+    ]);
+    const agents = new Map(pairs);
     return entries.map((entry) => {
-      const agent = agents.get(entry.agentId);
+      const live = agents.get(entry.agentId);
+      const agent = live?.agent;
       const label = labelOf.get(entry.provider);
       return {
         ...entry,
@@ -627,6 +730,7 @@ export function createResumer(options: {
         title: (agent && titleOf(agent)) || entry.title,
         workspaceId: agent?.workspaceId ?? null,
         archived: !!agent?.archivedAt,
+        background: live?.background ?? false,
       };
     });
   }
@@ -722,6 +826,7 @@ export function createResumer(options: {
     tick,
     recover,
     scan,
+    scanIfAttached,
     listScheduled,
     listHistory,
     setEnabled,

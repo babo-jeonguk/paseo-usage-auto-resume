@@ -1,6 +1,6 @@
 import type { ComponentType } from "react";
-import type { PluginButtonContentProps, PluginButtonRegistration, PluginClientContext } from "@getpaseo/plugin/client";
-import { listScheduledRpc } from "../shared/rpc";
+import type { PluginButtonContentProps, PluginButtonRegistration, PluginClientContext, PluginSubscriptionHandle } from "@getpaseo/plugin/client";
+import { changesSubscription, listScheduledRpc } from "../shared/rpc";
 import { composerLabel } from "./format";
 import { onScheduleChanged } from "./schedule-changes";
 
@@ -64,11 +64,41 @@ export function installConversationControls(client: PluginClientContext, Content
   }
 
   const unsubscribeChanges = onScheduleChanged(() => void refresh(true));
-  const timer = setInterval(() => void refresh(), 10_000);
+  // Pushed changes arrive as they happen; the interval only catches renamed or moved agents.
+  const RETRY_DELAYS_MS = [5_000, 15_000, 60_000];
+  let subscription: PluginSubscriptionHandle | null = null;
+  let retry: ReturnType<typeof setTimeout> | null = null;
+  let attempt = 0;
+
+  function resubscribe() {
+    if (stopped || retry) return;
+    const delay = RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)]!;
+    attempt += 1;
+    retry = setTimeout(() => { retry = null; listen(); }, delay);
+    (retry as { unref?: () => void }).unref?.();
+  }
+
+  function listen() {
+    if (stopped) return;
+    const next = client.subscribe(changesSubscription, {}, () => void refresh(true), {
+      // The daemon closed it: a handler error or a plugin stop. Keep polling, then try again.
+      onClosed: () => { void refresh(true); resubscribe(); },
+    });
+    subscription = next;
+    next.ready.then(
+      () => { attempt = 0; if (!stopped) void refresh(true); },
+      () => resubscribe(),
+    );
+  }
+
+  listen();
+  const timer = setInterval(() => void refresh(), 120_000);
   void refresh();
   return () => {
     stopped = true;
     clearInterval(timer);
+    if (retry) clearTimeout(retry);
+    void subscription?.release();
     unsubscribeChanges();
     for (const entry of registrations.values()) entry.button.remove();
     registrations.clear();

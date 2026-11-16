@@ -17,6 +17,14 @@ test("every provider is on until it is turned off", () => {
   assert.equal(isProviderOn("codex", settings), true);
 });
 
+test("background agents stay off by default, including in files saved before the switch", () => {
+  assert.equal(DEFAULT_PROVIDER_SETTINGS.resumeBackground, false);
+  // A version 2 file written before the switch lacks the key and reads with the default.
+  assert.deepEqual(ProviderSettingsSchema.parse({ disabledProviders: ["codex"] }), { disabledProviders: ["codex"], resumeBackground: false });
+  assert.equal(providerSettings.version, 2, "a stored version 2 file without the key needs no migration");
+  assert.equal(ProviderSettingsSchema.safeParse({ disabledProviders: [], resumeBackground: "yes" }).success, false);
+});
+
 test("a damaged provider list cannot be stored", () => {
   for (const disabledProviders of [null, "codex", [""], [1], [null]]) {
     assert.equal(ProviderSettingsSchema.safeParse({ disabledProviders }).success, false);

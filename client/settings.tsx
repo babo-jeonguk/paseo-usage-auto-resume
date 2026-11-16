@@ -6,7 +6,7 @@ import { useEffect, useRef, useState, type ComponentProps, type ComponentType } 
 import { ActivityIndicator, Pressable, Text, useWindowDimensions, View } from "react-native";
 import { DEFAULT_CONTINUE_PROMPT } from "../shared/prompt";
 import { listProvidersRpc, listScheduledRpc, type DiscoveredProvider } from "../shared/rpc";
-import { isProviderOn, PROMPT_MAX_CHARS, providerSettings, ProviderSettingsSchema, resumeSettings, ResumeSettingsSchema, USAGE_SOURCES } from "../shared/settings";
+import { isProviderOn, PROMPT_MAX_CHARS, providerSettings, ProviderSettingsSchema, resumeSettings, ResumeSettingsSchema, switchProvider, USAGE_SOURCES } from "../shared/settings";
 import { filled, outlined } from "./button-styles";
 import { charactersLeft, promptToSave, providerHint, sortProviders } from "./format";
 import { jobsQueryKey } from "./query-keys";
@@ -61,10 +61,8 @@ function ProviderSwitches({ settings, host, theme, feedback }: { settings: Ready
   for (const job of jobs.data ?? []) if (!job.sending) pending.set(job.provider, (pending.get(job.provider) ?? 0) + 1);
 
   const turn = (provider: DiscoveredProvider, on: boolean) => {
-    const others = settings.values.disabledProviders.filter((id) => id !== provider.id);
-    const disabledProviders = on ? others : [...others, provider.id].sort();
     // The switch shows the saved value, so a failed save leaves it as it was and cancels nothing.
-    void feedback.run(provider.id, { kind: "switch", label: provider.label, on }, () => settings.save({ disabledProviders }, settings.revision)).then((saved) => {
+    void feedback.run(provider.id, { kind: "switch", label: provider.label, on }, () => settings.save(switchProvider(settings.values, provider.id, on), settings.revision)).then((saved) => {
       if (saved) toast.show(`${provider.label} turned ${on ? "on" : "off"}`, { variant: "success" });
     });
   };
@@ -97,6 +95,25 @@ function ProviderSwitches({ settings, host, theme, feedback }: { settings: Ready
           Choose which providers continue after a usage limit. Turning one off cancels its pending reservations.
         </Text>
       </View>
+      <SettingsSection title="Background agents">
+        <SettingsCard>
+          <SettingsSwitch
+            label="Resume background agents"
+            hint="Agents Paseo hides from lists, and agents in background workspaces"
+            value={settings.values.resumeBackground}
+            onValueChange={(resumeBackground) => {
+              // Its own key, so a provider's failure never shows under this card, and the switch
+              // shows the saved value: a failed save leaves it as it was and cancels nothing.
+              void feedback.run("background", { kind: "switch", label: "Resume background agents", on: resumeBackground }, () =>
+                settings.save({ ...settings.values, resumeBackground }, settings.revision)).then((saved) => {
+                if (saved) toast.show(`Background agents turned ${resumeBackground ? "on" : "off"}`, { variant: "success" });
+              });
+            }}
+            disabled={settings.saving}
+          />
+        </SettingsCard>
+        <SaveFailureNote failure={feedback.failureFor("background")} feedback={feedback} saving={settings.saving} colors={theme.colors} />
+      </SettingsSection>
       {USAGE_SOURCES.map((cli) => {
         const rows = sortProviders(providers.data.filter((provider) => provider.cli === cli));
         if (rows.length === 0) return null;

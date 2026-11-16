@@ -7,6 +7,8 @@ export const USAGE_SOURCES: readonly UsageSource[] = ["claude", "codex", "antigr
 export const ProviderSettingsSchema = z.object({
   /** Providers turned off by the user; every other Claude, Codex, Antigravity, or OpenCode provider resumes. */
   disabledProviders: z.array(z.string().min(1)).default([]),
+  /** Resume agents Paseo treats as background: a background agent, or an agent in a background workspace. */
+  resumeBackground: z.boolean().default(false),
 });
 
 export type ProviderSettings = z.output<typeof ProviderSettingsSchema>;
@@ -25,6 +27,8 @@ const ProviderSettingsV1Schema = z
 export const providerSettings = defineSettings({
   id: "providers",
   scope: "host",
+  // Added `resumeBackground` without a version bump: a stored version 2 file that lacks it parses
+  // with the default, off, so no migration is needed.
   version: 2,
   schema: ProviderSettingsSchema,
   // An upgraded host starts with every provider on, like a new install. A version 1 file that
@@ -38,6 +42,17 @@ export const providerSettings = defineSettings({
 
 export function isProviderOn(provider: string, settings: ProviderSettings): boolean {
   return !settings.disabledProviders.includes(provider);
+}
+
+/**
+ * The full settings document after turning one provider on or off. A settings save replaces the
+ * whole document, so every other value must travel with the change; a save that carried only the
+ * disabled list would reset the background switch to its default. The input is not changed.
+ */
+export function switchProvider(values: ProviderSettings, provider: string, on: boolean): ProviderSettings {
+  if (isProviderOn(provider, values) === on) return values;
+  const others = values.disabledProviders.filter((id) => id !== provider);
+  return { ...values, disabledProviders: [...new Set(on ? others : [...others, provider])].sort() };
 }
 
 /** Longest custom continue prompt; the default is about 700 characters. */

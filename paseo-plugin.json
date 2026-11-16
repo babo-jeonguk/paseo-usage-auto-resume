@@ -3,7 +3,7 @@
   "name": "Usage Auto Resume",
   "description": "Continue Codex, Claude, Antigravity, and OpenCode agents automatically after their usage limit resets",
   "requirements": {
-    "paseo": ">=0.11.0"
+    "paseo": ">=0.16.0"
   },
   "media": [
     "assets/auto-resume.png",

@@ -40,13 +40,18 @@ export async function uiPhase(ctx) {
   };
   const dump = async (name) => { await shot('fail-' + name); await writeFile(join(out, 'fail-' + name + '.txt'), page.url() + '\n' + (await page.locator('body').ariaSnapshot().catch(() => ''))).catch(() => {}); };
   const guarded = (item, name, fn) => step(item, S, name, async () => { try { return await fn(); } catch (e) { await dump(`${item}-${name.slice(0, 12).replace(/\W+/g, '_')}`); throw e; } });
+  // Paseo 0.16.0 opens the installed plugin's row as a detail page that renders its settings; there
+  // is no Settings button in the row. An "Updates" row with the same name can sit above the
+  // installed one, so take the last match.
+  let pluginRowSnapshot = '';
   const openSettings = async () => {
     await page.goto(origin);
     await page.getByRole('button', { name: 'Settings', exact: true }).first().click({ timeout: 60000 });
     await page.getByRole('button', { name: 'Plugins', exact: true }).first().click();
-    await page.getByRole('button', { name: 'Actions for usage-auto-resume', exact: true }).click();
-    await page.getByRole('menuitem', { name: 'Settings', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Automatic resume' })).toBeVisible({ timeout: 60000 });
+    const row = page.getByRole('button', { name: 'Usage Auto Resume', exact: true }).last();
+    pluginRowSnapshot = await row.ariaSnapshot().catch(() => '');
+    await row.click({ timeout: 30000 });
+    await expect(page.getByRole('heading', { name: 'Automatic resume' })).toBeVisible({ timeout: 30000 });
   };
   const hhmm = (ms) => { const d = new Date(ms); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
   const openScreen = async () => {
@@ -60,6 +65,9 @@ export async function uiPhase(ctx) {
     const days = Math.round((day(ms) - day(Date.now())) / 86400000);
     return days <= 0 ? 'Today' : days === 1 ? 'Tomorrow' : new Date(ms).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
   };
+  // The time button of a reservation row, which exists only inside the Auto Resume screen. The
+  // agent's title alone also appears in the sidebar, so a text locator would match before a row.
+  const screenRow = (title) => page.getByRole('button', { name: new RegExp(`^Change time for ${title}, now `) });
   // Walks up from a row to its card, whose previous sibling is the day heading.
   const headingOf = (title) => page.getByRole('button', { name: new RegExp(`^Change time for ${title}, now `) }).evaluate((el) => {
     for (let n = el; n; n = n.parentElement) {
@@ -151,6 +159,7 @@ export async function uiPhase(ctx) {
       await waitFor(async () => (await jobOf(u2.id))?.note === NOTE, 'note saved', 20000, 300);
       await openSettings();
       await shot('ui-3-settings');
+      await writeFile(join(out, 'ui-3-plugin-row.txt'), pluginRowSnapshot).catch(() => {});
       // The Labs switch explains itself from the (i) beside its label.
       await page.getByRole('button', { name: 'About Retry after a provider overload', exact: true }).hover();
       await expect(page.getByText(/If a turn fails because the provider is busy/)).toBeVisible({ timeout: 15000 });
@@ -173,7 +182,7 @@ export async function uiPhase(ctx) {
       await page.getByRole('button', { name: 'Reset to default' }).click().catch(() => {});
       await sleep(1000);
       await writeSettings('resume', 1, { continuePrompt: null });
-      return `one continue carries the settings-screen prompt + heading + composer note (${NOTE}); note deleted after sending`;
+      return `one continue carries the settings-screen prompt + heading + composer note (${NOTE}); note deleted after sending; settings opened from the installed plugin row in the gallery`;
     });
 
     // ---- item 6 in the UI: Resume now ---------------------------------------------------------
@@ -240,19 +249,19 @@ export async function uiPhase(ctx) {
       assert.equal(await jobOf(u4.id), undefined);
       await page.getByRole('switch', { name: /Claude Sub/ }).click();
       await sleep(1500);
-      return 'history canceled/provider_off right after the switch; switched back on';
+      return 'history canceled/provider_off right after the switch; switched back on; settings opened from the installed plugin row in the gallery';
     });
 
-    // ---- item 17 in the UI: settings save failures ----------------------------------------
+    // ---- item 22 in the UI: settings save failures ----------------------------------------
     const settingsDir = join(home, 'plugin-settings', 'usage-auto-resume');
-    const u5 = await mkAgent('UI save failure', 'claude-sub');
+    const u22 = await mkAgent('UI save failure', 'claude-sub');
     const RAW = /EACCES|\.tmp\b|plugin-settings|requestType|handler_error|Request failed/;
     const readOnlyDirs = !isWin && process.getuid?.() !== 0;
     // The note beside the control, not the toast (the host renders toasts as alerts).
     const inline = (text) => page.locator(`xpath=//*[normalize-space(text())="${text}" and not(ancestor-or-self::*[@role="alert"])]`);
-    if (!readOnlyDirs) note(17, S, 'settings save failures', 'skipped: a read-only directory cannot be simulated on Windows or as root');
-    else await guarded(17, 'a failed settings save shows a plain message, keeps the switch and the reservation, and a retry clears it', async () => {
-      await hit(u5, 'claude');
+    if (!readOnlyDirs) note(22, S, 'settings save failures', 'skipped: a read-only directory cannot be simulated on Windows or as root');
+    else await guarded(22, 'a failed settings save shows a plain message, keeps the switch and the reservation, and a retry clears it', async () => {
+      await hit(u22, 'claude');
       await openSettings();
       await expect(page.getByText(/1 pending reservation/)).toBeVisible({ timeout: 30000 });
       const sw = page.getByRole('switch', { name: /Claude Sub/ });
@@ -267,15 +276,15 @@ export async function uiPhase(ctx) {
         await expect(inline(off)).toBeVisible();
         await expect(sw).toBeChecked();
         assert.doesNotMatch(await page.locator('body').innerText(), RAW);
-        await shot('ui-17-save-failed');
-        assert.ok(await jobOf(u5.id), 'reservation kept after a failed save');
-        assert.ok(!(await readHistory()).some((h) => h.agentId === u5.id && h.reason === 'provider_off'), 'no provider_off after a failed save');
+        await shot('ui-22-save-failed');
+        assert.ok(await jobOf(u22.id), 'reservation kept after a failed save');
+        assert.ok(!(await readHistory()).some((h) => h.agentId === u22.id && h.reason === 'provider_off'), 'no provider_off after a failed save');
         // Writable again: the same click retries, clears the note and cancels the reservation.
         await chmod(settingsDir, 0o755);
         await sw.click();
         await expect(toast('Claude Sub turned off')).toBeVisible({ timeout: 15000 });
         await waitFor(async () => (await inline(off).count()) === 0, 'failure message cleared', 20000, 500);
-        await waitFor(async () => (await readHistory()).some((h) => h.agentId === u5.id && h.reason === 'provider_off'), 'provider_off', 60000, 500);
+        await waitFor(async () => (await readHistory()).some((h) => h.agentId === u22.id && h.reason === 'provider_off'), 'provider_off', 60000, 500);
         await sw.click();
         await expect(toast('Claude Sub turned on')).toBeVisible({ timeout: 15000 });
         // A save from a client whose revision is stale is a conflict: the message offers Reload.
@@ -474,6 +483,30 @@ export async function uiPhase(ctx) {
       assert.equal(await jobOf(r1.id), undefined);
       assert.ok(!(await readJobs()).some((j) => j.note === NOTE), 'note kept after the skip');
       return 'switch off -> "1 skipped" in the header; at the due time history skipped, row and its note gone, 0 continues';
+    });
+
+    // ---- item 21: live updates from the plugin subscription -----------------------------------
+    const u5 = await mkAgent('UI live screen'), u6 = await mkAgent('UI live pill');
+    await guarded(21, 'a reservation from a hook appears on the Auto Resume screen within 5 s without reloading', async () => {
+      await openScreen();
+      const row = screenRow('UI live screen');
+      await expect(row).toHaveCount(0);
+      const job = await hit(u5, 'claude');
+      const created = Date.now();
+      await expect(row).toBeVisible({ timeout: 5000 });
+      const ms = Date.now() - created;
+      await shot('ui-10-live-screen');
+      return `${job.dueAt} appeared ${ms} ms after the reservation was stored, with the screen already open (no reload)`;
+    });
+    await guarded(21, 'a reservation from a hook appears as a composer pill within 5 s without reloading', async () => {
+      await openConversation(u6);
+      await expect(pill()).toHaveCount(0);
+      const job = await hit(u6, 'claude');
+      const created = Date.now();
+      await expect(pill()).toBeVisible({ timeout: 5000 });
+      const ms = Date.now() - created;
+      await shot('ui-11-live-pill');
+      return `${job.dueAt} pill appeared ${ms} ms after the reservation was stored, with the conversation already open (no reload)`;
     });
 
     // ---- item 12 in the UI: Recent activity -------------------------------------------------
