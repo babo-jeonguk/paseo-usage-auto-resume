@@ -1292,6 +1292,27 @@ test("a rescan after turning background agents on, cut off by the daemon closing
   assert.deepEqual(errors, []);
 });
 
+test("lists cut off by the daemon closing fail as requests and leave no unhandled rejection", async () => {
+  const options: FakeOptions = {};
+  const { api, resumer } = await setup({}, options);
+  options.providerSnapshot = () => { throw daemonClosed("Transport not connected"); };
+  options.refreshError = daemonClosed("Transport not connected");
+  await history.append({ agentId: "gone", provider: "codex", outcome: "continued", at: clock.toISOString() } as never);
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    // No reservation: nothing else would read the provider names.
+    await resumer.listScheduled(api).catch(() => undefined);
+    await resumer.listHistory(api).catch(() => undefined);
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+  assert.deepEqual(unhandled.map(String), []);
+});
+
 test("any other scan failure is still logged as an error", async () => {
   const errors: unknown[][] = [];
   const original = console.error;
