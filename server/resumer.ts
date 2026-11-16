@@ -662,39 +662,44 @@ export function createResumer(options: {
   async function listScheduled(api: ResumerApi): Promise<ScheduledJob[]> {
     const jobs = (await store.list()).filter((job) => job.state === "pending" || job.state === "sending");
     const labels = providerLabels(api);
-    const rows = await Promise.all(
-      jobs.map(async (job): Promise<ScheduledJob> => {
-        // A disappeared agent only loses its title and project; a closed connection would make
-        // every row look gone, so the RPC fails instead.
-        const loaded = await api.agents
-          .ref(job.agentId)
-          .refresh()
-          .catch((error) => {
-            throwIfConnectionClosed(error);
-            return null;
-          });
-        const label = (await labels).get(job.provider);
-        return {
-          ...(job.kind ? { kind: job.kind } : {}),
-          id: job.id,
-          agentId: job.agentId,
-          provider: job.provider,
-          ...(label ? { providerLabel: label } : {}),
-          workspaceId: loaded?.agent.workspaceId ?? null,
-          title: loaded ? titleOf(loaded.agent) : null,
-          projectName: loaded?.project?.projectName ?? null,
-          workspaceName: loaded?.project?.workspaceName ?? null,
-          resetAt: job.resetAt,
-          dueAt: job.dueAt,
-          enabled: job.enabled,
-          sending: job.state === "sending",
-          waiting: job.waiting,
-          note: job.note,
-          // The stored flag is authoritative; a row written before it existed reads the agent.
-          background: job.background ?? (loaded ? await isBackground(api, loaded.agent) : false),
-        };
-      }),
-    );
+    const [rows] = await Promise.all([
+      Promise.all(
+        jobs.map(async (job): Promise<ScheduledJob> => {
+          // A disappeared agent only loses its title and project; a closed connection would make
+          // every row look gone, so the RPC fails instead.
+          const loaded = await api.agents
+            .ref(job.agentId)
+            .refresh()
+            .catch((error) => {
+              throwIfConnectionClosed(error);
+              return null;
+            });
+          const label = (await labels).get(job.provider);
+          return {
+            ...(job.kind ? { kind: job.kind } : {}),
+            id: job.id,
+            agentId: job.agentId,
+            provider: job.provider,
+            ...(label ? { providerLabel: label } : {}),
+            workspaceId: loaded?.agent.workspaceId ?? null,
+            title: loaded ? titleOf(loaded.agent) : null,
+            projectName: loaded?.project?.projectName ?? null,
+            workspaceName: loaded?.project?.workspaceName ?? null,
+            resetAt: job.resetAt,
+            dueAt: job.dueAt,
+            enabled: job.enabled,
+            sending: job.state === "sending",
+            waiting: job.waiting,
+            note: job.note,
+            // The stored flag is authoritative; a row written before it existed reads the agent.
+            background: job.background ?? (loaded ? await isBackground(api, loaded.agent) : false),
+          };
+        }),
+      ),
+      // Joined even when no row above needs a name, so a closed connection fails this request
+      // instead of rejecting with nobody listening.
+      labels,
+    ]);
     return rows.sort((left, right) => left.dueAt.localeCompare(right.dueAt));
   }
 
@@ -703,14 +708,18 @@ export function createResumer(options: {
     const entries = await history.list();
     const labels = providerLabels(api);
     const ids = [...new Set(entries.map((entry) => entry.agentId))];
-    const agents = new Map(await Promise.all(ids.map(async (id) => {
-      const loaded = await api.agents.ref(id).refresh().catch((error) => {
-        throwIfConnectionClosed(error);
-        return null;
-      });
-      return [id, loaded ? { agent: loaded.agent, background: await isBackground(api, loaded.agent) } : null] as const;
-    })));
-    const labelOf = await labels;
+    const [pairs, labelOf] = await Promise.all([
+      Promise.all(ids.map(async (id) => {
+        const loaded = await api.agents.ref(id).refresh().catch((error) => {
+          throwIfConnectionClosed(error);
+          return null;
+        });
+        return [id, loaded ? { agent: loaded.agent, background: await isBackground(api, loaded.agent) } : null] as const;
+      })),
+      // Joined beside the agent reads, so either failure reaches the caller as this request's.
+      labels,
+    ]);
+    const agents = new Map(pairs);
     return entries.map((entry) => {
       const live = agents.get(entry.agentId);
       const agent = live?.agent;
