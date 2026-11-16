@@ -44,6 +44,17 @@ export function isProviderOn(provider: string, settings: ProviderSettings): bool
   return !settings.disabledProviders.includes(provider);
 }
 
+/**
+ * The full settings document after turning one provider on or off. A settings save replaces the
+ * whole document, so every other value must travel with the change; a save that carried only the
+ * disabled list would reset the background switch to its default. The input is not changed.
+ */
+export function switchProvider(values: ProviderSettings, provider: string, on: boolean): ProviderSettings {
+  if (isProviderOn(provider, values) === on) return values;
+  const others = values.disabledProviders.filter((id) => id !== provider);
+  return { ...values, disabledProviders: [...new Set(on ? others : [...others, provider])].sort() };
+}
+
 /** Longest custom continue prompt; the default is about 700 characters. */
 export const PROMPT_MAX_CHARS = 4000;
 

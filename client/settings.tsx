@@ -6,7 +6,7 @@ import { useEffect, useRef, useState, type ComponentProps, type ComponentType } 
 import { ActivityIndicator, Pressable, Text, useWindowDimensions, View } from "react-native";
 import { DEFAULT_CONTINUE_PROMPT } from "../shared/prompt";
 import { listProvidersRpc, listScheduledRpc, type DiscoveredProvider } from "../shared/rpc";
-import { isProviderOn, PROMPT_MAX_CHARS, providerSettings, ProviderSettingsSchema, resumeSettings, ResumeSettingsSchema, USAGE_SOURCES } from "../shared/settings";
+import { isProviderOn, PROMPT_MAX_CHARS, providerSettings, ProviderSettingsSchema, resumeSettings, ResumeSettingsSchema, switchProvider, USAGE_SOURCES } from "../shared/settings";
 import { filled, outlined } from "./button-styles";
 import { charactersLeft, promptToSave, providerHint, sortProviders } from "./format";
 import { jobsQueryKey } from "./query-keys";
@@ -61,10 +61,8 @@ function ProviderSwitches({ settings, host, theme, feedback }: { settings: Ready
   for (const job of jobs.data ?? []) if (!job.sending) pending.set(job.provider, (pending.get(job.provider) ?? 0) + 1);
 
   const turn = (provider: DiscoveredProvider, on: boolean) => {
-    const others = settings.values.disabledProviders.filter((id) => id !== provider.id);
-    const disabledProviders = on ? others : [...others, provider.id].sort();
     // The switch shows the saved value, so a failed save leaves it as it was and cancels nothing.
-    void feedback.run(provider.id, { kind: "switch", label: provider.label, on }, () => settings.save({ disabledProviders }, settings.revision)).then((saved) => {
+    void feedback.run(provider.id, { kind: "switch", label: provider.label, on }, () => settings.save(switchProvider(settings.values, provider.id, on), settings.revision)).then((saved) => {
       if (saved) toast.show(`${provider.label} turned ${on ? "on" : "off"}`, { variant: "success" });
     });
   };
