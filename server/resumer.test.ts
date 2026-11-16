@@ -85,6 +85,11 @@ interface FakeOptions {
   /** Runs while a workspace is being read, as a concurrent change would. */
   duringWorkspaceRead?: () => Promise<void>;
   listError?: Error;
+  /** Thrown by an agent read, an agent send, a workspace read or a timeline read. Mutable after setup. */
+  refreshError?: Error;
+  sendError?: Error;
+  workspaceError?: Error;
+  timelineError?: Error;
   usage?: Array<{ providerId: string; displayName: string; status?: string; windows: Array<Record<string, unknown>> }>;
   /** Runs while usage is being read, as a concurrent change would. */
   duringListUsage?: () => Promise<void>;
@@ -131,16 +136,19 @@ function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOption
       },
       ref: (agentId: string) => ({
         refresh: async () => {
+          if (options.refreshError) throw options.refreshError;
           const agent = agents.get(agentId);
           return agent ? { agent: snapshot(agentId, agent), project: null } : null;
         },
-        send: async (text: string, options?: unknown) => {
+        send: async (text: string, sendOption?: unknown) => {
+          if (options.sendError) throw options.sendError;
           sent.push({ agentId, text });
-          sendOptions.push(options);
+          sendOptions.push(sendOption);
         },
         timeline: {
           refetch: async (query: unknown) => {
             timelineReads.push({ agentId, query });
+            if (options.timelineError) throw options.timelineError;
             if (options.timelineFailure === "throw") throw new Error("timeline unavailable");
             if (options.timelineFailure === "page") return { error: "timeline unavailable", entries: [] };
             return {
@@ -159,6 +167,7 @@ function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOption
         refresh: async () => {
           workspaceReads += 1;
           await options.duringWorkspaceRead?.();
+          if (options.workspaceError) throw options.workspaceError;
           if (options.workspaceFailure) throw new Error("workspace unavailable");
           return { id: workspaceId, background: options.backgroundWorkspaces?.includes(workspaceId) ?? false };
         },
@@ -1199,6 +1208,88 @@ test("a scan cut off by the daemon closing is information, and the tick after it
     assert.equal(lines.some((line) => line.includes("failed")), false, lines.join("\n"));
     assert.deepEqual(sent, [{ agentId: "a1", text: CONTINUE_PROMPT }], "the tick still runs");
   }
+});
+
+/** Runs `body` with console.error and console.log captured. */
+async function capturingConsole<T>(body: () => Promise<T>): Promise<{ result: T; errors: unknown[][]; lines: string[] }> {
+  const errors: unknown[][] = [];
+  const lines: string[] = [];
+  const originalError = console.error, originalLog = console.log;
+  console.error = (...line: unknown[]) => { errors.push(line); };
+  console.log = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+  try {
+    return { result: await body(), errors, lines };
+  } finally {
+    console.error = originalError;
+    console.log = originalLog;
+  }
+}
+
+// A closed daemon connection says nothing about an agent, its workspace, its timeline or a send.
+// No read that fails because of it may decide, record or report anything; the operation stops.
+
+test("a workspace read cut off by the daemon closing plans nothing and is not an error", async () => {
+  const { errors, lines } = await capturingConsole(() => setup({
+    c1: { provider: "codex", status: "error", lastError: CODEX_LIMIT, workspaceId: "wks-bg" },
+  }, { backgroundWorkspaces: ["wks-bg"], workspaceError: daemonClosed("Transport not connected") }));
+  assert.deepEqual(errors, [], "a closed connection is not an error");
+  assert.deepEqual(await store.list(), [], "no reservation from a workspace that was never read");
+  assert.equal(lines.some((line) => line.includes("startup scan stopped")), true, lines.join("\n"));
+});
+
+test("a timeline read cut off by the daemon closing is not an error", async () => {
+  const { errors, lines } = await capturingConsole(() => setup({ m1: { provider: "claude" } }, {
+    timelines: { m1: claudeNotice(CLAUDE_LIMIT) }, timelineError: new Error("Daemon client closed"),
+  }));
+  assert.deepEqual(errors, []);
+  assert.deepEqual(await store.list(), []);
+  assert.equal(lines.some((line) => line.includes("startup scan stopped")), true, lines.join("\n"));
+});
+
+test("a turn end whose reads are cut off by the daemon closing settles quietly and plans nothing", async () => {
+  const options: FakeOptions = {};
+  const { api, resumer } = await setup({ m1: { provider: "claude" } }, options);
+  options.timelineError = daemonClosed("Transport not connected");
+  const { errors } = await capturingConsole(() =>
+    resumer.onTurnEnded(turnEnded("m1", "claude", { kind: "completed" }, claudeNotice(CLAUDE_LIMIT)), api));
+  assert.deepEqual(errors, []);
+  assert.deepEqual(await store.list(), []);
+});
+
+test("a due check cut off by the daemon closing leaves the reservation as it was", async () => {
+  await writeFile(join(dir, "jobs.json"), JSON.stringify({ version: 1, jobs: [{
+    agentId: "a1", provider: "codex", resetAt: null, dueAt: "2026-10-06T02:30:00.000Z",
+    baseline: "2026-10-06T02:00:00.000Z", attempts: 0, state: "pending",
+  }] }));
+  const { result: { sent }, errors } = await capturingConsole(() =>
+    setup({ a1: { provider: "codex" } }, { refreshError: daemonClosed("Transport not connected") }));
+  assert.deepEqual(errors, []);
+  assert.deepEqual(sent, []);
+  assert.deepEqual((await store.list()).map((job) => `${job.agentId} ${job.state}`), ["a1 pending"]);
+  assert.deepEqual(await recorded(), [], "nothing is recorded for a check that never finished");
+});
+
+test("a continue whose send is cut off by the daemon closing keeps its claim for the restart to drop", async () => {
+  await writeFile(join(dir, "jobs.json"), JSON.stringify({ version: 1, jobs: [{
+    agentId: "a1", provider: "codex", resetAt: null, dueAt: "2026-10-06T02:30:00.000Z",
+    baseline: "2026-10-06T02:00:00.000Z", attempts: 0, state: "pending",
+  }] }));
+  const { errors } = await capturingConsole(() =>
+    setup({ a1: { provider: "codex" } }, { sendError: new Error("Daemon client closed") }));
+  assert.deepEqual(errors, []);
+  assert.deepEqual((await store.list()).map((job) => `${job.agentId} ${job.state}`), ["a1 sending"]);
+  assert.deepEqual(await recorded(), [], "not recorded as could not be sent");
+  const restarted = createResumer({ store, history, now: () => clock });
+  await restarted.recover();
+  assert.deepEqual(await recorded(), ["a1 interrupted"]);
+});
+
+test("a rescan after turning background agents on, cut off by the daemon closing, is not an error", async () => {
+  const options: FakeOptions = {};
+  const { resumer } = await setup({}, options);
+  options.listError = daemonClosed("Transport not connected");
+  const { errors } = await capturingConsole(() => resumer.scanIfAttached());
+  assert.deepEqual(errors, []);
 });
 
 test("any other scan failure is still logged as an error", async () => {
