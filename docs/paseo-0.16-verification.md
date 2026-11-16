@@ -50,7 +50,7 @@
 | Claude 정상 종료 자동 복구 | 0.15에서 실패했던 사례가 0.16에서 recovery prompt 1회로 동작(`#8686`) | upstream 수정 확인 |
 | background agent | 실제 제한 → reset+2분 예약, tick 1회 재개, plugin off 동안 놓친 제한을 scan이 발견 | 동작함 |
 | `fetchAgents({includeBackground:true})` | background agent가 목록에 보이지 않음. plugin list RPC와 `fetchAgent(id)`는 정상 | harness/client 관찰, 제품 경로 아님 |
-| 0.16 UI | plugin 행에 자체 `Settings` 버튼이 생기고 액션 메뉴 이름이 표시 이름 기준으로 바뀜 | harness locator 수정 필요 |
+| 0.16 UI | plugin 갤러리에서 설치된 plugin 행 자체가 상세 페이지 버튼이고, 그 페이지가 plugin 설정을 직접 표시한다(`Settings` 버튼 없음). 액션 메뉴 이름은 표시 이름 기준으로 바뀜 | harness locator 수정 필요 |
 | OpenCode fake suite | 무료 한도 문구를 `provider.free-limit`으로 기록, `resetAt null` + 15분 재시도 예약, tick 1회, scan 1건 모두 통과 | 동작함 |
 | provider 목록 | 설치 직후 `auto-resume.providers`에 opencode가 없고 잠시 뒤 나타남 | warm-up timing |
 | daemon 종료 중 startup scan | `startup scan failed DaemonConnectionError: Transport not connected` / `Error: Daemon client closed`를 stderr에 기록 | **1.4.0에서 수정** |
