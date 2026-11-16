@@ -1,9 +1,9 @@
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { Icon, TextInput } from "@getpaseo/plugin/client/react-native";
-import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { ScheduledJob } from "../shared/rpc";
-import { clockLabel, dayChoices, dayOffset, relativeLabel, rescheduleProblem, timeOnDay } from "./format";
+import { dayChoices, relativeLabel, relativeSpoken, timeEdit, type TimeEditorStart, type TimeEntry } from "./format";
+import { SpokenText } from "./spoken-text";
 
 type Theme = PluginScreenProps["theme"];
 
@@ -44,7 +44,12 @@ function createTimeEditorStyles(theme: Theme, compact: boolean) {
   };
 }
 
-/** Replaces the time line while a time is typed; the server still has the final say. */
+/**
+ * Replaces the time line while a time is typed. The draft lives with the surface, so a row drawn again
+ * keeps it. It opens on the reservation's own time, which saves as is; the server has the final say on
+ * any other. Days are counted from the moment it opened; the window check reads the current time on each
+ * render, not this surface's clock.
+ */
 export function TimeEditor(props: {
   job: ScheduledJob;
   now: number;
@@ -52,6 +57,9 @@ export function TimeEditor(props: {
   /** Composer popovers can be narrower than the screen's compact list rows. */
   stackDays?: boolean;
   theme: Theme;
+  /** The opening entry and the entry as typed. */
+  time: { start: TimeEditorStart; entry: TimeEntry };
+  onChange(entry: TimeEntry): void;
   /** Saving is off, as while the reservation could not be refreshed; the typed time stays. */
   locked?: boolean;
   onSave(dueAt: string): void;
@@ -59,14 +67,17 @@ export function TimeEditor(props: {
 }) {
   const { job, now, theme } = props;
   const styles = createTimeEditorStyles(theme, props.compact);
-  const choices = dayChoices(job.dueAt, now);
-  const [text, setText] = useState(() => clockLabel(job.dueAt));
-  const [day, setDay] = useState(() => Math.max(0, dayOffset(job.dueAt, now)));
-  const dueAt = timeOnDay(text, day, now);
-  const problem = dueAt ? rescheduleProblem(job, dueAt, now) : "Enter a time like 07:30.";
+  const { start, entry } = props.time;
+  const { text, day } = entry;
+  // The days the user picked from stay the same calendar days while the editor is open.
+  const choices = dayChoices(job.dueAt, start.openedAt);
+  const { dueAt, unchanged, problem } = timeEdit(job, start, entry);
   const blocked = !!problem || !!props.locked;
   const save = () => {
-    if (dueAt && !blocked) props.onSave(dueAt);
+    if (blocked) return;
+    // The reservation's own time: nothing moves and nothing is recorded, so saving only closes the editor.
+    if (unchanged) props.onCancel();
+    else if (dueAt) props.onSave(dueAt);
   };
   // A third day (a weekly reset) does not fit beside the field and buttons on a phone.
   const daysBelow = props.stackDays || (props.compact && choices.length > 2);
@@ -81,7 +92,7 @@ export function TimeEditor(props: {
             accessibilityRole="radio"
             accessibilityState={{ checked: active }}
             hitSlop={{ top: 6, bottom: 6 }}
-            onPress={() => setDay(choice.offset)}
+            onPress={() => props.onChange({ ...entry, day: choice.offset })}
             style={[styles.segment, active ? styles.segmentActive : null]}
           >
             <Text style={[styles.segmentText, active ? styles.segmentTextActive : null]}>{choice.label}</Text>
@@ -96,7 +107,7 @@ export function TimeEditor(props: {
       <View style={styles.editLine}>
         <TextInput
           value={text}
-          onChangeText={setText}
+          onChangeText={(value) => props.onChange({ ...entry, text: value })}
           autoFocus
           selectTextOnFocus
           maxLength={5}
@@ -140,7 +151,9 @@ export function TimeEditor(props: {
           {problem}
         </Text>
       ) : (
-        <Text style={styles.editHint}>{job.waiting ? "Checks again" : "Continues"} {relativeLabel(dueAt!, now)}.</Text>
+        <SpokenText style={styles.editHint} spoken={`${job.waiting ? "Checks again" : "Continues"} ${relativeSpoken(dueAt!, now)}.`}>
+          {job.waiting ? "Checks again" : "Continues"} {relativeLabel(dueAt!, now)}.
+        </SpokenText>
       )}
     </View>
   );

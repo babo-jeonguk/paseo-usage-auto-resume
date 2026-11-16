@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ScheduledJob } from "../shared/rpc";
-import { editorLocks, editSession, type EditEvent, type EditSession } from "./edit-session";
+import { editorLocks, editSession, openEditor, type EditEvent, type EditSession } from "./edit-session";
 
 const DUE = "2026-10-06T05:02:00.000Z";
 const job = (fields: Partial<ScheduledJob> = {}): ScheduledJob => ({
@@ -9,15 +9,40 @@ const job = (fields: Partial<ScheduledJob> = {}): ScheduledJob => ({
   resetAt: null, dueAt: DUE, enabled: true, sending: false, background: false, ...fields,
 });
 const run = (...events: EditEvent[]) => events.reduce<EditSession | null>(editSession, null);
-const open = (kind: "time" | "note", fields: Partial<ScheduledJob> = {}): EditEvent => ({ type: "open", kind, job: job(fields) });
+const NOW = new Date(2026, 9, 6, 17, 1).getTime();
+const open = (kind: "time" | "note", fields: Partial<ScheduledJob> = {}): EditEvent => ({ type: "open", kind, job: job(fields), now: NOW });
 const kind = (state: EditSession | null) => state && `${state.agentId}:${state.kind}`;
 
 test("extra instructions open with the saved note and the reservation's time", () => {
   const { opened, ...rest } = run(open("note", { note: "Rerun the tests" }))!;
   assert.equal(typeof opened, "object");
   assert.deepEqual(rest, {
-    agentId: "a", reservation: "a-1", kind: "note", pin: DUE, draft: "Rerun the tests", initial: "Rerun the tests", saving: false, problem: null,
+    agentId: "a", reservation: "a-1", kind: "note", pin: DUE, draft: "Rerun the tests", initial: "Rerun the tests", saving: false, problem: null, time: null,
   });
+});
+
+test("a time editor opens on the reservation's own minute and day, as of when it opened", () => {
+  const state = run(open("time", { dueAt: new Date(2026, 9, 6, 18, 53, 27).toISOString() }));
+  assert.deepEqual(state?.time, { start: { text: "18:53", day: 0, openedAt: NOW }, entry: { text: "18:53", day: 0 } });
+});
+
+test("a typed time and day live with the surface, so a row drawn again under another day heading keeps them", () => {
+  // Opened at 23:59:55 for 00:30:27 tomorrow; at midnight the list files the row under Today and syncs again.
+  const opened = new Date(2026, 9, 6, 23, 59, 55).getTime();
+  const row = job({ dueAt: new Date(2026, 9, 7, 0, 30, 27).toISOString() });
+  const typed = run({ type: "open", kind: "time", job: row, now: opened }, { type: "set-time", entry: { text: "00:45", day: 1 } }, { type: "sync", jobs: [row] });
+  assert.deepEqual(typed?.time, { start: { text: "00:30", day: 1, openedAt: opened }, entry: { text: "00:45", day: 1 } });
+});
+
+test("a time entry changes only an open time editor, and typed extra instructions never touch it", () => {
+  const entry = { text: "07:30", day: 1 };
+  assert.equal(run({ type: "set-time", entry }), null);
+  const note = run(open("note", { note: "Rerun the tests" }), { type: "set-time", entry });
+  assert.equal(note?.time, null);
+  assert.equal(note?.draft, "Rerun the tests");
+  const time = run(open("time"), { type: "type", text: "draft" });
+  assert.equal(time?.draft, "");
+  assert.deepEqual(time?.time?.entry, run(open("time"))?.time?.entry);
 });
 
 test("while extra instructions are open nothing else opens, in this row or another", () => {
@@ -113,4 +138,15 @@ test("an open editor's locks", () => {
   assert.deepEqual(editorLocks(null), { time: false, note: false });
   assert.deepEqual(editorLocks(run(open("time"))), { time: false, note: true });
   assert.deepEqual(editorLocks(run(open("note"))), { time: true, note: true });
+});
+
+test("opening an editor records the moment it is opened, not the surface's last clock tick", () => {
+  // A surface's clock ticks every few seconds; one sampled at 23:59:55 must not anchor an editor opened after midnight.
+  for (const editor of ["time", "note"] as const) {
+    const before = Date.now();
+    const event = openEditor(editor, job());
+    const after = Date.now();
+    assert.ok(event.type === "open" && event.now >= before && event.now <= after, editor);
+    assert.deepEqual({ ...event, now: 0 }, { type: "open", kind: editor, job: job(), now: 0 });
+  }
 });

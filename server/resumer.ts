@@ -8,10 +8,10 @@ import { detectLimitStop } from "./limit";
 import type { HistoryRow, RescheduleResult, ResumeNowResult, ScheduledJob, SetNoteResult, Waiting } from "../shared/rpc";
 import type { HistoryStore } from "./history";
 import type { JobStore, ResumeJob } from "./store";
-import { captureLaunch, createSubscriptionReader, subscriptionModel, unknownCheck, type LaunchContext, type SubscriptionCheck, type SubscriptionReader } from "./subscription";
+import { captureLaunch, captureTokens, createSubscriptionReader, subscriptionModel, unknownCheck, type LaunchContext, type LaunchTokens, type SubscriptionCheck, type SubscriptionReader } from "./subscription";
 import { RETRY_DELAYS_MS, rescheduleWindow } from "../shared/schedule";
 import { DEFAULT_PROVIDER_SETTINGS, DEFAULT_RESUME_SETTINGS, isProviderOn, type ProviderSettings, type ResumeSettings, type UsageSource } from "../shared/settings";
-import { cliFor } from "./providers";
+import { cliFor, providerLabels } from "./providers";
 import { isExhausted } from "./quota";
 import { continuePrompt, DEFAULT_CONTINUE_PROMPT } from "../shared/prompt";
 import { readBackground } from "./background";
@@ -144,10 +144,19 @@ export function createResumer(options: {
   const random = options.random ?? Math.random;
   let paseo: ResumerApi | null = null;
   let ticking = false;
-  const launches = new Map<string, LaunchContext>();
+  /**
+   * Each agent's latest session: the context a reservation saves, and beside it the automation
+   * token values, which stay in this map and are never saved or logged.
+   */
+  const launches = new Map<string, { context: LaunchContext; tokens: LaunchTokens }>();
   const readSubscription = options.readSubscription ?? createSubscriptionReader();
-  const inspect = async (api: ResumerApi, agent: PaseoAgent, source: UsageSource, at: Date, launch?: LaunchContext, mode?: "identity" | "usage") => {
-    try { return await readSubscription(api, agent, source, at, launch, mode); }
+  /** The session the agent opened in this process, else the context its reservation saved. */
+  const launchOf = (agentId: string, saved: LaunchContext | undefined) => {
+    const remembered = launches.get(agentId);
+    return remembered ? { launch: remembered.context, tokens: remembered.tokens } : { launch: saved, tokens: undefined };
+  };
+  const inspect = async (api: ResumerApi, agent: PaseoAgent, source: UsageSource, at: Date, { launch, tokens }: ReturnType<typeof launchOf>, mode?: "identity" | "usage") => {
+    try { return await readSubscription(api, agent, source, at, launch, mode, tokens); }
     catch { return unknownCheck(); }
   };
 
@@ -161,9 +170,15 @@ export function createResumer(options: {
     });
   }
 
+  /**
+   * The session a check verified the reservation's account with. A token rotated for the same
+   * account is saved with it, so a restart that only has the new token still recognizes it.
+   */
+  const verifiedLaunch = (check: SubscriptionCheck, launch: LaunchContext | undefined) => check.identity ? launch : undefined;
+
   // Only the fields read here, so the request type can grow across Paseo versions.
   function rememberSession(request: Pick<PluginSessionOpenRequest, "agentId" | "purpose" | "env">): void {
-    if (request.purpose === "interactive") launches.set(request.agentId, captureLaunch(request));
+    if (request.purpose === "interactive") launches.set(request.agentId, { context: captureLaunch(request), tokens: captureTokens(request) });
   }
 
   async function loadAgent(api: ResumerApi, agentId: string): Promise<PaseoAgent | null> {
@@ -245,10 +260,11 @@ export function createResumer(options: {
     // continue it counts as one more.
     const waits = (row: ResumeJob | null | undefined) => !!row && row.state !== "sent";
     if (options.onlyIfNone && waits(previous)) return;
-    const launch = launches.get(agent.id) ?? previous?.launch;
+    const session = launchOf(agent.id, previous?.launch);
+    const { launch } = session;
     const at = now();
     // A notice or capacity failure supplies the schedule; bind identity without reading usage.
-    const check = await inspect(api, agent, source, at, launch, stated || options.overload ? "identity" : "usage");
+    const check = await inspect(api, agent, source, at, session, stated || options.overload ? "identity" : "usage");
     if (check.auth === "api") {
       // Only a reservation still waiting is canceled; a continue already sent was reported.
       launches.delete(agent.id);
@@ -405,14 +421,14 @@ export function createResumer(options: {
    * A used-up window, or a stated reset still ahead, moves a due job to when it renews; unverified
    * auth or usage moves it to the next check. False when nothing holds it.
    */
-  async function postpone(job: ResumeJob, check: SubscriptionCheck, at: Date): Promise<boolean> {
+  async function postpone(job: ResumeJob, check: SubscriptionCheck, at: Date, launch: ResumeJob["launch"]): Promise<boolean> {
     const hold = usageHold(check, at);
     const stated = job.resetAt && Date.parse(job.resetAt) > at.getTime() ? new Date(job.resetAt) : null;
     const renewsAt = renewalFor(hold, stated);
     if (hold.kind === "ready" && !renewsAt) return false;
     const waiting = hold.kind === "unverified" ? hold.waiting : "usage";
     await store.update(job.agentId, (current) => current && isSameJob(current, job) && current.enabled
-      ? postponed(current, { renewsAt, waiting, identity: check.identity, at, usedUp: hold.kind === "used_up" }) : undefined);
+      ? postponed(current, { renewsAt, waiting, identity: check.identity, at, usedUp: hold.kind === "used_up", launch: verifiedLaunch(check, launch) }) : undefined);
     return true;
   }
 
@@ -462,7 +478,8 @@ export function createResumer(options: {
     if (gate) return gated(gate, title);
     // The post-usage re-check uses the same rule: the stored flag, or the agent for an older row.
     const backgroundOf = async (latest: PaseoAgent): Promise<boolean> => job.background === true || await isBackground(api, latest);
-    const check = await inspect(api, agent!, source, at, launches.get(job.agentId) ?? job.launch);
+    const session = launchOf(job.agentId, job.launch);
+    const check = await inspect(api, agent!, source, at, session);
     if (check.auth === "api") return cancel({ ...API_ROUTE, title });
     if (job.identity && check.identity && job.identity !== check.identity) {
       return cancel({ ...ACCOUNT_CHANGED, title });
@@ -470,9 +487,14 @@ export function createResumer(options: {
     if (manual) {
       // Only the account's own usage holds a continue the user asked for; the notice may be outdated.
       const hold = usageHold(check, at);
+      if (hold.kind !== "ready") {
+        // Blocked, it keeps its time and switch, but the session that verified it is still saved.
+        const launch = verifiedLaunch(check, session.launch);
+        if (launch) await store.update(job.agentId, (current) => current && same(current) ? { ...current, launch } : undefined);
+      }
       if (hold.kind === "used_up") return { result: "used_up", until: hold.renews?.toISOString() ?? null };
       if (hold.kind === "unverified") return { result: "unverified", waiting: hold.waiting };
-    } else if (await postpone(job, check, at)) {
+    } else if (await postpone(job, check, at, session.launch)) {
       return { result: "postponed" };
     }
     // The usage lookup takes seconds, and Paseo's send unarchives an agent, clears its permission
@@ -499,7 +521,7 @@ export function createResumer(options: {
       if (!current || !isSameJob(current, job) || (!manual && !current.enabled)) return undefined;
       won = true;
       note = current.note;
-      return claimed(current, check.identity);
+      return claimed(current, check.identity, verifiedLaunch(check, session.launch));
     });
     if (!won) return staleResult(latest);
     // Read once claimed, so a prompt saved while the agent was being checked is the one sent. A
@@ -614,17 +636,20 @@ export function createResumer(options: {
   /** Jobs still ahead, with the agent's title and project for display. */
   async function listScheduled(api: ResumerApi): Promise<ScheduledJob[]> {
     const jobs = (await store.list()).filter((job) => job.state === "pending" || job.state === "sending");
+    const labels = providerLabels(api);
     const rows = await Promise.all(
       jobs.map(async (job): Promise<ScheduledJob> => {
         const loaded = await api.agents
           .ref(job.agentId)
           .refresh()
           .catch(() => null);
+        const label = (await labels).get(job.provider);
         return {
           ...(job.kind ? { kind: job.kind } : {}),
           id: job.id,
           agentId: job.agentId,
           provider: job.provider,
+          ...(label ? { providerLabel: label } : {}),
           workspaceId: loaded?.agent.workspaceId ?? null,
           title: loaded ? titleOf(loaded.agent) : null,
           projectName: loaded?.project?.projectName ?? null,
@@ -646,16 +671,20 @@ export function createResumer(options: {
   /** Recent results, newest first, named and placed by the live agent when it still exists. */
   async function listHistory(api: ResumerApi): Promise<HistoryRow[]> {
     const entries = await history.list();
+    const labels = providerLabels(api);
     const ids = [...new Set(entries.map((entry) => entry.agentId))];
     const agents = new Map(await Promise.all(ids.map(async (id) => {
       const loaded = await api.agents.ref(id).refresh().catch(() => null);
       return [id, loaded ? { agent: loaded.agent, background: await isBackground(api, loaded.agent) } : null] as const;
     })));
+    const labelOf = await labels;
     return entries.map((entry) => {
       const live = agents.get(entry.agentId);
       const agent = live?.agent;
+      const label = labelOf.get(entry.provider);
       return {
         ...entry,
+        ...(label ? { providerLabel: label } : {}),
         title: (agent && titleOf(agent)) || entry.title,
         workspaceId: agent?.workspaceId ?? null,
         archived: !!agent?.archivedAt,
@@ -729,9 +758,9 @@ export function createResumer(options: {
         return undefined;
       }
       if (!current) return undefined;
-      const { earliest, latest } = rescheduleWindow(current.resetAt, at.getTime());
+      const { earliest, earliestMinute, latest } = rescheduleWindow(current.resetAt, at.getTime());
       if (target.getTime() < earliest) {
-        result = { changed: false, reason: "too-early", earliest: new Date(earliest).toISOString() };
+        result = { changed: false, reason: "too-early", earliest: new Date(earliestMinute).toISOString() };
         return undefined;
       }
       if (target.getTime() > latest) {

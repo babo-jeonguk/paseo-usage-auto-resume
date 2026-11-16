@@ -71,3 +71,18 @@ test("Claude reads only the short final synthetic notice and joins only chunks f
   assert.equal(detectOverloadStop(completed, [assistant("API Error: 529 ", "m"), assistant("Overloaded.", "m")], "claude"), true);
   assert.equal(detectOverloadStop(completed, [assistant("API Error: 529 ", "a"), assistant("Overloaded.", "b")], "claude"), false);
 });
+
+test("rows another plugin appends do not hide Claude's closing overload notice", () => {
+  const notice = 'API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}';
+  const assistant = (text: string, messageId?: string): AgentTimelineItem => ({ type: "assistant_message", text, messageId });
+  const row: AgentTimelineItem = { type: "plugin", id: "r1", pluginId: "stats", kind: "turn-stats", version: 1, data: { ms: 42_000 } };
+  const completed = { kind: "completed" } as const;
+  assert.equal(detectOverloadStop(completed, [assistant(notice), row], "claude"), true);
+  assert.equal(detectOverloadStop(completed, [assistant(notice, "m"), row, row], "claude"), true);
+  assert.equal(detectOverloadStop(completed, [assistant("API Error: 529 ", "m"), row, assistant("Overloaded.", "m"), row], "claude"), true);
+  assert.equal(detectOverloadStop(completed, [assistant("API Error: 529 ", "a"), row, assistant("Overloaded.", "b")], "claude"), false);
+  assert.equal(detectOverloadStop(completed, [assistant(notice), row, { type: "user_message", text: "Next task" }, row], "claude"), false);
+  assert.equal(detectOverloadStop(completed, [assistant(notice), row, assistant("Done")], "claude"), false);
+  assert.equal(detectOverloadStop(completed, [row], "claude"), false);
+  assert.equal(detectOverloadStop({ kind: "canceled", reason: "user" }, [assistant(notice), row], "claude"), false);
+});

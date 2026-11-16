@@ -75,7 +75,7 @@ Each run writes `results.json` (one row per checked item), `daemon.log` and `mod
 | 12 | Recent activity and history |
 | 13 | Rolling back to `--from` |
 | 14 | No plugin errors in the daemon log |
-| 15 | The Auto Resume screen: day sections, a row's +10m, Change time, extra instructions, Open and switch, and Turn all off/on (`--ui 1`) |
+| 15 | The Auto Resume screen: day sections, a weekly wait shown as days and spoken in words, a row's +10m, Change time, extra instructions, Open and switch, and Turn all off/on (`--ui 1`) |
 | 16 | A reservation whose agent a daemon restart closed is continued at its due time |
 | 17a | Background agents are skipped while **Resume background agents** is off, and a pending one is swept with `background_off` when it is turned off (`--suites claude`) |
 | 17b | With the switch on, the tick continues a background agent once, in the same agent (`--suites claude`) |
@@ -86,6 +86,7 @@ Each run writes `results.json` (one row per checked item), `daemon.log` and `mod
 | 19a–c | OpenCode: a real free-limit error through the fake API becomes a reservation, the tick continues once, and the scan finds a missed stop (`--suites opencode`) |
 | 20 | Observation: provider discovery after warm-up |
 | 21 | A reservation from a hook reaches the open Auto Resume screen and the composer pill within 5 s, without reloading (`--ui 1`) |
+| 17 | A settings save that fails (read-only settings directory, or a conflict) shows a plain message and changes nothing; Reload and a retry recover (`--ui 1`, not on Windows or as root) |
 
 Items 17 and 18 turn the background switch through Paseo's settings API (`settings.providers.write`), because a direct file edit does not notify the plugin's settings subscribers. Codex and Antigravity run items 3, 6, 7, 9, 11 and 16; OpenCode runs 19a–c instead of item 3, because its limit message carries no reset. The fake-request total, the refused connections and the harness's longest event-loop stall (`loopMaxMs`) are printed in the final `SUMMARY` line. The harness keeps one daemon session open for the whole run, and the daemon closes a session that sends nothing for 45 seconds, so the harness must not block its event loop: it runs the `paseo` CLI asynchronously.
 

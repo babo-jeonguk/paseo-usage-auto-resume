@@ -35,8 +35,8 @@ const GIT_SOURCE = args.source ?? 'git:babo-jeonguk/paseo-usage-auto-resume';
 const OLD_REF = args.from ?? 'v1.2.2', NEW_REF = args.to ?? 'main';
 let oldRevision = '';
 const PLUGIN = 'usage-auto-resume';
-// The continue prompt is the patch plugin's marker. Keep this in step with shared/prompt.ts; the
-// check below fails the run early instead of silently counting nothing.
+// Must stay in sync with DEFAULT_CONTINUE_PROMPT in shared/prompt.ts. The check below fails the
+// run early instead of silently counting nothing.
 const DEFAULT_MARK = 'Continue the unfinished work from where it stopped.';
 if (!readFileSync(join(here, '..', 'shared', 'prompt.ts'), 'utf8').includes(DEFAULT_MARK)) {
   throw new Error('e2e DEFAULT_MARK drifted from shared/prompt.ts');

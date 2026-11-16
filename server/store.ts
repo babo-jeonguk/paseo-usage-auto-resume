@@ -37,7 +37,11 @@ const JobSchema = z.object({
   identity: z.string().optional(),
   /** Pin the selected model even when account verification is initially unavailable. */
   model: z.string().optional(),
-  launch: z.object({ env: z.record(z.string(), z.string()), authEnv: z.record(z.string(), z.boolean()) }).optional(),
+  launch: z.object({
+    env: z.record(z.string(), z.string()), authEnv: z.record(z.string(), z.boolean()),
+    /** One-way token fingerprints; rows saved before them load without, and their tokens stay unavailable. */
+    fingerprints: z.record(z.string(), z.string()).optional(),
+  }).optional(),
   /**
    * The user's extra instruction for this continue; sent once, then dropped. A damaged one is
    * dropped alone, so it never costs the file its reservations.

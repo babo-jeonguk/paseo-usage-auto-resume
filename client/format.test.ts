@@ -22,10 +22,13 @@ import {
   providerLabel,
   refusalLabel,
   relativeLabel,
+  relativeSpoken,
   rescheduleProblem,
   resumeNowToast,
   sortProviders,
   summaryLabels,
+  timeEdit,
+  timeEditorStart,
   timeOnDay,
 } from "./format";
 
@@ -44,6 +47,10 @@ const job = (overrides: Partial<ScheduledJob>): ScheduledJob => ({
   ...overrides,
 });
 const now = new Date(2026, 9, 6, 17, 1).getTime();
+const MIN = 60_000;
+const HOUR = 60 * MIN;
+/** `ms` after `now`, as a due time. */
+const after = (ms: number) => new Date(now + ms).toISOString();
 
 test("composer labels distinguish off, sending, verification and later calendar days", () => {
   assert.equal(composerLabel(job({}), now), "Resume 18:53");
@@ -60,6 +67,39 @@ test("countdowns round up to the minute", () => {
   assert.equal(relativeLabel(new Date(2026, 9, 6, 17, 30, 30).toISOString(), now), "in 30m");
   assert.equal(relativeLabel(new Date(2026, 9, 6, 19, 1).toISOString(), now), "in 2h");
   assert.equal(relativeLabel(new Date(2026, 9, 6, 16, 0).toISOString(), now), "now");
+});
+
+test("countdowns of a day or more switch to days and hours, rounded up to the hour", () => {
+  assert.equal(relativeLabel(after(0), now), "now");
+  assert.equal(relativeLabel(after(-5 * MIN), now), "now");
+  assert.equal(relativeLabel(after(1 * MIN), now), "in 1m");
+  assert.equal(relativeLabel(after(59 * MIN), now), "in 59m");
+  assert.equal(relativeLabel(after(60 * MIN), now), "in 1h");
+  assert.equal(relativeLabel(after(23 * HOUR + 59 * MIN), now), "in 23h 59m");
+  assert.equal(relativeLabel(after(24 * HOUR), now), "in 1d");
+  assert.equal(relativeLabel(after(24 * HOUR + 1 * MIN), now), "in 1d 1h");
+  assert.equal(relativeLabel(after(26 * HOUR + 2 * MIN), now), "in 1d 3h");
+  assert.equal(relativeLabel(after(47 * HOUR + 30 * MIN), now), "in 2d");
+  assert.equal(relativeLabel(after(72 * HOUR), now), "in 3d");
+  assert.equal(relativeLabel(after(167 * HOUR + 59 * MIN), now), "in 7d");
+  assert.equal(relativeLabel(after(168 * HOUR), now), "in 7d");
+  assert.equal(relativeLabel(after(168 * HOUR + 1 * MIN), now), "in 7d 1h");
+  assert.equal(relativeLabel(after(168 * HOUR + 59 * MIN), now), "in 7d 1h");
+  assert.equal(relativeLabel(after(169 * HOUR), now), "in 7d 1h");
+  // Seconds round the minute up first, which carries 23h 59m 30s over the day boundary.
+  assert.equal(relativeLabel(after(23 * HOUR + 59 * MIN + 30_000), now), "in 1d");
+});
+
+test("spoken countdowns use whole words for the same days, hours and minutes", () => {
+  assert.equal(relativeSpoken(after(0), now), "now");
+  assert.equal(relativeSpoken(after(1 * MIN), now), "in 1 minute");
+  assert.equal(relativeSpoken(after(25 * MIN), now), "in 25 minutes");
+  assert.equal(relativeSpoken(after(60 * MIN), now), "in 1 hour");
+  assert.equal(relativeSpoken(after(2 * HOUR + 2 * MIN), now), "in 2 hours 2 minutes");
+  assert.equal(relativeSpoken(after(24 * HOUR), now), "in 1 day");
+  assert.equal(relativeSpoken(after(26 * HOUR + 2 * MIN), now), "in 1 day 3 hours");
+  assert.equal(relativeSpoken(after(168 * HOUR), now), "in 7 days");
+  assert.equal(relativeSpoken(after(168 * HOUR + 59 * MIN), now), "in 7 days 1 hour");
 });
 
 test("days are named relative to today", () => {
@@ -91,17 +131,75 @@ test("verification checks are displayed separately from promised continues", () 
     title: "1 agent waiting for verification", detail: "Next check at 18:53",
   });
   assert.deepEqual(summaryLabels([job({ waiting: "auth" }), job({ dueAt: new Date(2026, 9, 6, 20, 0).toISOString() })]), {
-    title: "1 agent will continue", detail: "Next at 20:00 · 1 waiting",
+    title: "1 agent will continue", detail: "Next check 18:53 · Next at 20:00",
   });
 });
 
-test("labels for provider and place", () => {
-  assert.equal(providerLabel("claude-main"), "Claude Main");
-  assert.equal(providerLabel("antigravity"), "Antigravity");
-  assert.equal(providerLabel("antigravity-main"), "Antigravity Main");
+test("the header names both the next check and the next continue in time order", () => {
+  const at = (hours: number, minutes: number, seconds = 0) => new Date(2026, 9, 6, hours, minutes, seconds).toISOString();
+  assert.deepEqual(summaryLabels([job({ waiting: "usage", dueAt: at(19, 58) }), job({ dueAt: at(21, 45) })]), {
+    title: "1 agent will continue", detail: "Next check 19:58 · Next at 21:45",
+  });
+  assert.deepEqual(summaryLabels([job({ dueAt: at(20, 0) }), job({ waiting: "auth", dueAt: at(21, 0) })]), {
+    title: "1 agent will continue", detail: "Next at 20:00 · Next check 21:00",
+  });
+  assert.deepEqual(summaryLabels([job({ waiting: "usage", dueAt: at(21, 45, 0) }), job({ dueAt: at(21, 45, 30) })]), {
+    title: "1 agent will continue", detail: "Next check and resume at 21:45",
+  });
+  assert.deepEqual(summaryLabels([job({ waiting: "usage", dueAt: new Date(2026, 9, 6, 21, 45).toISOString() }), job({ dueAt: new Date(2026, 9, 8, 21, 45).toISOString() })]), {
+    title: "1 agent will continue", detail: "Next check 21:45 · Next at 21:45",
+  });
+  assert.deepEqual(summaryLabels([job({ enabled: false, dueAt: at(18, 53) }), job({ waiting: "usage", dueAt: at(19, 58) }), job({ dueAt: at(21, 45) })]), {
+    title: "1 agent will continue", detail: "Next check 19:58 · Next at 21:45 · 1 skipped",
+  });
+});
+
+test("a turned-off check or a continue being sent does not add a misleading check time", () => {
+  const at = (hours: number, minutes: number) => new Date(2026, 9, 6, hours, minutes).toISOString();
+  assert.deepEqual(summaryLabels([job({ enabled: false, waiting: "usage", dueAt: at(18, 53) }), job({ dueAt: at(20, 0) })]), {
+    title: "1 agent will continue", detail: "Next at 20:00 · 1 skipped",
+  });
+  assert.deepEqual(summaryLabels([job({ sending: true, dueAt: at(18, 53) }), job({ waiting: "usage", dueAt: at(20, 0) })]), {
+    title: "1 agent will continue", detail: "Next at 18:53 · Next check 20:00",
+  });
+});
+
+test("the header names the earliest check and continue whatever order the list arrives in", () => {
+  // A surface that moved one reservation can hand over a list that is no longer sorted by time.
+  const at = (hours: number, minutes: number) => new Date(2026, 9, 6, hours, minutes).toISOString();
+  assert.deepEqual(summaryLabels([job({ dueAt: at(21, 0) }), job({ dueAt: at(20, 0) })]), {
+    title: "2 agents will continue", detail: "Next at 20:00",
+  });
+  assert.deepEqual(summaryLabels([job({ waiting: "usage", dueAt: at(22, 0) }), job({ waiting: "auth", dueAt: at(19, 30) })]), {
+    title: "2 agents waiting for verification", detail: "Next check at 19:30",
+  });
+  assert.deepEqual(summaryLabels([job({ dueAt: at(21, 45) }), job({ waiting: "usage", dueAt: at(20, 30) }), job({ dueAt: at(20, 0) }), job({ waiting: "usage", dueAt: at(19, 58) })]), {
+    title: "2 agents will continue", detail: "Next check 19:58 · Next at 20:00",
+  });
+});
+
+test("labels for place", () => {
   assert.equal(placeLabel(job({ projectName: "DoneFolio", workspaceName: "DoneFolio" })), "DoneFolio");
   assert.equal(placeLabel(job({ projectName: "DoneFolio", workspaceName: "issue-233" })), "DoneFolio · issue-233");
   assert.equal(placeLabel(job({})), null);
+});
+
+test("provider chips use Paseo's current name, then the built-in name, then the ID", () => {
+  assert.equal(providerLabel({ provider: "claude" }), "Claude");
+  assert.equal(providerLabel({ provider: "codex" }), "Codex");
+  assert.equal(providerLabel({ provider: "antigravity" }), "Antigravity");
+  assert.equal(providerLabel({ provider: "opencode" }), "OpenCode");
+  assert.equal(providerLabel({ provider: "claude-main" }), "Claude Main");
+  assert.equal(providerLabel({ provider: "antigravity-main" }), "Antigravity Main");
+  assert.equal(providerLabel({ provider: "claude-sub", providerLabel: "Claude Sub" }), "Claude Sub");
+  assert.equal(providerLabel({ provider: "codex-reserve", providerLabel: "Codex Reserve" }), "Codex Reserve");
+  assert.equal(providerLabel({ provider: "codex-sub", providerLabel: "  Codex Sub  " }), "Codex Sub");
+  assert.equal(providerLabel({ provider: "claude-main", providerLabel: "Work account" }), "Work account");
+  assert.equal(providerLabel({ provider: "codex-reserve" }), "codex-reserve");
+  assert.equal(providerLabel({ provider: "claude-main" }), "Claude Main");
+  assert.equal(providerLabel({ provider: "claude", providerLabel: "   " }), "Claude");
+  assert.equal(providerLabel({ provider: "claude-sub", providerLabel: "" }), "claude-sub");
+  assert.equal(providerLabel({ provider: "constructor" }), "constructor");
 });
 
 const provider = (overrides: Partial<DiscoveredProvider>): DiscoveredProvider => ({
@@ -162,6 +260,92 @@ test("a new time before the reset or over a week out is explained before it is s
   );
   assert.equal(rescheduleProblem(job({}), new Date(2026, 9, 13, 18, 2).toISOString(), now), "Pick a time within 7 days.");
   assert.equal(rescheduleProblem(job({}), new Date(2026, 9, 13, 18, 1).toISOString(), now), null);
+});
+
+test("the time editor opens on the reservation's own minute and day", () => {
+  assert.deepEqual(timeEditorStart(job({ dueAt: new Date(2026, 9, 6, 18, 53, 27).toISOString() }), now), { text: "18:53", day: 0, openedAt: now });
+  assert.deepEqual(timeEditorStart(job({ dueAt: new Date(2026, 9, 9, 4, 13, 9).toISOString() }), now), { text: "04:13", day: 3, openedAt: now });
+});
+
+// The editor as opened at `now`, then typed into; `at` is when its state is read.
+const edit = (row: ScheduledJob, text: string, day: number, at = now) => timeEdit(row, timeEditorStart(row, now), { text, day }, at);
+
+test("a reservation's own time is never too early, even when its seconds put it before the first whole minute", () => {
+  // Planned from a reset with seconds, as an older or current plan saves it: reset 18:51:27, due 18:53:27.
+  const limited = job({ resetAt: new Date(2026, 9, 6, 18, 51, 27).toISOString(), dueAt: new Date(2026, 9, 6, 18, 53, 27).toISOString() });
+  assert.equal(
+    rescheduleProblem(limited, new Date(2026, 9, 6, 18, 53).toISOString(), now),
+    "Too early — the limit resets at 18:51. Earliest is 18:54.",
+    "18:53:00 alone is before the window",
+  );
+  assert.deepEqual(edit(limited, "18:53", 0), { dueAt: limited.dueAt, unchanged: true, problem: null });
+  assert.deepEqual(edit(limited, "1853", 0), { dueAt: limited.dueAt, unchanged: true, problem: null }, "another spelling of the same minute");
+  // A changed minute is checked: the shown earliest saves, the minute before it is refused.
+  assert.deepEqual(edit(limited, "18:54", 0), { dueAt: new Date(2026, 9, 6, 18, 54).toISOString(), unchanged: false, problem: null });
+  assert.deepEqual(edit(limited, "18:52", 0), {
+    dueAt: new Date(2026, 9, 6, 18, 52).toISOString(),
+    unchanged: false,
+    problem: "Too early — the limit resets at 18:51. Earliest is 18:54.",
+  });
+  // Only the day changed: the same text on another day is a new time and is checked as one.
+  assert.deepEqual(edit(limited, "18:53", 1), { dueAt: new Date(2026, 9, 7, 18, 53).toISOString(), unchanged: false, problem: null });
+  assert.deepEqual(edit(limited, "7.30", 0), { dueAt: null, unchanged: false, problem: "Enter a time like 07:30." });
+});
+
+test("an overload retry's jittered time and a verification check within the minute open as valid", () => {
+  const retry = job({ kind: "overload", dueAt: new Date(2026, 9, 6, 17, 1, 41, 512).toISOString() });
+  assert.deepEqual(edit(retry, "17:01", 0), { dueAt: retry.dueAt, unchanged: true, problem: null }, "the jitter is kept, not resampled or rounded");
+  const check = job({ waiting: "usage", dueAt: new Date(2026, 9, 6, 17, 1, 30).toISOString() });
+  assert.deepEqual(edit(check, "17:01", 0), { dueAt: check.dueAt, unchanged: true, problem: null });
+  assert.equal(edit(check, "17:00", 0).problem, "Too early — earliest is 17:02.");
+});
+
+test("without a time given, the window is checked against the clock when the editor is read, not a surface's last tick", (t) => {
+  // A surface's clock ticks every 10–15 s; here it last ticked at 17:00:55 and the real time is 17:01:05.
+  const surfaceTick = new Date(2026, 9, 6, 17, 0, 55).getTime();
+  const real = new Date(2026, 9, 6, 17, 1, 5).getTime();
+  t.mock.method(Date, "now", () => real);
+  const check = job({ waiting: "usage", dueAt: new Date(2026, 9, 6, 17, 30).toISOString() });
+  const start = timeEditorStart(check, surfaceTick);
+  // The server would refuse 17:02 now (earliest 17:03), so the editor must too, and name 17:03.
+  assert.deepEqual(timeEdit(check, start, { text: "17:02", day: 0 }), {
+    dueAt: new Date(2026, 9, 6, 17, 2).toISOString(),
+    unchanged: false,
+    problem: "Too early — earliest is 17:03.",
+  });
+  assert.equal(timeEdit(check, start, { text: "17:03", day: 0 }).problem, null, "the earliest it names saves");
+  assert.deepEqual(timeEdit(check, start, start), { dueAt: check.dueAt, unchanged: true, problem: null }, "the opening time still saves as is");
+});
+
+test("an editor open across midnight keeps the days it offered when it opened", () => {
+  // Opened at 23:59:55 for 00:30:27 tomorrow; read again five seconds after midnight.
+  const opened = new Date(2026, 9, 6, 23, 59, 55).getTime();
+  const afterMidnight = new Date(2026, 9, 7, 0, 0, 5).getTime();
+  const late = job({ dueAt: new Date(2026, 9, 7, 0, 30, 27).toISOString() });
+  const start = timeEditorStart(late, opened);
+  assert.deepEqual(start, { text: "00:30", day: 1, openedAt: opened });
+  assert.deepEqual(timeEdit(late, start, start, afterMidnight), { dueAt: late.dueAt, unchanged: true, problem: null });
+  // Tomorrow as offered at 23:59 is still October 7, not the day after it.
+  assert.deepEqual(timeEdit(late, start, { text: "00:45", day: 1 }, afterMidnight), {
+    dueAt: new Date(2026, 9, 7, 0, 45).toISOString(),
+    unchanged: false,
+    problem: null,
+  });
+  // Today as offered at 23:59 is October 6, now past, and is checked against the current time.
+  assert.deepEqual(timeEdit(late, start, { text: "23:59", day: 0 }, afterMidnight), {
+    dueAt: new Date(2026, 9, 6, 23, 59).toISOString(),
+    unchanged: false,
+    problem: "Too early — earliest is 00:02.",
+  });
+});
+
+test("a reservation already past, even from yesterday, opens unchanged and saves as is", () => {
+  const overdue = job({ dueAt: new Date(2026, 9, 5, 18, 53, 27).toISOString() });
+  assert.deepEqual(timeEditorStart(overdue, now), { text: "18:53", day: 0, openedAt: now });
+  assert.deepEqual(edit(overdue, "18:53", 0), { dueAt: overdue.dueAt, unchanged: true, problem: null });
+  assert.deepEqual(edit(overdue, "18:53", 0, new Date(2026, 9, 6, 19, 0).getTime()), { dueAt: overdue.dueAt, unchanged: true, problem: null }, "after today's 18:53 too");
+  // Typed into, it is a new time today, checked as one.
+  assert.deepEqual(edit(overdue, "18:54", 0), { dueAt: new Date(2026, 9, 6, 18, 54).toISOString(), unchanged: false, problem: null });
 });
 
 test("the server's refusals read the same way", () => {

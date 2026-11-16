@@ -92,6 +92,8 @@ interface FakeOptions {
   claudeAliasEnv?: Record<string, string>;
   readSettings?: () => Promise<ProviderSettings | null>;
   readResumeSettings?: () => Promise<ResumeSettings | null>;
+  /** Paseo's provider snapshot, read on each call; without it the snapshot lists no providers. */
+  providerSnapshot?: () => Array<{ provider: string; label?: string }>;
 }
 
 /** Daemon stand-in: agent snapshots by ID, recorded sends, and no way to create agents. */
@@ -182,6 +184,7 @@ function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOption
       }),
     },
     providers: {
+      snapshot: async () => ({ entries: options.providerSnapshot?.() ?? [] }),
       listUsage: async () => {
         usageReads += 1;
         await options.duringListUsage?.();
@@ -316,6 +319,39 @@ test("startup scan also detects a separate limit notice after a long Claude answ
     { type: "assistant_message", text: "Research is still running. ".padEnd(834, "."), messageId: "answer" },
     { type: "assistant_message", text: CLAUDE_LIMIT, messageId: "limit" },
   ] } });
+  assert.equal((await store.list())[0]?.dueAt, "2026-10-06T06:02:00.000Z");
+});
+
+const pluginRow: AgentTimelineItem = { type: "plugin", id: "r1", pluginId: "stats", kind: "turn-stats", version: 1, data: { ms: 42_000 } };
+
+test("a later turn end whose timeline still closes on the notice behind a plugin row keeps the reservation", async () => {
+  const { api, sent, resumer } = await setup({ m1: { provider: "claude" } });
+  await resumer.onTurnEnded(turnEnded("m1", "claude", { kind: "completed" }, claudeNotice(CLAUDE_LIMIT)), api);
+  const before = await store.list();
+  assert.equal(before[0]?.dueAt, "2026-10-06T06:02:00.000Z");
+
+  // Another plugin appends a row, then a background subagent's notification ends another turn.
+  await resumer.onTurnEnded(turnEnded("m1", "claude", { kind: "completed" }, [...claudeNotice(CLAUDE_LIMIT), pluginRow]), api);
+  assert.deepEqual(await store.list(), before);
+  assert.deepEqual(await recorded(), []);
+
+  clock = new Date("2026-10-06T06:02:00.000Z");
+  await resumer.tick();
+  assert.deepEqual(sent, [{ agentId: "m1", text: CONTINUE_PROMPT }]);
+});
+
+test("a turn that finishes with new output after the notice and a plugin row still cancels", async () => {
+  const { api, resumer } = await setup({ m1: { provider: "claude" } });
+  await resumer.onTurnEnded(turnEnded("m1", "claude", { kind: "completed" }, claudeNotice(CLAUDE_LIMIT)), api);
+  await resumer.onTurnEnded(turnEnded("m1", "claude", { kind: "completed" }, [
+    ...claudeNotice(CLAUDE_LIMIT), pluginRow, { type: "assistant_message", text: "The subagent finished; all tests pass." }, pluginRow,
+  ]), api);
+  assert.deepEqual(await store.list(), []);
+  assert.deepEqual(await recorded(), ["m1 canceled/turn_finished"]);
+});
+
+test("startup scan detects a limit notice behind a plugin row", async () => {
+  await setup({ m1: { provider: "claude" } }, { timelines: { m1: [...claudeNotice(CLAUDE_LIMIT), pluginRow] } });
   assert.equal((await store.list())[0]?.dueAt, "2026-10-06T06:02:00.000Z");
 });
 
@@ -1903,6 +1939,26 @@ test("without a known reset, the earliest new time is a minute from now", async 
   assert.equal((await resumer.reschedule("a1", await pinOf(store, "a1", "2026-10-06T03:15:00.000Z"), "2026-10-06T03:01:00.000Z")).changed, true);
 });
 
+test("a reset with seconds is refused before its first whole minute and accepted at it", async () => {
+  const { resumer } = await setup({});
+  const dueAt = "2026-10-06T03:07:27.000Z";
+  await store.update("a1", () => ({
+    agentId: "a1", provider: "codex", resetAt: "2026-10-06T03:05:27.000Z", dueAt,
+    baseline: null, attempts: 0, state: "pending", enabled: true, retries: 0,
+  }));
+
+  assert.deepEqual(await resumer.reschedule("a1", await pinOf(store, "a1", dueAt), "2026-10-06T03:07:00.000Z"), {
+    changed: false,
+    reason: "too-early",
+    earliest: "2026-10-06T03:08:00.000Z",
+  });
+  assert.deepEqual(await resumer.reschedule("a1", await pinOf(store, "a1", dueAt), "2026-10-06T03:08:00.000Z"), {
+    changed: true,
+    dueAt: "2026-10-06T03:08:00.000Z",
+  });
+  assert.equal((await store.list())[0]?.dueAt, "2026-10-06T03:08:00.000Z");
+});
+
 test("rescheduling a job that moved, ran, or is being sent reports why nothing changed", async () => {
   const { api, resumer } = await setup({ a1: { provider: "codex" } });
   await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
@@ -2207,6 +2263,97 @@ test("history marks an archived agent so its conversation is not offered to open
   ]);
 });
 
+test("list and history name a provider by its current label in Paseo, keeping its ID", async () => {
+  const { api, resumer, agents } = await setup(
+    { a1: { provider: "codex-reserve", title: "Fix login", workspaceId: "w1" } },
+    { providerSnapshot: () => [{ provider: "codex-reserve", label: "Codex Reserve" }] },
+  );
+  await resumer.onTurnEnded(turnEnded("a1", "codex-reserve", failed(CODEX_LIMIT)), api);
+  const [shown] = await resumer.listScheduled(api);
+  assert.equal(shown?.provider, "codex-reserve");
+  assert.equal(shown?.providerLabel, "Codex Reserve");
+  assert.equal("providerLabel" in (await store.list())[0]!, false, "the label is not stored");
+
+  agents.set("a1", { provider: "codex-reserve", title: "Fix login", workspaceId: "w1", lastUserMessageAt: "2026-10-06T03:30:00.000Z" });
+  await resumer.onTurnStarted("a1", api);
+  const [row] = await resumer.listHistory(api);
+  assert.equal(row?.provider, "codex-reserve");
+  assert.equal(row?.providerLabel, "Codex Reserve");
+  assert.equal("providerLabel" in (await history.list())[0]!, false, "the label is not stored");
+});
+
+test("a renamed provider shows its new label on the next refresh", async () => {
+  let label = "Codex Reserve";
+  const { api, resumer } = await setup(
+    { a1: { provider: "codex-reserve" } },
+    { providerSnapshot: () => [{ provider: "codex-reserve", label }] },
+  );
+  await resumer.onTurnEnded(turnEnded("a1", "codex-reserve", failed(CODEX_LIMIT)), api);
+  assert.equal((await resumer.listScheduled(api))[0]?.providerLabel, "Codex Reserve");
+  label = "Codex Work";
+  assert.equal((await resumer.listScheduled(api))[0]?.providerLabel, "Codex Work");
+});
+
+test("a provider Paseo no longer lists, or an unreadable snapshot, leaves rows without a label", async () => {
+  const listed = await setup(
+    { a1: { provider: "codex-reserve" } },
+    { providerSnapshot: () => [] },
+  );
+  await listed.resumer.onTurnEnded(turnEnded("a1", "codex-reserve", failed(CODEX_LIMIT)), listed.api);
+  const [shown] = await listed.resumer.listScheduled(listed.api);
+  assert.equal(shown?.provider, "codex-reserve");
+  assert.equal("providerLabel" in shown!, false);
+
+  const broken = await setup(
+    { a2: { provider: "codex-reserve" } },
+    { providerSnapshot: () => { throw new Error("daemon busy"); } },
+  );
+  await broken.resumer.onTurnEnded(turnEnded("a2", "codex-reserve", failed(CODEX_LIMIT)), broken.api);
+  const brokenShown = (await broken.resumer.listScheduled(broken.api)).find((job) => job.agentId === "a2");
+  assert.ok(brokenShown);
+  assert.equal(brokenShown?.provider, "codex-reserve");
+  assert.equal("providerLabel" in brokenShown!, false);
+
+  broken.agents.set("a2", { provider: "codex-reserve", lastUserMessageAt: "2026-10-06T03:30:00.000Z" });
+  await broken.resumer.onTurnStarted("a2", broken.api);
+  const row = (await broken.resumer.listHistory(broken.api)).find((entry) => entry.agentId === "a2");
+  assert.ok(row);
+  assert.equal(row?.provider, "codex-reserve");
+  assert.equal("providerLabel" in row!, false);
+});
+
+test("a missing or blank provider label is left off the row", async () => {
+  for (const label of [undefined, "  "]) {
+    clock = START;
+    const { api, resumer } = await setup(
+      { a1: { provider: "codex-reserve" } },
+      { providerSnapshot: () => [{ provider: "codex-reserve", label }] },
+    );
+    await resumer.onTurnEnded(turnEnded("a1", "codex-reserve", failed(CODEX_LIMIT)), api);
+    const [shown] = await resumer.listScheduled(api);
+    assert.equal(shown?.provider, "codex-reserve", String(label));
+    assert.equal("providerLabel" in shown!, false, String(label));
+    await store.update("a1", () => null);
+  }
+});
+
+test("a result whose agent is gone still names its provider by its current label", async () => {
+  const { api, resumer, agents } = await setup(
+    { a1: { provider: "codex-reserve", title: "Fix login", workspaceId: "w1" } },
+    { providerSnapshot: () => [{ provider: "codex-reserve", label: "Codex Reserve" }] },
+  );
+  await resumer.onTurnEnded(turnEnded("a1", "codex-reserve", failed(CODEX_LIMIT)), api);
+  advance(3 * 60 * MINUTE);
+  await resumer.tick();
+  agents.delete("a1");
+  const row = (await resumer.listHistory(api)).find((entry) => entry.agentId === "a1");
+  assert.ok(row);
+  assert.equal(row?.providerLabel, "Codex Reserve");
+  assert.equal(row?.provider, "codex-reserve");
+  assert.equal(row?.title, "Fix login");
+  assert.equal(row?.workspaceId, null);
+});
+
 test("a history that cannot be written never stops a continue", async () => {
   const map = new Map(Object.entries({ a1: { provider: "codex" } as Partial<PaseoAgent> }));
   const fake = fakePaseo(map);
@@ -2227,7 +2374,7 @@ test("Business raw response goes through auth, exact-model reset, persisted rest
   await signIn(home, "auth.json", { auth_mode: "chatgpt", tokens: { access_token: "private-access-token", account_id: "business-workspace" } });
   let available = false;
   const readSubscription = createSubscriptionReader({
-    codex: async () => ({ account: { account: { type: "chatgpt" } }, config: { config: { model_provider: "openai" } } }),
+    codex: async () => ({ account: { account: { type: "chatgpt" } }, config: { config: { model_provider: "openai" } }, authStatus: { authMethod: "chatgpt" } }),
     fetch: async () => new Response(JSON.stringify({
       account_id: "business-workspace", rate_limit_reached_type: { type: "workspace_member_credits_depleted" },
       spend_control: { reached: false }, credits: { has_credits: false },

@@ -3,10 +3,10 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
-import { writeFile } from 'node:fs/promises';
+import { chmod, writeFile } from 'node:fs/promises';
 
 export async function uiPhase(ctx) {
-  const { step, note, rpc, mkAgent, hit, setUsage, jobOf, editJob, readJobs, readHistory, continues, writeSettings, waitFor, sleep, origin, out, API, DEFAULT_MARK } = ctx;
+  const { step, note, rpc, mkAgent, hit, setUsage, jobOf, editJob, readJobs, readHistory, continues, writeSettings, waitFor, sleep, origin, out, home, API, DEFAULT_MARK } = ctx;
   const S = 'claude-ui';
   const isWin = process.platform === 'win32';
   const pwRoot = process.env.PW_ROOT ?? (isWin ? null : process.env.HOME + '/.npm/_npx/e41f203b7505f1fb/node_modules/');
@@ -104,6 +104,47 @@ export async function uiPhase(ctx) {
       return `${seen.join(', ')}, then Change time -> ${(await jobOf(u1.id)).dueAt} (typed ${hhmm(target)}); each moved the reservation's own due time`;
     });
 
+    // A due time with seconds, as a reset with seconds plans it: the typed hh:mm:00 alone is before reset + 2 minutes.
+    await guarded(4, 'composer Change time opens clean on a due time with seconds; Cancel and unchanged Save move nothing; the shown earliest saves', async () => {
+      const due = Math.floor((Date.now() + 40 * 60000) / 60000) * 60000 + 27000;
+      const first = Math.ceil(due / 60000) * 60000;
+      // Off, so a save that wrongly went to the server would also show up as turned on.
+      await editJob(u1.id, { resetAt: iso(due - 120000), dueAt: iso(due), enabled: false });
+      await openConversation(u1);
+      const panel = await openPanel(u1);
+      await expect(panel.getByText(hhmm(due), { exact: true })).toBeVisible({ timeout: 30000 });
+      await panel.getByRole('button', { name: 'Change time', exact: true }).click();
+      const box = panel.getByRole('textbox', { name: /^New time for / });
+      const save = panel.getByRole('button', { name: 'Save time', exact: true });
+      // Before any edit: the reservation's own time, no error, Save on.
+      await expect(box).toHaveValue(hhmm(due));
+      await expect(panel.getByText(/^Too early/)).toHaveCount(0);
+      await expect(save).toBeEnabled();
+      await shot('ui-2b-editor-unchanged');
+      await panel.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await expect(box).toBeHidden({ timeout: 15000 });
+      await panel.getByRole('button', { name: 'Change time', exact: true }).click();
+      await expect(save).toBeEnabled();
+      await save.click();
+      await expect(box).toBeHidden({ timeout: 15000 });
+      await sleep(2000);
+      const kept = await jobOf(u1.id);
+      assert.equal(kept.dueAt, iso(due), 'Cancel and an unchanged save keep the due time, seconds and all');
+      assert.equal(kept.enabled, false, 'an unchanged save does not turn the reservation on');
+      await expect(toast('Resume time updated')).toHaveCount(0);
+      // A minute before the reservation's own is refused with the first whole minute; that minute saves.
+      await panel.getByRole('button', { name: 'Change time', exact: true }).click();
+      await box.fill(hhmm(due - 60000));
+      await expect(panel.getByText(`Too early — the limit resets at ${hhmm(due - 120000)}. Earliest is ${hhmm(first)}.`, { exact: true })).toBeVisible({ timeout: 10000 });
+      await expect(save).toBeDisabled();
+      await box.fill(hhmm(first));
+      await expect(save).toBeEnabled();
+      await save.click();
+      await waitFor(async () => (await jobOf(u1.id)).dueAt === iso(first), 'earliest whole minute saved', 20000, 300);
+      assert.equal((await jobOf(u1.id)).enabled, true, 'a changed time turns the reservation on');
+      return `opened on ${hhmm(due)} (${iso(due)}) with Save on and no error; Cancel and unchanged Save kept it off at that time; ${hhmm(due - 60000)} refused, earliest ${hhmm(first)} saved and turned on`;
+    });
+
     // ---- item 5 in the UI: extra instructions + custom prompt --------------------------------
     const u2 = await mkAgent('UI note and prompt');
     await guarded(5, 'extra instructions (composer) + custom continue prompt (settings) are sent together; note deleted', async () => {
@@ -118,6 +159,11 @@ export async function uiPhase(ctx) {
       await openSettings();
       await shot('ui-3-settings');
       await writeFile(join(out, 'ui-3-plugin-row.txt'), pluginRowSnapshot).catch(() => {});
+      // The Labs switch explains itself from the (i) beside its label.
+      await page.getByRole('button', { name: 'About Retry after a provider overload', exact: true }).hover();
+      await expect(page.getByText(/If a turn fails because the provider is busy/)).toBeVisible({ timeout: 15000 });
+      await shot('ui-3-labs-info');
+      await page.mouse.move(0, 0);
       const prompt = page.getByRole('textbox', { name: 'Continue prompt' });
       await prompt.fill(CUSTOM);
       await page.getByRole('button', { name: 'Save', exact: true }).click();
@@ -173,8 +219,27 @@ export async function uiPhase(ctx) {
 
     // ---- item 9 in the UI: provider switch ---------------------------------------------------
     const u4 = await mkAgent('UI provider off', 'claude-sub');
-    await guarded(9, 'Settings switch turns Claude Sub off: its pending reservation is canceled at once', async () => {
+    await guarded(9, 'Auto Resume names the Claude Sub row by its Paseo name, at phone width too', async () => {
       await hit(u4, 'claude');
+      await openScreen();
+      const row = page.getByRole('switch', { name: /^Continue UI provider off automatically at / });
+      await expect(row).toBeVisible({ timeout: 30000 });
+      await expect(page.getByText('Claude Sub', { exact: true }).first()).toBeVisible();
+      assert.equal(await page.getByText('claude-sub', { exact: true }).count(), 0);
+      // The chip shrinks before the row's switch leaves the screen.
+      await page.setViewportSize({ width: 390, height: 844 });
+      try {
+        await row.scrollIntoViewIfNeeded();
+        await expect(row).toBeInViewport({ ratio: 1, timeout: 15000 });
+        await expect(page.getByText('Claude Sub', { exact: true }).first()).toBeVisible();
+        await shot('ui-5-provider-label-phone');
+      } finally {
+        await page.setViewportSize({ width: 1440, height: 960 });
+      }
+      return 'row chip "Claude Sub", no raw ID; switch fully on screen at 390px';
+    });
+    await guarded(9, 'Settings switch turns Claude Sub off: its pending reservation is canceled at once', async () => {
+      if (!(await jobOf(u4.id))) await hit(u4, 'claude');
       await openSettings();
       await expect(page.getByText(/1 pending reservation/)).toBeVisible({ timeout: 30000 });
       await shot('ui-5-settings-pending');
@@ -184,6 +249,80 @@ export async function uiPhase(ctx) {
       await page.getByRole('switch', { name: /Claude Sub/ }).click();
       await sleep(1500);
       return 'history canceled/provider_off right after the switch; switched back on; settings opened via the plugin row\'s Settings button';
+    });
+
+    // ---- item 17 in the UI: settings save failures ----------------------------------------
+    const settingsDir = join(home, 'plugin-settings', 'usage-auto-resume');
+    const u5 = await mkAgent('UI save failure', 'claude-sub');
+    const RAW = /EACCES|\.tmp\b|plugin-settings|requestType|handler_error|Request failed/;
+    const readOnlyDirs = !isWin && process.getuid?.() !== 0;
+    // The note beside the control, not the toast (the host renders toasts as alerts).
+    const inline = (text) => page.locator(`xpath=//*[normalize-space(text())="${text}" and not(ancestor-or-self::*[@role="alert"])]`);
+    if (!readOnlyDirs) note(17, S, 'settings save failures', 'skipped: a read-only directory cannot be simulated on Windows or as root');
+    else await guarded(17, 'a failed settings save shows a plain message, keeps the switch and the reservation, and a retry clears it', async () => {
+      await hit(u22, 'claude');
+      await openSettings();
+      await expect(page.getByText(/1 pending reservation/)).toBeVisible({ timeout: 30000 });
+      const sw = page.getByRole('switch', { name: /Claude Sub/ });
+      await expect(sw).toBeChecked();
+      await chmod(settingsDir, 0o555);
+      try {
+        // Turn off fails: the toast and the note beside the switch say so, and nothing changed.
+        await sw.click();
+        const off = 'Couldn’t turn off Claude Sub. Try again.';
+        await expect(page.getByRole('alert').filter({ hasText: off })).toBeVisible({ timeout: 15000 });
+        await expect(page.getByRole('alert').filter({ hasText: off })).toHaveCount(1);
+        await expect(inline(off)).toBeVisible();
+        await expect(sw).toBeChecked();
+        assert.doesNotMatch(await page.locator('body').innerText(), RAW);
+        await shot('ui-17-save-failed');
+        assert.ok(await jobOf(u5.id), 'reservation kept after a failed save');
+        assert.ok(!(await readHistory()).some((h) => h.agentId === u5.id && h.reason === 'provider_off'), 'no provider_off after a failed save');
+        // Writable again: the same click retries, clears the note and cancels the reservation.
+        await chmod(settingsDir, 0o755);
+        await sw.click();
+        await expect(toast('Claude Sub turned off')).toBeVisible({ timeout: 15000 });
+        await waitFor(async () => (await inline(off).count()) === 0, 'failure message cleared', 20000, 500);
+        await waitFor(async () => (await readHistory()).some((h) => h.agentId === u5.id && h.reason === 'provider_off'), 'provider_off', 60000, 500);
+        await sw.click();
+        await expect(toast('Claude Sub turned on')).toBeVisible({ timeout: 15000 });
+        // A save from a client whose revision is stale is a conflict: the message offers Reload.
+        await writeFile(join(settingsDir, 'providers.json'), JSON.stringify({ version: 2, values: { disabledProviders: [] } }, null, 2));
+        await sw.click();
+        const conflict = 'Settings changed elsewhere. Reload and try again.';
+        await expect(inline(conflict)).toBeVisible({ timeout: 15000 });
+        await expect(page.getByRole('alert').filter({ hasText: conflict })).toHaveCount(1);
+        await expect(sw).toBeChecked();
+        await page.getByRole('button', { name: 'Reload', exact: true }).click();
+        await waitFor(async () => (await inline(conflict).count()) === 0, 'conflict message cleared', 20000, 500);
+        await sw.click();
+        await expect(toast('Claude Sub turned off')).toBeVisible({ timeout: 15000 });
+        await sw.click();
+        await expect(toast('Claude Sub turned on')).toBeVisible({ timeout: 15000 });
+        // Labs fails the same way and keeps its saved value.
+        const labs = page.getByRole('switch', { name: /Retry after a provider overload/ });
+        const labsOn = await labs.isChecked();
+        await chmod(settingsDir, 0o555);
+        await labs.click();
+        const labsMsg = `Couldn’t turn ${labsOn ? 'off' : 'on'} Retry after a provider overload. Try again.`;
+        await expect(inline(labsMsg)).toBeVisible({ timeout: 15000 });
+        labsOn ? await expect(labs).toBeChecked() : await expect(labs).not.toBeChecked();
+        // The continue prompt fails and keeps the draft.
+        const DRAFT = 'UI-DRAFT-' + Math.random().toString(36).slice(2, 7);
+        const prompt = page.getByRole('textbox', { name: 'Continue prompt' });
+        await prompt.fill(DRAFT);
+        await page.getByRole('button', { name: 'Save', exact: true }).click();
+        await expect(inline('Couldn’t save the continue prompt. Try again.')).toBeVisible({ timeout: 15000 });
+        await expect(prompt).toHaveValue(DRAFT);
+        assert.doesNotMatch(await page.locator('body').innerText(), RAW);
+        await chmod(settingsDir, 0o755);
+        await page.getByRole('button', { name: 'Reset to default' }).click().catch(() => {});
+        await sleep(1000);
+        await writeSettings('resume', 1, { continuePrompt: null });
+      } finally {
+        await chmod(settingsDir, 0o755).catch(() => {});
+      }
+      return 'friendly toast + inline message, switch and reservation unchanged, no raw path; retry turned it off; conflict offered Reload; Labs and continue prompt kept their values';
     });
 
     // ---- item 15: the Auto Resume screen ------------------------------------------------------
@@ -201,6 +340,53 @@ export async function uiPhase(ctx) {
       assert.equal(await headingOf(T1), want1);
       await shot('ui-7-screen');
       return `"${T1}" under ${want1}, "${T2}" under ${want2}`;
+    });
+
+    await guarded(15, 'header names an earlier verification check before the next continue, matching row order', async () => {
+      const saved = await jobOf(r2.id);
+      // Five minutes before the earliest enabled pending continue, whatever earlier steps left behind; still in the future, so no tick acts on it.
+      const conts = (await readJobs()).filter((j) => j.agentId !== r2.id && j.state === 'pending' && j.enabled && !j.waiting).sort((a, b) => a.dueAt.localeCompare(b.dueAt));
+      assert.ok(conts[0], 'no enabled pending continue to seed the check before');
+      const checkAt = Date.parse(conts[0].dueAt) - 5 * 60000;
+      assert.ok(checkAt > Date.now() + 2 * 60000, `earliest continue ${conts[0].dueAt} is too close to now for a check 5 minutes before it to stay in the future`);
+      await editJob(r2.id, { waiting: 'usage', resetAt: null, dueAt: iso(checkAt) });
+      try {
+        await openScreen();
+        const on = (await readJobs()).filter((j) => j.state === 'pending' && j.enabled).sort((a, b) => a.dueAt.localeCompare(b.dueAt));
+        const firstCheck = on.find((j) => j.waiting), firstContinue = on.find((j) => !j.waiting);
+        assert.ok(firstCheck && firstContinue && Date.parse(firstCheck.dueAt) < Date.parse(firstContinue.dueAt), 'seeded check should be the earlier event');
+        const want = `Next check ${hhmm(Date.parse(firstCheck.dueAt))} · Next at ${hhmm(Date.parse(firstContinue.dueAt))}`;
+        await expect(page.getByText(want, { exact: true })).toBeVisible({ timeout: 30000 });
+        const top = async (title) => (await page.getByRole('button', { name: new RegExp(`^Change time for ${title}, now `) }).boundingBox())?.y ?? NaN;
+        const [y2, y1] = [await top(T2), await top(T1)];
+        assert.ok(y2 < y1, `check row "${T2}" (y=${y2}) should be above continue row "${T1}" (y=${y1})`);
+        await shot('ui-7b-screen-next-check');
+        return `header "${want}"; "${T2}" check row above "${T1}" continue row`;
+      } finally {
+        await editJob(r2.id, { waiting: undefined, resetAt: saved.resetAt, dueAt: saved.dueAt });
+        await waitFor(async () => (await jobOf(r2.id))?.dueAt === saved.dueAt && !(await jobOf(r2.id))?.waiting, `${T2} restored`, 20000, 300);
+      }
+    });
+
+    await guarded(15, 'screen row shows a weekly wait in days and speaks it in words', async () => {
+      // 167h 30m rounds up to 168h, so the row keeps reading "in 7d" for the whole step.
+      const weekly = Date.now() + (167 * 60 + 30) * 60000;
+      await editJob(r2.id, { resetAt: iso(weekly - 120000), dueAt: iso(weekly) });
+      await openScreen();
+      const change = page.getByRole('button', { name: `Change time for ${T2}, now ${hhmm(weekly)}`, exact: true });
+      await expect(change).toBeVisible({ timeout: 30000 });
+      // The status follows the time button; what a sighted user reads is its aria-hidden part on the web.
+      const shown = await change.evaluate((el) => {
+        const status = el.nextElementSibling;
+        return (status?.querySelector('[aria-hidden="true"]') ?? status)?.textContent ?? null;
+      });
+      assert.equal(shown, 'in 7d');
+      // What a screen reader gets for the time line: the button and the countdown in words, no "7d".
+      const tree = await change.locator('xpath=..').ariaSnapshot();
+      assert.match(tree, /^- text: in 7 days$/m, tree);
+      assert.doesNotMatch(tree, /\b\d+[dhm]\b/, tree);
+      await shot('ui-7c-screen-weekly');
+      return `"${T2}" shows "${shown}"; accessibility tree: ${tree.replace(/\n/g, ' | ')}`;
     });
 
     const NOTE = 'UI-ROW-NOTE-' + Math.random().toString(36).slice(2, 7);
@@ -226,6 +412,38 @@ export async function uiPhase(ctx) {
       await shot('ui-8-screen-row');
       assert.deepEqual(await jobOf(r2.id), other, 'the other reservation changed');
       return `+10m -> ${bumped.slice(11, 16)}Z, Change time -> ${(await jobOf(r1.id)).dueAt} (typed ${hhmm(target)}), note ${NOTE} shown on the row; "${T2}" unchanged`;
+    });
+
+    // The sidebar row shares the composer's editor: the same due time with seconds opens clean there too.
+    await guarded(15, 'screen row Change time opens clean on a due time with seconds; Cancel and unchanged Save move nothing', async () => {
+      const saved = await jobOf(r1.id);
+      const due = Math.floor((Date.now() + 50 * 60000) / 60000) * 60000 + 27000;
+      await editJob(r1.id, { resetAt: iso(due - 120000), dueAt: iso(due), enabled: false });
+      try {
+        await openScreen();
+        const open = page.getByRole('button', { name: `Change time for ${T1}, now ${hhmm(due)}`, exact: true });
+        await open.click({ timeout: 30000 });
+        const box = page.getByRole('textbox', { name: `New time for ${T1}`, exact: true });
+        const save = page.getByRole('button', { name: 'Save time', exact: true });
+        await expect(box).toHaveValue(hhmm(due));
+        await expect(page.getByText(/^Too early/)).toHaveCount(0);
+        await expect(save).toBeEnabled();
+        await shot('ui-8b-screen-editor-unchanged');
+        await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+        await expect(box).toBeHidden({ timeout: 15000 });
+        await open.click();
+        await expect(save).toBeEnabled();
+        await save.click();
+        await expect(box).toBeHidden({ timeout: 15000 });
+        await sleep(2000);
+        const kept = await jobOf(r1.id);
+        assert.equal(kept.dueAt, iso(due), 'Cancel and an unchanged save keep the due time, seconds and all');
+        assert.equal(kept.enabled, false, 'an unchanged save does not turn the reservation on');
+        return `row opened on ${hhmm(due)} (${iso(due)}) with Save on and no error; Cancel and unchanged Save kept it off at that time`;
+      } finally {
+        await editJob(r1.id, { resetAt: saved.resetAt, dueAt: saved.dueAt, enabled: saved.enabled });
+        await waitFor(async () => (await jobOf(r1.id))?.dueAt === saved.dueAt, `${T1} restored`, 20000, 300);
+      }
     });
 
     await guarded(15, 'screen row Open goes to its conversation', async () => {
@@ -256,7 +474,7 @@ export async function uiPhase(ctx) {
       await page.getByRole('switch', { name: new RegExp(`^Continue ${T1} automatically at `) }).click();
       await waitFor(async () => (await jobOf(r1.id))?.enabled === false, 'switched off', 20000, 300);
       // The header detail; Recent activity's summary also ends in "· 1 skipped".
-      await expect(page.getByText(/^Next (check )?at \d\d:\d\d( · \d+ waiting)? · 1 skipped$/)).toBeVisible({ timeout: 15000 });
+      await expect(page.getByText(/^(Next (check )?at \d\d:\d\d|Next check \d\d:\d\d · Next at \d\d:\d\d|Next at \d\d:\d\d · Next check \d\d:\d\d|Next check and resume at \d\d:\d\d) · 1 skipped$/)).toBeVisible({ timeout: 15000 });
       const sent0 = continues('claude').length;
       await editJob(r1.id, { resetAt: iso(Date.now() - 120000), dueAt: iso(Date.now() - 60000) });
       await waitFor(async () => (await readHistory()).some((h) => h.agentId === r1.id && h.outcome === 'skipped'), 'skipped', 240000, 1000);
@@ -298,6 +516,7 @@ export async function uiPhase(ctx) {
       await expect(header).toBeVisible({ timeout: 60000 });
       const summary = await header.innerText();
       await header.click();
+      await expect(page.getByText('Claude Sub', { exact: true }).first()).toBeVisible({ timeout: 15000 });
       const seen = [];
       for (const text of ['Continued · Resume now', 'Continued', 'Skipped · turned off', 'Canceled · provider turned off', 'Canceled · a newer message']) {
         const found = await page.getByText(text, { exact: true }).first().isVisible().catch(() => false);
@@ -305,7 +524,7 @@ export async function uiPhase(ctx) {
       }
       await shot('ui-6-recent-activity');
       assert.ok(seen.filter((s) => s.endsWith(':y')).length >= 4, seen.join(' '));
-      return `header "${summary.replace(/\s+/g, ' ')}"; rows ${seen.join(', ')}`;
+      return `header "${summary.replace(/\s+/g, ' ')}"; rows ${seen.join(', ')}; chip "Claude Sub"`;
     });
   } finally {
     if (pageErrors.length) note(0, S, 'browser page errors', pageErrors.slice(0, 5).join(' | '));

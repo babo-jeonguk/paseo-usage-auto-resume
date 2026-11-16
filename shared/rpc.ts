@@ -23,6 +23,8 @@ export const ScheduledJobSchema = z.object({
   id: z.string(),
   agentId: z.string(),
   provider: z.string(),
+  /** The provider's current name in Paseo; absent from older servers and for a provider Paseo no longer lists. */
+  providerLabel: z.string().optional(),
   /** Composer placement; optional for older server responses, null when unavailable. */
   workspaceId: z.string().nullable().optional(),
   title: z.string().nullable(),
@@ -64,8 +66,9 @@ export const RescheduleResultSchema = z.discriminatedUnion("changed", [
     changed: z.literal(false),
     /**
      * `changed`: the job already ran, was canceled or replaced, or moved since it was shown.
-     * `sending`: the continue is being delivered. `too-early`: before `earliest` (the limit
-     * reset plus grace, or a minute from now). `too-late`: more than a week out.
+     * `sending`: the continue is being delivered. `too-early`: before the limit reset plus
+     * grace, or a minute from now; `earliest` is the first whole minute at or after that.
+     * `too-late`: more than a week out.
      */
     reason: z.enum(["changed", "sending", "too-early", "too-late"]),
     earliest: z.string().optional(),
@@ -181,6 +184,8 @@ export const HistoryEntrySchema = z.object({
 export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
 
 export const HistoryRowSchema = HistoryEntrySchema.extend({
+  /** The provider's current name in Paseo; absent from older servers and for a provider Paseo no longer lists. */
+  providerLabel: z.string().optional(),
   /** The live agent's workspace for opening it; null once the agent is gone. */
   workspaceId: z.string().nullable(),
   /** The agent still exists but is archived, so its conversation cannot be opened. */

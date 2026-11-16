@@ -15,6 +15,7 @@ import {
 } from "../shared/rpc";
 import {
   bulkAction,
+  byDueAt,
   clockLabel,
   delayChoices,
   groupByDay,
@@ -26,18 +27,20 @@ import {
   providerLabel,
   refusalLabel,
   relativeLabel,
+  relativeSpoken,
   SCHEDULE_CHANGED,
   summaryLabels,
   waitingLabel,
 } from "./format";
 import { Toggle } from "./toggle";
 import { TimeEditor } from "./time-editor";
-import { editorLocks, type EditEvent, type EditSession } from "./edit-session";
+import { editorLocks, openEditor, type EditEvent, type EditSession } from "./edit-session";
 import { useEditSession } from "./use-edit-session";
 import { NoteEditor } from "./note-editor";
 import { notifyScheduleChanged } from "./schedule-changes";
 import { historyQueryKey, jobsQueryKey } from "./query-keys";
 import { useScheduleChanges } from "./use-changes";
+import { SpokenText } from "./spoken-text";
 
 type Theme = PluginScreenProps["theme"];
 
@@ -51,8 +54,6 @@ function useNow(intervalMs: number): number {
   return now;
 }
 
-const byDueAt = (jobs: ScheduledJob[]) => [...jobs].sort((left, right) => left.dueAt.localeCompare(right.dueAt));
-
 function createStyles(theme: Theme, compact: boolean) {
   const { colors } = theme;
   return {
@@ -65,7 +66,7 @@ function createStyles(theme: Theme, compact: boolean) {
       alignSelf: "center" as const,
     },
     header: { flexDirection: "row" as const, alignItems: "center" as const, gap: 8, marginBottom: 24 },
-    headerText: { flex: 1, gap: 4 },
+    headerText: { flex: 1, minWidth: 0, gap: 4 },
     summary: { color: colors.foreground, fontSize: 18, fontWeight: "600" as const },
     summaryDetail: { color: colors.foregroundMuted, fontSize: 14, fontVariant: ["tabular-nums" as const] },
     iconButton: {
@@ -122,6 +123,8 @@ function createStyles(theme: Theme, compact: boolean) {
       borderRadius: 4,
       paddingHorizontal: 6,
       paddingVertical: 2,
+      flexShrink: 1,
+      maxWidth: "100%" as const,
     },
     chipText: { color: colors.foreground, fontSize: 12, fontWeight: "500" as const },
     metaText: { color: colors.foregroundMuted, fontSize: 12, flexShrink: 1 },
@@ -224,8 +227,10 @@ function JobRow(props: {
   // The row offers only the first delay; the composer offers all of them.
   const bump = delayChoices(job, now)[0]!;
   const bumpUnavailable = busy || !!bump.problem;
-  const countdown = job.kind === "overload" ? `Retry ${relativeLabel(job.dueAt, now)}` : job.resetAt ? relativeLabel(job.dueAt, now) : `${relativeLabel(job.dueAt, now)} · reset unknown`;
-  const status = busy ? "Continuing…" : on ? waitingLabel(job) ?? countdown : "Skipped";
+  // `left` is the time until the due time: compact on screen, in words for screen readers.
+  const statusLine = (left: string) =>
+    busy ? "Continuing…" : on ? waitingLabel(job) ?? (job.kind === "overload" ? `Retry ${left}` : job.resetAt ? left : `${left} · reset unknown`) : "Skipped";
+  const status = statusLine(relativeLabel(job.dueAt, now));
   const resetSpoken = job.kind === "overload" ? "overload retry" : job.resetAt ? `limit resets at ${clockLabel(job.resetAt)}` : "reset time unknown, checks again";
   // Beside the other controls on wide layouts; on a phone it ends the title line instead, so
   // the time and title keep the width they had.
@@ -236,7 +241,7 @@ function JobRow(props: {
       accessibilityState={{ disabled: noteLocked }}
       disabled={noteLocked}
       hitSlop={4}
-      onPress={() => dispatch({ type: "open", kind: "note", job })}
+      onPress={() => dispatch(openEditor("note", job))}
       style={({ pressed }) => [props.compact ? styles.metaButton : styles.iconButton, noteLocked ? styles.disabled : null, pressed ? styles.pressed : null]}
     >
       <Icon name="NotebookPen" size={props.compact ? 16 : 18} color={job.note ? theme.colors.accent : theme.colors.foregroundMuted} />
@@ -245,12 +250,14 @@ function JobRow(props: {
 
   return (
     <View style={[styles.row, props.divided ? styles.rowDivider : null]}>
-      {editing === "time" ? (
+      {editing === "time" && session?.time ? (
         <TimeEditor
           job={job}
           now={now}
           compact={props.compact}
           theme={theme}
+          time={session.time}
+          onChange={(entry) => dispatch({ type: "set-time", entry })}
           onSave={(dueAt) => props.onReschedule(job, dueAt)}
           onCancel={() => dispatch({ type: "cancel" })}
         />
@@ -265,11 +272,13 @@ function JobRow(props: {
                 accessibilityState={{ disabled: timeLocked }}
                 disabled={timeLocked}
                 hitSlop={8}
-                onPress={() => dispatch({ type: "open", kind: "time", job })}
+                onPress={() => dispatch(openEditor("time", job))}
               >
                 <Text style={[styles.time, { color: tone }, timeLocked ? null : styles.timeEditable]}>{clockLabel(job.dueAt)}</Text>
               </Pressable>
-              <Text style={styles.relative}>{status}</Text>
+              <SpokenText style={styles.relative} spoken={statusLine(relativeSpoken(job.dueAt, now))}>
+                {status}
+              </SpokenText>
             </View>
           )}
           <View style={styles.titleLine}>
@@ -285,7 +294,9 @@ function JobRow(props: {
           ) : null}
           <View style={styles.meta}>
             <View style={styles.chip}>
-              <Text style={styles.chipText}>{providerLabel(job.provider)}</Text>
+              <Text style={styles.chipText} numberOfLines={1}>
+                {providerLabel(job)}
+              </Text>
             </View>
             {job.background ? (
               <View style={styles.chip}>
@@ -413,7 +424,9 @@ function HistorySection(props: {
                   </Text>
                   <View style={styles.historyMeta}>
                     <View style={styles.chip}>
-                      <Text style={styles.chipText}>{providerLabel(entry.provider)}</Text>
+                      <Text style={styles.chipText} numberOfLines={1}>
+                        {providerLabel(entry)}
+                      </Text>
                     </View>
                     {entry.background ? (
                       <View style={styles.chip}>

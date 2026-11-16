@@ -72,6 +72,46 @@ test("only chunks of the final message are joined, preserving a streamed reset t
   assert.deepEqual(detectLimitStop(completed, timeline, observedAt), { resetAt: new Date("2026-10-06T06:00:00.000Z") });
 });
 
+test("rows another plugin appends do not hide Claude's closing limit notice", () => {
+  const row = (id: string): AgentTimelineItem => ({ type: "plugin", id, pluginId: "stats", kind: "turn-stats", version: 1, data: { ms: 42_000 } });
+  const notice = "You've hit your 5-hour limit · resets 1:40am (Asia/Singapore)";
+  // 11:00 in Singapore observed → 01:40 there the next day.
+  const expected = { resetAt: new Date("2026-10-06T17:40:00.000Z") };
+  for (const messageId of ["limit", undefined]) {
+    const closing: AgentTimelineItem = { type: "assistant_message", text: notice, messageId };
+    assert.deepEqual(detectLimitStop(completed, [prompt, closing, row("r1")], observedAt), expected);
+    assert.deepEqual(detectLimitStop(completed, [prompt, closing, row("r1"), row("r2")], observedAt), expected);
+  }
+  assert.deepEqual(detectLimitStop(completed, [
+    prompt,
+    { type: "assistant_message", text: "You've hit your 5-hour limit · ", messageId: "limit" },
+    row("r1"),
+    { type: "assistant_message", text: "resets 1:40am (Asia/Singapore)", messageId: "limit" },
+    row("r2"),
+  ], observedAt), expected, "a row between chunks of one message");
+});
+
+test("a plugin row never joins separate messages or hides later activity", () => {
+  const row: AgentTimelineItem = { type: "plugin", id: "r1", pluginId: "stats", kind: "turn-stats", version: 1, data: null };
+  const notice: AgentTimelineItem = { type: "assistant_message", text: "You've hit your session limit · resets 3pm (Asia/Seoul)", messageId: "limit" };
+  for (const later of [
+    { type: "assistant_message", text: "That was the old error; the task is now complete.", messageId: "done" },
+    { type: "user_message", text: "Next task" },
+    { type: "reasoning", text: "Checking the build." },
+    { type: "tool_call", callId: "c1", name: "Bash", status: "completed", detail: { type: "unknown" } },
+  ] as AgentTimelineItem[]) {
+    assert.equal(detectLimitStop(completed, [prompt, notice, row, later, row], observedAt), null, later.type);
+  }
+  assert.equal(detectLimitStop(completed, [
+    prompt,
+    { type: "assistant_message", text: "You've hit your session limit · resets 3", messageId: "a" },
+    row,
+    { type: "assistant_message", text: "pm (Asia/Seoul)", messageId: "b" },
+  ], observedAt), null, "chunks with different IDs stay apart across a row");
+  assert.equal(detectLimitStop(completed, [prompt, row], observedAt), null);
+  assert.equal(detectLimitStop(completed, [row], observedAt), null);
+});
+
 test("an earlier limit mention does not turn a subsequent normal message into a stop", () => {
   for (const withIds of [true, false]) {
     assert.equal(detectLimitStop(completed, [

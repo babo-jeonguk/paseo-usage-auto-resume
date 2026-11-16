@@ -1,6 +1,6 @@
 import type { DiscoveredProvider, HistoryEntry, HistoryOutcome, HistoryReason, RescheduleResult, ResumeNowResult, ScheduledJob, SetNoteResult, Waiting } from "../shared/rpc";
 import { DEFAULT_CONTINUE_PROMPT } from "../shared/prompt";
-import { MAX_ATTEMPTS, RETRY_DELAYS_MS, rescheduleWindow } from "../shared/schedule";
+import { MAX_ATTEMPTS, RETRY_DELAYS_MS, rescheduleWindow, wholeMinuteAtOrAfter } from "../shared/schedule";
 
 const PROVIDER_LABELS: Record<string, string> = {
   codex: "Codex",
@@ -8,10 +8,14 @@ const PROVIDER_LABELS: Record<string, string> = {
   "claude-main": "Claude Main",
   antigravity: "Antigravity",
   "antigravity-main": "Antigravity Main",
+  opencode: "OpenCode",
 };
 
-export function providerLabel(provider: string): string {
-  return PROVIDER_LABELS[provider] ?? provider;
+/** A row's provider chip: Paseo's current name, else the built-in one, else the ID, so older servers and removed providers still read. */
+export function providerLabel(row: { provider: string; providerLabel?: string }): string {
+  const named = row.providerLabel?.trim();
+  if (named) return named;
+  return Object.hasOwn(PROVIDER_LABELS, row.provider) ? PROVIDER_LABELS[row.provider]! : row.provider;
 }
 
 /** The CLI's own provider first, then the ones built on it by name. */
@@ -40,13 +44,32 @@ export function clockLabel(iso: string): string {
   return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+/**
+ * Days, hours and minutes left until `iso`, never less than the real wait; null once it is due.
+ * Rounded up to the minute, and from a day on up to the hour, so a weekly reset reads "in 7d 1h", not "in 7d".
+ */
+function timeLeft(iso: string, now: number): { days: number; hours: number; minutes: number } | null {
+  const total = Math.ceil((Date.parse(iso) - now) / 60_000);
+  if (total <= 0) return null;
+  if (total < 24 * 60) return { days: 0, hours: Math.floor(total / 60), minutes: total % 60 };
+  const hours = Math.ceil(total / 60);
+  return { days: Math.floor(hours / 24), hours: hours % 24, minutes: 0 };
+}
+
+/** Time left until `iso`: "in 25m", "in 2h 2m", then "in 1d 2h" from a day on. */
 export function relativeLabel(iso: string, now: number): string {
-  const minutes = Math.ceil((Date.parse(iso) - now) / 60_000);
-  if (minutes <= 0) return "now";
-  if (minutes < 60) return `in ${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  return rest ? `in ${hours}h ${rest}m` : `in ${hours}h`;
+  const left = timeLeft(iso, now);
+  if (!left) return "now";
+  return `in ${[left.days && `${left.days}d`, left.hours && `${left.hours}h`, left.minutes && `${left.minutes}m`].filter(Boolean).join(" ")}`;
+}
+
+const spokenUnit = (count: number, unit: string) => (count ? `${count} ${unit}${count === 1 ? "" : "s"}` : null);
+
+/** `relativeLabel` in words, for screen readers: "in 25 minutes", "in 7 days 1 hour". */
+export function relativeSpoken(iso: string, now: number): string {
+  const left = timeLeft(iso, now);
+  if (!left) return "now";
+  return `in ${[spokenUnit(left.days, "day"), spokenUnit(left.hours, "hour"), spokenUnit(left.minutes, "minute")].filter(Boolean).join(" ")}`;
 }
 
 function startOfDay(time: number): number {
@@ -72,6 +95,9 @@ export interface DayGroup {
   jobs: ScheduledJob[];
 }
 
+/** The list in due time order, earliest first. */
+export const byDueAt = (jobs: ScheduledJob[]) => [...jobs].sort((left, right) => left.dueAt.localeCompare(right.dueAt));
+
 /** Jobs are already sorted by due time; consecutive days become sections. */
 export function groupByDay(jobs: readonly ScheduledJob[], now: number): DayGroup[] {
   const groups: DayGroup[] = [];
@@ -84,18 +110,32 @@ export function groupByDay(jobs: readonly ScheduledJob[], now: number): DayGroup
   return groups;
 }
 
-/** Headline and detail for the list, e.g. "2 agents will continue" / "Next at 18:53 · 1 skipped". */
+/** Both times when a check and a continue exist; collapsed only when they fall in the same minute. */
+function bothLabel(checkAt: string, resumeAt: string): string {
+  const checkTime = clockLabel(checkAt);
+  const resumeTime = clockLabel(resumeAt);
+  const sameMinute = Math.floor(Date.parse(checkAt) / 60_000) === Math.floor(Date.parse(resumeAt) / 60_000);
+  if (sameMinute) return `Next check and resume at ${checkTime}`;
+  if (Date.parse(checkAt) < Date.parse(resumeAt)) return `Next check ${checkTime} · Next at ${resumeTime}`;
+  return `Next at ${resumeTime} · Next check ${checkTime}`;
+}
+
+/** Headline and detail for the list, e.g. "2 agents will continue" / "Next check 19:58 · Next at 21:45 · 1 skipped". */
 export function summaryLabels(jobs: readonly ScheduledJob[]): { title: string; detail: string | null } {
   const on = jobs.filter((job) => job.enabled);
   const skipped = jobs.length - on.length;
   const skippedLabel = skipped > 0 ? `${skipped} skipped` : null;
   if (on.length === 0) return { title: "All turned off", detail: null };
-  const scheduled = on.filter((job) => !job.waiting);
-  const waiting = on.length - scheduled.length;
-  const title = scheduled.length ? (scheduled.length === 1 ? "1 agent will continue" : `${scheduled.length} agents will continue`)
-    : `${waiting} agent${waiting === 1 ? "" : "s"} waiting for verification`;
-  const next = scheduled.length ? `Next at ${clockLabel(scheduled[0]!.dueAt)}` : `Next check at ${clockLabel(on[0]!.dueAt)}`;
-  return { title, detail: [next, scheduled.length && waiting ? `${waiting} waiting` : null, skippedLabel].filter(Boolean).join(" · ") };
+  const continues = on.filter((job) => !job.waiting);
+  const checks = on.filter((job) => job.waiting);
+  const title = continues.length ? (continues.length === 1 ? "1 agent will continue" : `${continues.length} agents will continue`)
+    : `${checks.length} agent${checks.length === 1 ? "" : "s"} waiting for verification`;
+  const check = byDueAt(checks)[0];
+  const resume = byDueAt(continues)[0];
+  const next = !check ? `Next at ${clockLabel(resume!.dueAt)}`
+    : !resume ? `Next check at ${clockLabel(check.dueAt)}`
+      : bothLabel(check.dueAt, resume.dueAt);
+  return { title, detail: [next, skippedLabel].filter(Boolean).join(" · ") };
 }
 
 export function waitingLabel(job: ScheduledJob): string | null {
@@ -144,23 +184,28 @@ export function dayChoices(dueAt: string, now: number): DayChoice[] {
   return own > 1 ? [...choices, { offset: own, label: dayLabel(dueAt, now) }] : choices;
 }
 
-/** "07:30", "7:30" or "0730" on the day `offset` days from today, local time; null if unreadable. */
-export function timeOnDay(text: string, offset: number, now: number): string | null {
+/** The hours and minutes a time text names, however it is spelled; null if unreadable. */
+function parseTime(text: string): { hours: number; minutes: number } | null {
   const match = /^\s*(\d{1,2}):?(\d{2})\s*$/.exec(text);
   if (!match) return null;
   const hours = Number(match[1]);
   const minutes = Number(match[2]);
   if (hours > 23 || minutes > 59) return null;
+  return { hours, minutes };
+}
+
+/** "07:30", "7:30" or "0730" on the day `offset` days from today, local time; null if unreadable. */
+export function timeOnDay(text: string, offset: number, now: number): string | null {
+  const time = parseTime(text);
+  if (!time) return null;
   const date = new Date(now);
   date.setDate(date.getDate() + offset);
-  date.setHours(hours, minutes, 0, 0);
+  date.setHours(time.hours, time.minutes, 0, 0);
   return date.toISOString();
 }
 
-const ceilMinute = (time: number) => Math.ceil(time / 60_000) * 60_000;
-
 function tooEarlyLabel(job: ScheduledJob, earliest: number): string {
-  const at = clockLabel(new Date(ceilMinute(earliest)).toISOString());
+  const at = clockLabel(new Date(wholeMinuteAtOrAfter(earliest)).toISOString());
   return job.resetAt ? `Too early — the limit resets at ${clockLabel(job.resetAt)}. Earliest is ${at}.` : `Too early — earliest is ${at}.`;
 }
 
@@ -173,6 +218,51 @@ export function rescheduleProblem(job: ScheduledJob, dueAt: string, now: number)
   if (target < earliest) return tooEarlyLabel(job, earliest);
   if (target > latest) return TOO_LATE;
   return null;
+}
+
+/** A time editor's entry: the typed text and the chosen day, an offset from the reference day. */
+export interface TimeEntry {
+  text: string;
+  day: number;
+}
+
+/**
+ * What the time editor opens with: the reservation's own minute, on its day (today when it is already
+ * past), plus the moment it was taken; `day` counts from the calendar day of `openedAt`.
+ */
+export interface TimeEditorStart extends TimeEntry {
+  openedAt: number;
+}
+
+/** The opening entry; its `day` is fixed to the calendar day of `now`, the moment the editor opened. */
+export function timeEditorStart(job: ScheduledJob, now: number): TimeEditorStart {
+  return { text: clockLabel(job.dueAt), day: Math.max(0, dayOffset(job.dueAt, now)), openedAt: now };
+}
+
+export interface TimeEdit {
+  /** The time the editor stands for: the reservation's own, seconds and all, while unchanged; null when unreadable. */
+  dueAt: string | null;
+  /** The entry is on the opening day and names the opening hour and minute, however it is spelled. */
+  unchanged: boolean;
+  problem: string | null;
+}
+
+/**
+ * The typed time on the chosen day, counted from when the editor opened (`start.openedAt`), not from
+ * `now`; the window check reads the current time when it is called, or `now` when one is passed.
+ * Unchanged means the entry's day and its hour and minute match the opening entry's, whatever the
+ * text's spelling; it keeps the reservation's own time, seconds and all. Any other minute is checked as
+ * the server would.
+ */
+export function timeEdit(job: ScheduledJob, start: TimeEditorStart, entry: TimeEntry, now?: number): TimeEdit {
+  const typed = parseTime(entry.text);
+  if (!typed) return { dueAt: null, unchanged: false, problem: "Enter a time like 07:30." };
+  const opened = parseTime(start.text);
+  if (opened && entry.day === start.day && typed.hours === opened.hours && typed.minutes === opened.minutes) {
+    return { dueAt: job.dueAt, unchanged: true, problem: null };
+  }
+  const dueAt = timeOnDay(entry.text, entry.day, start.openedAt)!;
+  return { dueAt, unchanged: false, problem: rescheduleProblem(job, dueAt, now ?? Date.now()) };
 }
 
 const SENDING = "This agent is continuing now.";

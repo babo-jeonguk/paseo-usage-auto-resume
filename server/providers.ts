@@ -18,6 +18,20 @@ export function cliFor(config: DaemonConfig, provider: string): UsageSource | nu
   }
 }
 
+/** Each provider's current name in Paseo, from its provider snapshot alone: no account or usage probe. */
+export async function providerLabels(api: Pick<PaseoApi, "providers">): Promise<Map<string, string>> {
+  let entries: Array<{ provider: string; label?: string | null }>;
+  try {
+    ({ entries } = await api.providers.snapshot());
+  } catch {
+    entries = [];
+  }
+  return new Map(entries.flatMap((entry) => {
+    const label = entry.label?.trim();
+    return label ? [[entry.provider, label] as const] : [];
+  }));
+}
+
 /** Every provider the daemon knows that runs Claude, Codex, Antigravity, or OpenCode, with the account it signs in as. */
 export async function discoverProviders(api: ProvidersApi): Promise<DiscoveredProvider[]> {
   const [{ entries }, { config }] = await Promise.all([api.providers.snapshot(), api.config.get()]);
