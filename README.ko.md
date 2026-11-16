@@ -6,7 +6,7 @@
 
 [English](README.md)
 
-![날짜별 자동 재개 예약과 추가 지시, 스위치, 최근 활동](assets/auto-resume.png)
+![날짜별 자동 재개 예약과 추가 지시, background agent, 스위치, 최근 활동](assets/auto-resume.png)
 
 샘플 예약을 사용한 실제 Paseo 웹 화면입니다. 재개 예정인 작업과 확인 대기 중인 작업, 그리고 최근 재개가 어떻게 끝났는지 함께 볼 수 있습니다.
 
@@ -60,9 +60,9 @@ paseo plugin install github:babo-jeonguk/paseo-usage-auto-resume
 
 ## 설정
 
-**Settings → Plugins → usage-auto-resume → Settings**를 여세요.
+**Settings → Plugins → Usage Auto Resume**을 여세요. 플러그인 페이지에 설정이 있습니다.
 
-![provider별 스위치와 계정, Continue prompt가 있는 설정 화면](assets/settings.png)
+![background agent 스위치와 provider별 스위치·계정이 있는 설정 화면](assets/settings.png)
 
 - **Providers:** provider별로 자동 재개를 켜거나 끕니다. `claude-main`, `codex-sub` 같은 프로필도 포함됩니다. 끄면 그 provider의 대기 중인 예약이 취소됩니다.
 - **Resume background agents:** 기본값은 꺼짐입니다. 켜면 Paseo가 목록에서 숨기는 에이전트와 백그라운드 워크스페이스의 에이전트도 재개합니다. 끄면 그 에이전트들의 대기 중인 예약이 취소됩니다.

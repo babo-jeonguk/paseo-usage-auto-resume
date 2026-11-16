@@ -6,7 +6,7 @@ A [Paseo](https://paseo.sh) plugin that automatically asks the same Codex, Claud
 
 [한국어](README.ko.md)
 
-![Automatic resume reservations grouped by day, with extra instructions, switches and recent activity](assets/auto-resume.png)
+![Automatic resume reservations grouped by day, with extra instructions, a background agent, switches and recent activity](assets/auto-resume.png)
 
 Actual Paseo web interface with sample reservations. Each row shows what is scheduled to continue or waiting for verification, and recent activity shows how earlier resumes ended.
 
@@ -60,9 +60,9 @@ A resume waiting for verification means the plugin couldn't confirm your account
 
 ## Settings
 
-Open **Settings → Plugins → usage-auto-resume → Settings**.
+Open **Settings → Plugins → Usage Auto Resume**; its settings are on the plugin's page.
 
-![Settings with a switch and account for each provider, and the continue prompt](assets/settings.png)
+![Settings with the background agents switch, and a switch and account for each provider](assets/settings.png)
 
 - **Providers:** turn resumes on or off for each provider, including profiles such as `claude-main` or `codex-sub`. Turning one off cancels its pending resumes.
 - **Resume background agents:** off by default. Turn it on to include agents Paseo hides from its lists and agents in background workspaces; turning it off cancels their pending resumes.
