@@ -121,6 +121,9 @@ function AgentControls({ agentId, theme, host, layout, close }: PluginButtonCont
           <Text accessibilityRole="header" style={headingText(colors)}>Auto Resume</Text>
           {job?.background ? <Text style={muted}>Background</Text> : null}
         </View>
+      ) : job?.background ? (
+        // The compact sheet has no heading, so the label stands on its own.
+        <Text style={muted}>Background</Text>
       ) : null}
       {/* A failed refresh keeps what was shown, with every change off until it loads. */}
       {query.isError && query.data ? <View style={{ gap: 8 }}>
