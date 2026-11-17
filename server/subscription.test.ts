@@ -216,7 +216,7 @@ test("Claude credentials are looked up where the CLI reports its configuration",
 });
 
 // Synthetic contract fixtures. The 403 body follows the measured shape of a real Team-plan
-// setup token (docs/research/automation-subscription-tokens.md); no value here is a capture.
+// setup token; no value here is a capture.
 const SETUP_TOKEN = "sk-ant-oat01-fixture-setup-token";
 const scopeDenied = { type: "error", error: { type: "permission_error", message: "OAuth token does not meet scope requirement",
   details: { error_code: "oauth_scope_insufficient" } } };
@@ -291,8 +291,8 @@ test("a Claude setup token known only by its flag is unknown authentication, wit
   assert.deepEqual(calls, []);
 });
 
-// Synthetic contract fixtures shaped after the Codex 0.167.0 app-server schema
-// (docs/research/codex-access-token-usage.md); no real access token was available.
+// Synthetic contract fixtures shaped after the Codex 0.167.0 app-server schema;
+// no real access token was available.
 const ACCESS_TOKEN = "at-fixture-access-token";
 const reset = (iso: string) => Date.parse(iso) / 1000;
 const accountRead = (overrides: Record<string, unknown> = {}) => ({
