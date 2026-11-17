@@ -12,7 +12,7 @@ const CODEX_CAPACITY = "Selected model is at capacity. Please try a different mo
 const CLAUDE_OVERLOAD = /^API Error: (?:529\b|Repeated 529 Overloaded errors\b|.*"type":"overloaded_error")/s;
 const EXCLUDED = /context[ _-](?:length|window)|(?:prompt|input) is too long|maximum context|too many (?:input )?tokens|insufficient[_ ]quota|credit[_ ]balance|billing|payment|prepaid|prepay|insufficient (?:funds|credits)|authentication|unauthorized|invalid[_ ]api[_ ]key|permission[_ ]denied/i;
 
-/** Only final provider capacity failures; see the real-CLI, fake-API fixtures and docs/research/overload.md. */
+/** Only final provider capacity failures; see the real-CLI, fake-API fixtures in server/fixtures/overload-*.json. */
 export function detectOverloadStop(outcome: PluginTurnOutcome, timeline: readonly AgentTimelineItem[], source: UsageSource): boolean {
   if (outcome.kind === "canceled") return false;
   const code = outcome.kind === "failed" ? outcome.error.code ?? "" : "";
