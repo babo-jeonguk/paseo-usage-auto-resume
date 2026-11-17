@@ -6,6 +6,8 @@
 
 The plugin requires Paseo daemon and app **0.16.0 or later**; its manifest rejects older hosts, and the development dependencies are pinned to that SDK line.
 
+The `Paseo release` workflow checks npm every day at 18:00 KST. The first beta or release of a Paseo line newer than the `@getpaseo/plugin` pin opens one `paseo-release` issue for that line, mentioning the repository owner; later betas of the line and its `.0` release are comments on that issue, and patch releases are ignored. The pull request that prepares the plugin for the line closes it. `npx tsx scripts/watch-paseo-release.ts --dry-run` prints what it would post.
+
 Use `npm run test:focus -- <test files>` for focused runs (for example, `shared/prompt.test.ts`); see [verification rules](../AGENTS.md) for the development workflow. Type checking caches results in `.cache/typescript/`; delete that directory to reset the cache.
 
 ```bash
