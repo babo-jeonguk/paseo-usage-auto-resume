@@ -234,15 +234,37 @@ const timelineText = async (id) => {
     return items.map((e) => { const i = e.item ?? e; return `${i.type}:${String(i.text ?? i.message ?? i.content ?? '').slice(0, 400)}`; });
   } catch (e) { return ['timeline unreadable: ' + e.message]; }
 };
-// What a continue led to: whether its turn ended, a limit notice after it, and the row left behind.
+// What a continue led to, each read from what the continue itself produced: its turn ended (an
+// answer after the continue's own message, and the agent no longer running), whether that answer
+// carries a limit notice, and the row as it stands when the report is written.
+const LIMIT_NOTICE = /\b429\b|RESOURCE_EXHAUSTED|usage limit/i;
 const afterContinue = async (id, waitMs) => {
-  const ended = await waitFor(async () => ['idle', 'error', 'closed'].includes(await agentStatus(id)), 'continue turn ended', waitMs, 1000).then(() => true, () => false);
-  const cleared = await waitFor(async () => !(await jobOf(id)), 'row cleared', waitMs, 1000).then(() => true, () => false);
-  const tail = await timelineText(id);
-  const since = tail.findLastIndex((line) => line.includes(DEFAULT_MARK));
-  const notice = since >= 0 && tail.slice(since + 1).some((line) => /\b429\b|RESOURCE_EXHAUSTED|usage limit|quota/i.test(line));
-  const row = cleared ? null : await jobOf(id);
-  return { ended, notice, row, tail, text: `turn ended ${ended ? 'yes' : 'NO'}; new limit notice ${notice ? 'YES' : 'no'}; row ${row ? 'left (due ' + row.dueAt + ')' : 'cleared'}` };
+  const sinceContinue = async () => {
+    const tail = await timelineText(id);
+    const readable = !tail[0]?.startsWith('timeline unreadable');
+    const mark = tail.findLastIndex((line) => line.startsWith('user_message:') && line.includes(DEFAULT_MARK));
+    const answers = mark < 0 ? [] : tail.slice(mark + 1).filter((line) => line.startsWith('assistant_message:') || line.startsWith('error:'));
+    return { tail, readable, answers };
+  };
+  const ended = await waitFor(async () => (await sinceContinue()).answers.length > 0 && ['idle', 'error', 'closed'].includes(await agentStatus(id)),
+    'continue turn ended', waitMs, 1000).then(() => true, () => false);
+  // A replayed notice can reserve again right after the row clears, so the last read decides.
+  await waitFor(async () => !(await jobOf(id)), 'row cleared', waitMs, 1000).catch(() => {});
+  await sleep(3000);
+  const { tail, readable, answers } = await sinceContinue();
+  const notice = readable ? answers.some((line) => LIMIT_NOTICE.test(line)) : null;
+  const row = await jobOf(id);
+  const text = `turn ended ${ended ? 'yes' : 'NO'}; new limit notice ${notice === null ? 'unknown (timeline unreadable)' : notice ? 'YES' : 'no'}; row ${row ? 'left (due ' + row.dueAt + ')' : 'cleared'}`;
+  return { ended, notice, row, tail, text };
+};
+/**
+ * The pass rule items 6 and 7 share: the continue's turn must end. A row left behind by a limit
+ * notice after it is a NOTE for agy, which replays its earlier 429 on Paseo 0.16, and fails elsewhere.
+ */
+const judgeContinue = (item, S, after) => {
+  assert.ok(after.ended, after.text);
+  if (S !== 'antigravity') assert.ok(!after.row && after.notice === false, after.text);
+  else if (after.row) note(item, S, 'row after the continue', `${after.text}; timeline ${JSON.stringify(after.tail.slice(-3))}`);
 };
 const agentStatus = async (id) => { try { const r = await client.fetchAgent(id); return r?.agent?.status ?? r?.status ?? JSON.stringify(r).slice(0, 80); } catch (e) { return 'err ' + e.message; } };
 const agentCount = async () => { try { const r = await client.fetchAgents(); return (r.entries ?? r.agents ?? []).length; } catch { return -1; } };
@@ -657,12 +679,12 @@ try {
       return `notice [${text.slice(0, 160)}]; resetAt ${job.resetAt}, dueAt ${job.dueAt}; probe ${(await probeFor(a.id)).join(' | ')}; status ${await agentStatus(a.id)}`;
     });
     if (!job) continue;
-    const b = await mkAgent(`${S} tick`, S);
-    const tickJob = args['upgrade-cli'] ? await hit(b, S, limitWith(S, resetSec)) : null;
-    limited.push({ S, a, job, b, tickJob });
+    const tickAgent = await mkAgent(`${S} tick`, S);
+    const tickJob = args['upgrade-cli'] ? await hit(tickAgent, S, limitWith(S, resetSec)) : null;
+    limited.push({ S, manual: { agent: a, job }, tick: { agent: tickAgent, job: tickJob } });
   }
   if (args['upgrade-cli'] && limited.length) {
-    await step('upgrade', 'plugin', 'saved reservations survive restarting the daemon on the newer Paseo', async () => {
+    const upgraded = await step('upgrade', 'plugin', 'saved reservations survive restarting the daemon on the newer Paseo', async () => {
       const from = paseoVersion;
       await stopDaemon();
       paseoBin = join(args['upgrade-cli'], 'bin', 'paseo');
@@ -673,19 +695,25 @@ try {
       await startDaemon();
       const listed = (await rpc('auto-resume.list')).jobs;
       const runtime = [];
-      for (const { a, job, b, tickJob } of limited) {
-        assert.equal(listed.find((j) => j.agentId === a.id)?.id, job.id, `${a.title} kept its reservation`);
-        assert.equal(listed.find((j) => j.agentId === b.id)?.id, tickJob.id, `${b.title} kept its reservation`);
-        // Opening a conversation, as the app does, loads the agent on the newer Paseo, which may
-        // report its model differently from the one the reservation saved.
-        for (const agent of [a, b]) await client.fetchAgentTimeline(agent.id, { direction: 'tail', limit: 30 });
-        const info = (await client.fetchAgent(a.id))?.agent?.runtimeInfo;
-        runtime.push(`${job.model ?? 'none'} -> ${info?.model ?? 'none'}${info?.thinkingOptionId ? ' + ' + info.thinkingOptionId : ''}`);
+      for (const { manual, tick } of limited) {
+        for (const { agent, job } of [manual, tick]) {
+          assert.equal(listed.find((j) => j.agentId === agent.id)?.id, job.id, `${agent.title} kept its reservation`);
+          // Opening a conversation, as the app does, loads the agent on the newer Paseo, which may
+          // report its model differently from the one the reservation saved.
+          await client.fetchAgentTimeline(agent.id, { direction: 'tail', limit: 30 });
+        }
+        const info = (await client.fetchAgent(manual.agent.id))?.agent?.runtimeInfo;
+        runtime.push(`${manual.job.model ?? 'none'} -> ${info?.model ?? 'none'}${info?.thinkingOptionId ? ' + ' + info.thinkingOptionId : ''}`);
       }
       return `Paseo ${from} -> ${paseoVersion}; ${limited.length * 2} reservations listed with the same IDs; conversations opened, saved -> runtime model: ${runtime.join(', ')}`;
     });
+    // Items 6 and 7 would otherwise run on whatever daemon is left and prove nothing about the upgrade.
+    if (!upgraded) {
+      note('upgrade', 'plugin', 'items 6 and 7 not run', 'the upgrade step failed');
+      limited.length = 0;
+    }
   }
-  for (const { S, a, job, b, tickJob } of limited) {
+  for (const { S, manual: { agent: a, job }, tick: { agent: b, job: tickJob } } of limited) {
     await step(6, S, 'Resume now sends exactly one continue (manual)', async () => {
       const sent0 = continues(S).length;
       if (S === 'codex') {
@@ -700,10 +728,8 @@ try {
       await sleep(6000);
       assert.equal(continues(S).length, sent0 + 1);
       const after = await afterContinue(a.id, S === 'antigravity' ? 45000 : 240000);
-      // agy on Paseo 0.16 replays the earlier 429 after the continue's reply, and the plugin reserves it again.
-      if (S !== 'antigravity') assert.ok(after.ended && !after.row, after.text);
+      judgeContinue(6, S, after);
       assert.equal((await readHistory()).find((e) => e.agentId === a.id && e.outcome === 'continued')?.trigger, 'manual');
-      if (after.row) note(6, S, 'row after the continue', `${after.text}; timeline ${JSON.stringify(after.tail.slice(-3))}`);
       return `${S === 'codex' ? 'used_up blocked first; ' : 'no usage check for antigravity; '}sent exactly 1 continue; ${after.text}; history trigger=manual`;
     });
     await step(7, S, 'tick sends exactly one continue to the same agent', async () => {
@@ -714,8 +740,7 @@ try {
       await sleep(6000);
       assert.equal(continues(S).length, sent0 + 1);
       const after = await afterContinue(b.id, S === 'antigravity' ? 45000 : 240000);
-      if (S !== 'antigravity') assert.ok(after.ended && !after.row, after.text);
-      if (after.row) note(7, S, 'row after the continue', `${after.text}; timeline ${JSON.stringify(after.tail.slice(-3))}`);
+      judgeContinue(7, S, after);
       assert.ok(after.tail.join('\n').includes(DEFAULT_MARK));
       return `1 continue, agent count ${n0} -> ${await agentCount()}, continue in the same agent timeline; ${after.text}`;
     });
