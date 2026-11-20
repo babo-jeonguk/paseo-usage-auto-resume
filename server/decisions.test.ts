@@ -20,7 +20,7 @@ const agent = (fields: Partial<PaseoAgent> = {}) => ({
 const reason = (action: { cancel?: { reason: string } }) => action.cancel?.reason ?? null;
 /** The gate's cancel reason, or its wait/skip/go-on result. */
 const gate = (row: ResumeJob, snapshot: PaseoAgent | null, mode: "auto" | "manual" = "auto") => {
-  const result = agentGate(row, snapshot, mode);
+  const result = agentGate(row, snapshot, mode, "codex");
   return result && typeof result === "object" ? result.reason : result;
 };
 
@@ -88,6 +88,31 @@ test("due-time checks 3 to 8 run in the table's order", () => {
   assert.equal(gate(job(), agent()), null);
 });
 
+test("an Antigravity model saved with a thinking suffix is the same model Paseo 0.17 reports split", () => {
+  // Paseo 0.16 saved `gemini-4-carbon-high`; 0.17 reopens the same conversation as model + thinking.
+  const legacy = job({ provider: "antigravity", model: "gemini-4-carbon-high" });
+  const runtime = (model: string, thinkingOptionId?: string | null) =>
+    agent({ provider: "antigravity", runtimeInfo: { provider: "antigravity", sessionId: "s", model, thinkingOptionId } } as Partial<PaseoAgent>);
+  const agy = (row: ResumeJob, snapshot: PaseoAgent) => {
+    const result = agentGate(row, snapshot, "auto", "antigravity");
+    return result && typeof result === "object" ? result.reason : result;
+  };
+  assert.equal(agy(legacy, runtime("gemini-4-carbon", "high")), null);
+  for (const effort of ["xhigh", "medium", "low", "minimal"]) {
+    assert.equal(agy(job({ provider: "antigravity", model: `gemini-4-carbon-${effort}` }), runtime("gemini-4-carbon", effort)), null, effort);
+  }
+  assert.equal(agy(legacy, runtime("gemini-4-carbon", "low")), "model_changed", "another thinking value");
+  assert.equal(agy(legacy, runtime("gemini-4-argon", "high")), "model_changed", "another model");
+  assert.equal(agy(legacy, runtime("gemini-4-carbon", null)), "model_changed", "no thinking option");
+  assert.equal(agy(legacy, runtime("gemini-4-carbon")), "model_changed", "thinking option absent");
+  assert.equal(agy(job({ provider: "antigravity", model: "gemini-4-carbon-max" }), runtime("gemini-4-carbon", "max")), "model_changed", "not a suffix Paseo converts");
+  assert.equal(agy(job({ provider: "antigravity", model: "gemini-4-carbon" }), runtime("gemini-4-carbon", "high")), null, "a reservation saved on 0.17");
+  for (const source of ["codex", "claude", "opencode"] as const) {
+    const result = agentGate(legacy, runtime("gemini-4-carbon", "high"), "auto", source);
+    assert.equal(result && typeof result === "object" ? result.reason : result, "model_changed", source);
+  }
+});
+
 test("a closed agent is resumed, not canceled: Paseo reopens its saved session on send", () => {
   assert.equal(gate(job(), agent({ status: "closed" })), null);
   assert.equal(gate(job({ enabled: false }), agent({ status: "closed" })), "skip");
@@ -98,8 +123,8 @@ test("a closed agent is resumed, not canceled: Paseo reopens its saved session o
 });
 
 test("Resume now never skips, and waits for a turn", () => {
-  assert.equal(agentGate(job({ enabled: false }), agent(), "manual"), null);
-  assert.equal(agentGate(job({ enabled: false }), agent({ status: "running" }), "manual"), "wait");
+  assert.equal(agentGate(job({ enabled: false }), agent(), "manual", "codex"), null);
+  assert.equal(agentGate(job({ enabled: false }), agent({ status: "running" }), "manual", "codex"), "wait");
 });
 
 test("overload events keep pending rows, schedule after sends, and yield to a new user message", () => {

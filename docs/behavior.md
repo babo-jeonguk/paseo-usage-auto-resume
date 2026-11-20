@@ -71,7 +71,7 @@ A stop at a limit makes no reservation while provider settings cannot be read or
 
 A turn that never ends keeps its reservation waiting with no deadline.
 
-A known selected model is saved even when authentication is unavailable. A different model, a change from a previously verified Codex/Claude account identity, or a different OpenCode Go credential or key cancels the reservation, including after a restart. If account identity could not initially be verified, it is bound on the first successful check.
+A known selected model is saved even when authentication is unavailable. A different model, a change from a previously verified Codex/Claude account identity, or a different OpenCode Go credential or key cancels the reservation, including after a restart. If account identity could not initially be verified, it is bound on the first successful check. An Antigravity model saved with a thinking suffix by Paseo 0.16 (`gemini-4-carbon-high`) is the same model when Paseo 0.17 reports it as the model plus that thinking option (`gemini-4-carbon` with `high`), for the suffixes `xhigh`, `high`, `medium`, `low` and `minimal` that Paseo converts; another thinking value or model still cancels.
 
 Sending is claimed in persistent storage first to prevent duplicate delivery after a crash. A send interrupted at that point may therefore be lost rather than retried. These checks do not provide an atomic guarantee against every concurrent change between checking and sending; a provider that cannot steer has a turn started in that moment replaced by the continue.
 

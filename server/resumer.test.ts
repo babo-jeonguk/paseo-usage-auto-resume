@@ -1851,8 +1851,8 @@ test("startup scan finds an Antigravity limit that ended a turn as completed, bu
   ];
   const { timelineReads } = await setup(
     {
-      g1: { provider: "antigravity-fast", status: "idle", lastError: null, updatedAt: recent },
-      g2: { provider: "antigravity", status: "idle", lastError: null, updatedAt: recent },
+      g1: { provider: "antigravity-fast", status: "idle", updatedAt: recent },
+      g2: { provider: "antigravity", status: "idle", updatedAt: recent },
       g3: { provider: "antigravity", status: "error", lastError: ANTIGRAVITY_LIMIT, updatedAt: recent },
       c1: { provider: "codex", status: "idle", updatedAt: recent },
     },
@@ -1862,6 +1862,31 @@ test("startup scan finds an Antigravity limit that ended a turn as completed, bu
   assert.deepEqual(jobs.map((job) => job.agentId).sort(), ["g1", "g3"]);
   assert.equal(jobs.find((job) => job.agentId === "g1")?.dueAt, "2026-10-06T05:07:00.000Z");
   assert.deepEqual([...new Set(timelineReads.map((read) => read.agentId))].sort(), ["g1", "g2"], "Codex idle timelines are not read");
+});
+
+test("an Antigravity reservation made before Paseo 0.17 split its model still continues, unless the model changed", async () => {
+  const split = { model: "gemini-4-carbon-high", runtimeInfo: { provider: "antigravity", sessionId: "s1", model: "gemini-4-carbon", thinkingOptionId: "high" } } as Partial<PaseoAgent>;
+  for (const [name, latest, expected] of [
+    ["same model", split, { result: "sent" }],
+    ["changed between the checks", { ...split, runtimeInfo: { ...split.runtimeInfo!, thinkingOptionId: "low" } }, { result: "canceled", reason: "model_changed" }],
+  ] as const) {
+    clock = START;
+    await store.update("g1", () => null);
+    let agents: Map<string, Partial<PaseoAgent>> | undefined;
+    const readSubscription: SubscriptionReader = async () => {
+      agents!.set("g1", { provider: "antigravity-fast", ...latest });
+      return agyFallback();
+    };
+    const fake = await setup({ g1: { provider: "antigravity-fast", ...split } }, { readSubscription });
+    agents = fake.agents;
+    await store.update("g1", () => ({
+      agentId: "g1", provider: "antigravity-fast", resetAt: null, dueAt: "2026-10-06T05:02:00.000Z", model: "gemini-4-carbon-high",
+      baseline: "2026-10-06T02:00:00.000Z", attempts: 0, state: "pending", enabled: true, retries: 0,
+    }));
+    const outcome = await fake.resumer.resumeNow(fake.api, "g1", await pinOf(store, "g1", "2026-10-06T05:02:00.000Z"));
+    assert.deepEqual(outcome, expected, name);
+    assert.equal(fake.sent.length, expected.result === "sent" ? 1 : 0, name);
+  }
 });
 
 test("an Antigravity provider can be turned off while another built on it resumes", async () => {

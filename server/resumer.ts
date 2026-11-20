@@ -489,7 +489,7 @@ export function createResumer(options: {
     if (!settings.resumeBackground && (job.background === true || (agent && (await isBackground(api, agent))))) {
       return cancel({ ...backgroundOff(), title });
     }
-    const gate = agentGate(job, agent, mode);
+    const gate = agentGate(job, agent, mode, source);
     if (gate) return gated(gate, title);
     // The post-usage re-check uses the same rule: the stored flag, or the agent for an older row.
     const backgroundOf = async (latest: PaseoAgent): Promise<boolean> => job.background === true || await isBackground(api, latest);
@@ -515,7 +515,7 @@ export function createResumer(options: {
     // The usage lookup takes seconds, and Paseo's send unarchives an agent, clears its permission
     // requests and replaces a running turn, so the agent is checked again just before the claim.
     const latestAgent = await loadAgent(api, job.agentId);
-    const latestGate = agentGate(job, latestAgent, mode);
+    const latestGate = agentGate(job, latestAgent, mode, source);
     if (latestGate) return gated(latestGate, (latestAgent && titleOf(latestAgent)) ?? title);
     // Claim before sending so a crash mid-send, or a tick and Resume now at once, never delivers
     // a second continue. The current row decides: the job may have been turned off while the

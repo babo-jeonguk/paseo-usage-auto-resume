@@ -1,6 +1,7 @@
 import type { HistoryEntry, HistoryOutcome, HistoryReason } from "../shared/rpc";
 import type { PaseoAgent } from "./paseo-types";
 import type { ResumeJob } from "./store";
+import type { UsageSource } from "../shared/settings";
 import { subscriptionModel } from "./subscription";
 
 // What happens to a reservation, as the table in docs/behavior.md states it. These functions only
@@ -72,6 +73,22 @@ export function turnAction(row: ResumeJob | null, agent: PaseoAgent | null, even
   return { schedules };
 }
 
+/** Thinking levels Paseo 0.17's Antigravity provider moves out of a 0.16 model ID's suffix. */
+const ANTIGRAVITY_THINKING_SUFFIXES = new Set(["xhigh", "high", "medium", "low", "minimal"]);
+
+/**
+ * Whether the agent still runs the model a reservation was made for. Paseo 0.16 saved an
+ * Antigravity thinking level in the model ID (`gemini-4-carbon-high`); 0.17 reopens the same
+ * conversation as that model plus the thinking option, which is the same model.
+ */
+function runsModel(agent: PaseoAgent, model: string, source: UsageSource): boolean {
+  const current = subscriptionModel(agent);
+  if (current === model) return true;
+  if (source !== "antigravity") return false;
+  const thinking = agent.runtimeInfo?.thinkingOptionId;
+  return !!current && !!thinking && ANTIGRAVITY_THINKING_SUFFIXES.has(thinking) && `${current}-${thinking}` === model;
+}
+
 /** What the agent checks at the due time decide: cancel, wait for its turn, skip, or go on. */
 export type Gate = Cancellation | "wait" | "skip" | null;
 
@@ -79,11 +96,11 @@ export type Gate = Cancellation | "wait" | "skip" | null;
  * Due-time checks 3 to 8, in the table's order. Resume now sends a reservation that is turned
  * off, so it never skips. A reservation turned off still waits for a turn, whose end decides it.
  */
-export function agentGate(job: ResumeJob, agent: PaseoAgent | null, mode: "auto" | "manual"): Gate {
+export function agentGate(job: ResumeJob, agent: PaseoAgent | null, mode: "auto" | "manual", source: UsageSource): Gate {
   if (!agent) return canceled("agent_missing", "agent no longer exists");
   if (agent.archivedAt) return canceled("archived", "agent is archived");
   if (agent.provider !== job.provider) return canceled("provider_changed", `provider changed to ${agent.provider}`);
-  if (job.model !== undefined && subscriptionModel(agent) !== job.model) return canceled("model_changed", "model changed");
+  if (job.model !== undefined && !runsModel(agent, job.model, source)) return canceled("model_changed", "model changed");
   if (hasNewMessage(agent, job)) return NEW_MESSAGE;
   // Closed only means the runtime was released, after an idle hour or a daemon shutdown: the
   // send reopens the saved session. Archiving, checked above, is how the user ends an agent.
