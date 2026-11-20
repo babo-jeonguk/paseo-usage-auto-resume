@@ -5,7 +5,7 @@
 //
 // node e2e.mjs --label linux-0.16 --cli <@getpaseo/cli dir> --root <run dir> --suites claude,codex,antigravity,opencode \
 //   [--from <ref, default v1.2.2>] [--to <ref, default main>] [--source <git source>] [--out <results dir>] \
-//   [--min 1] [--ui 1] [--hold 1] [--only 17,18,19] [--claude <bin>] [--codex <bin>] [--agy <bin>] \
+//   [--min 1] [--ui 1] [--hold 1] [--only 17,18,19] [--upgrade-cli <newer @getpaseo/cli dir>] [--claude <bin>] [--codex <bin>] [--agy <bin>] \
 //   [--opencode <bin>] [--model <opencode model>] [--path <extra PATH dirs>]
 // --ui 1 reads Playwright from PW_ROOT and the browser from CHROME, else Chromium on Linux and Edge on Windows (see ui-steps.mjs).
 import assert from 'node:assert/strict';
@@ -49,7 +49,8 @@ const tools = createRequire(join(cliDir, 'package.json'));
 const { DaemonClient } = await import(pathToFileURL(tools.resolve('@getpaseo/client/internal/daemon-client')));
 const { readLocalCredentialForTarget } = await import(pathToFileURL(tools.resolve('@getpaseo/server/daemon-control')));
 const { WebSocket } = tools('ws');
-const paseoVersion = JSON.parse(readFileSync(join(cliDir, 'package.json'), 'utf8')).version;
+// --upgrade-cli switches both to the newer CLI midway; see the upgrade step.
+let paseoVersion = JSON.parse(readFileSync(join(cliDir, 'package.json'), 'utf8')).version;
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const waitFor = async (fn, what, timeout = 180000, every = 500) => {
@@ -125,7 +126,7 @@ const baseEnv = isWin ? {
   PATH: [dirname(nodeBin), ...extraPath, `${sys}\\System32`, sys, `${sys}\\System32\\WindowsPowerShell\\v1.0`].join(';'),
 } : { HOME: join(root, 'home'), PATH: [dirname(nodeBin), ...extraPath, '/usr/local/bin', '/usr/bin', '/bin'].join(':') };
 if (!isWin) await mkdir(baseEnv.HOME, { recursive: true });
-const paseoBin = join(cliDir, 'bin', 'paseo');
+let paseoBin = join(cliDir, 'bin', 'paseo');
 // Must not block: the client below only keeps its session by sending a heartbeat from this event loop, and the daemon
 // closes a socket that sends nothing for 45 s. A CLI call (start + plugin update) under load can take longer than that.
 const run = promisify(execFile);
@@ -138,6 +139,11 @@ const claudeEnv = (dir) => ({ CLAUDE_CODE_OAUTH_TOKEN: 'e2e-fixture-only', ANTHR
 const codexHome = join(root, 'codex-home'), agyHome = join(root, 'agy-home');
 const providers = {};
 const withCmd = (bin) => bin ? { command: [bin] } : {};
+// Paseo 0.17 runs Antigravity as an ACP server and requires the subcommand in a command override.
+const agyCmd = (bin) => {
+  const [major, minor] = paseoVersion.split('.').map(Number);
+  return !bin ? {} : major > 0 || minor >= 17 ? { command: [bin, 'acp', '--disable-telemetry'] } : { command: [bin] };
+};
 if (suites.includes('claude')) {
   providers.claude = { ...withCmd(args.claude), env: claudeEnv('claude-cfg') };
   providers['claude-sub'] = { extends: 'claude', label: 'Claude Sub', ...withCmd(args.claude), env: claudeEnv('claude-sub-cfg') };
@@ -150,7 +156,7 @@ if (suites.includes('codex')) {
 if (suites.includes('antigravity')) {
   await mkdir(join(agyHome, '.gemini', 'antigravity-cli'), { recursive: true });
   await writeFile(join(agyHome, '.gemini', 'antigravity-cli', 'settings.json'), '{"modelProvider":"gemini"}');
-  providers.antigravity = { ...withCmd(args.agy), env: { HOME: agyHome, USERPROFILE: agyHome, GEMINI_API_KEY: 'e2e-fixture-only', GOOGLE_GEMINI_BASE_URL: modelUrl, ...proxyEnv } };
+  providers.antigravity = { ...agyCmd(args.agy), env: { HOME: agyHome, USERPROFILE: agyHome, GEMINI_API_KEY: 'e2e-fixture-only', GOOGLE_GEMINI_BASE_URL: modelUrl, ...proxyEnv } };
 }
 if (suites.includes('opencode')) {
   // OpenCode keeps config/data/state/cache under XDG homes; its opencode-go provider points at the
@@ -227,6 +233,59 @@ const timelineText = async (id) => {
     const items = t.entries ?? t.items ?? t.timeline ?? [];
     return items.map((e) => { const i = e.item ?? e; return `${i.type}:${String(i.text ?? i.message ?? i.content ?? '').slice(0, 400)}`; });
   } catch (e) { return ['timeline unreadable: ' + e.message]; }
+};
+// What a continue led to, each read from what the continue itself produced. The continue leaves a
+// `sent` row (the reservation it delivered) that the plugin clears when that turn ends, or replaces
+// with a new reservation when the turn ends at a limit.
+const LIMIT_NOTICE = /\b429\b|RESOURCE_EXHAUSTED|usage limit/i;
+/** A limit notice in a provider's error form: an error item, or a reply the CLI marks as its error. */
+const isErrorNotice = (line) => {
+  const [type, ...rest] = line.split(':');
+  const text = rest.join(':').trim();
+  return (type === 'error' || (type === 'assistant_message' && /^(?:\[System Error\]|⚠)/.test(text))) && LIMIT_NOTICE.test(text);
+};
+const afterContinue = async (id, continuedId, waitMs) => {
+  const sinceContinue = async () => {
+    const tail = await timelineText(id);
+    const mark = tail.findLastIndex((line) => line.startsWith('user_message:') && line.includes(DEFAULT_MARK));
+    const answers = mark < 0 ? [] : tail.slice(mark + 1).filter((line) => line.startsWith('assistant_message:') || line.startsWith('error:'));
+    const unknown = tail[0]?.startsWith('timeline unreadable') ? 'timeline unreadable' : mark < 0 ? "continue not in the timeline's tail" : null;
+    return { tail, answers, unknown };
+  };
+  // 1. The turn the continue started ended: an answer after the continue's own message, and the agent no longer running.
+  // A wait ends in success, its deadline, or an error from a read; each is reported as what it was.
+  const outcome = (wait) => wait.then(() => null, (e) => String(e?.message ?? e).startsWith('Timeout:') ? 'timed out' : `read failed: ${String(e?.message ?? e).slice(0, 120)}`);
+  const endedFailure = await outcome(waitFor(async () => (await sinceContinue()).answers.length > 0 && ['idle', 'error', 'closed'].includes(await agentStatus(id)),
+    'continue turn ended', waitMs, 1000));
+  // 2. The plugin handled that turn end: the delivered reservation is no longer `sent` or `sending`.
+  const delivered = (row) => row?.id === continuedId && ['sent', 'sending'].includes(row.state);
+  const handledFailure = await outcome(waitFor(async () => !delivered(await jobOf(id)), 'turn end handled by the plugin', waitMs, 1000));
+  const ended = !endedFailure, handled = !handledFailure;
+  // The final reads decide what is reported, whatever the waits saw.
+  const { tail, answers, unknown } = await sinceContinue();
+  const notice = unknown ? null : answers.some(isErrorNotice);
+  const row = (await jobOf(id)) ?? null;
+  const rowText = !row ? 'cleared' : `${row.id === continuedId ? 'the continued reservation' : 'a new reservation'} left (${row.state}, due ${row.dueAt})`;
+  const text = `turn ended ${ended ? 'yes' : `NO (${endedFailure})`}; turn end handled ${handled ? 'yes' : `NO (${handledFailure})`}; `
+    + `new limit notice ${notice === null ? `unknown (${unknown})` : notice ? 'YES' : 'no'}; row ${rowText}`;
+  return { ended, handled, notice, row, continuedId, tail, text };
+};
+/**
+ * The pass rule items 6 and 7 share, for every provider:
+ * 1. the continue's turn ended, and 2. the plugin handled that turn end;
+ * 3. with no row left, no limit notice followed the continue (an unknown notice fails);
+ * 4. a row left passes, as a NOTE, only for Antigravity, only after a limit notice that followed the
+ *    continue, and only as a pending reservation other than the one just continued. agy can replay
+ *    its earlier 429 after the continue's reply on Paseo 0.16, which the plugin reserves again.
+ */
+const judgeContinue = (item, S, after) => {
+  assert.ok(after.ended && after.handled, after.text);
+  if (!after.row) {
+    assert.equal(after.notice, false, after.text);
+    return;
+  }
+  assert.ok(S === 'antigravity' && after.notice === true && after.row.state === 'pending' && after.row.id !== after.continuedId, after.text);
+  note(item, S, 'row after the continue', `${after.text}; timeline ${JSON.stringify(after.tail.slice(-3))}`);
 };
 const agentStatus = async (id) => { try { const r = await client.fetchAgent(id); return r?.agent?.status ?? r?.status ?? JSON.stringify(r).slice(0, 80); } catch (e) { return 'err ' + e.message; } };
 const agentCount = async () => { try { const r = await client.fetchAgents(); return (r.entries ?? r.agents ?? []).length; } catch { return -1; } };
@@ -624,8 +683,11 @@ try {
 
   // ---- codex / antigravity suites -------------------------------------------------------------
   // OpenCode has no reset in its limit message; items 19a-19c cover its limit, tick and scan.
+  // With --upgrade-cli, each suite's limit and tick reservations are made on the first Paseo, and
+  // items 6 and 7 send them on the newer one after the daemon restarts on the same home.
+  const resetSec = 7200;
+  const limited = [];
   for (const S of suites.filter((s) => s !== 'claude' && s !== 'opencode')) {
-    const resetSec = 7200;
     const a = await mkAgent(`${S} limit`, S);
     let job;
     await step(3, S, `real ${S} CLI limit -> reservation at stated reset + 2 min`, async () => {
@@ -638,6 +700,41 @@ try {
       return `notice [${text.slice(0, 160)}]; resetAt ${job.resetAt}, dueAt ${job.dueAt}; probe ${(await probeFor(a.id)).join(' | ')}; status ${await agentStatus(a.id)}`;
     });
     if (!job) continue;
+    const tickAgent = await mkAgent(`${S} tick`, S);
+    const tickJob = args['upgrade-cli'] ? await hit(tickAgent, S, limitWith(S, resetSec)) : null;
+    limited.push({ S, manual: { agent: a, job }, tick: { agent: tickAgent, job: tickJob } });
+  }
+  if (args['upgrade-cli'] && limited.length) {
+    const upgraded = await step('upgrade', 'plugin', 'saved reservations survive restarting the daemon on the newer Paseo', async () => {
+      const from = paseoVersion;
+      await stopDaemon();
+      paseoBin = join(args['upgrade-cli'], 'bin', 'paseo');
+      paseoVersion = JSON.parse(readFileSync(join(args['upgrade-cli'], 'package.json'), 'utf8')).version;
+      const current = JSON.parse(await readFile(join(home, 'config.json'), 'utf8'));
+      if (current.agents?.providers?.antigravity) Object.assign(current.agents.providers.antigravity, agyCmd(args.agy));
+      await writeFile(join(home, 'config.json'), JSON.stringify(current, null, 2));
+      await startDaemon();
+      const listed = (await rpc('auto-resume.list')).jobs;
+      const runtime = [];
+      for (const { manual, tick } of limited) {
+        for (const { agent, job } of [manual, tick]) {
+          assert.equal(listed.find((j) => j.agentId === agent.id)?.id, job.id, `${agent.title} kept its reservation`);
+          // Opening a conversation, as the app does, loads the agent on the newer Paseo, which may
+          // report its model differently from the one the reservation saved.
+          await client.fetchAgentTimeline(agent.id, { direction: 'tail', limit: 30 });
+        }
+        const info = (await client.fetchAgent(manual.agent.id))?.agent?.runtimeInfo;
+        runtime.push(`${manual.job.model ?? 'none'} -> ${info?.model ?? 'none'}${info?.thinkingOptionId ? ' + ' + info.thinkingOptionId : ''}`);
+      }
+      return `Paseo ${from} -> ${paseoVersion}; ${limited.length * 2} reservations listed with the same IDs; conversations opened, saved -> runtime model: ${runtime.join(', ')}`;
+    });
+    // Items 6 and 7 would otherwise run on whatever daemon is left and prove nothing about the upgrade.
+    if (!upgraded) {
+      note('upgrade', 'plugin', 'items 6 and 7 not run', 'the upgrade step failed');
+      limited.length = 0;
+    }
+  }
+  for (const { S, manual: { agent: a, job }, tick: { agent: b, job: tickJob } } of limited) {
     await step(6, S, 'Resume now sends exactly one continue (manual)', async () => {
       const sent0 = continues(S).length;
       if (S === 'codex') {
@@ -651,23 +748,22 @@ try {
       await waitFor(async () => continues(S).length === sent0 + 1, 'continue reached the model', 240000, 1000);
       await sleep(6000);
       assert.equal(continues(S).length, sent0 + 1);
-      const cleared = await waitFor(async () => !(await jobOf(a.id)), 'row cleared', S === 'antigravity' ? 45000 : 240000, 1000).catch((e) => { if (S !== 'antigravity') throw e; return false; });
+      const after = await afterContinue(a.id, job.id, S === 'antigravity' ? 45000 : 240000);
+      judgeContinue(6, S, after);
       assert.equal((await readHistory()).find((e) => e.agentId === a.id && e.outcome === 'continued')?.trigger, 'manual');
-      if (!cleared) note(6, S, 'row after the continue', `NOT cleared: ${JSON.stringify(await timelineText(a.id))} -> the agy agent re-emitted the earlier 429 after the continue's reply and the plugin re-reserved (new row ${JSON.stringify((await jobOf(a.id))?.dueAt)})`);
-      return `${S === 'codex' ? 'used_up blocked first; ' : 'no usage check for antigravity; '}sent exactly 1 continue, row cleared, history trigger=manual`;
+      return `${S === 'codex' ? 'used_up blocked first; ' : 'no usage check for antigravity; '}sent exactly 1 continue; ${after.text}; history trigger=manual`;
     });
-    const b = await mkAgent(`${S} tick`, S);
     await step(7, S, 'tick sends exactly one continue to the same agent', async () => {
-      await hit(b, S, limitWith(S, resetSec));
+      const continued = tickJob ?? await hit(b, S, limitWith(S, resetSec));
       const n0 = await agentCount(), sent0 = continues(S).length;
       await editJob(b.id, { resetAt: iso(Date.now() - 120000), dueAt: iso(Date.now() - 60000) });
       await waitFor(async () => continues(S).length === sent0 + 1, 'tick continue', 240000, 1000);
       await sleep(6000);
       assert.equal(continues(S).length, sent0 + 1);
-      const cleared = await waitFor(async () => !(await jobOf(b.id)), 'row cleared', S === 'antigravity' ? 45000 : 240000, 1000).catch((e) => { if (S !== 'antigravity') throw e; return false; });
-      if (!cleared) note(7, S, 'row after the continue', `NOT cleared: timeline tail ${JSON.stringify((await timelineText(b.id)).slice(-3))}; new row ${JSON.stringify((await jobOf(b.id))?.dueAt)} (the agy agent re-emitted the earlier 429 after "Done.")`);
-      assert.ok((await timelineText(b.id)).join('\n').includes(DEFAULT_MARK));
-      return `1 continue, agent count ${n0} -> ${await agentCount()}, continue in the same agent timeline, row cleared`;
+      const after = await afterContinue(b.id, continued.id, S === 'antigravity' ? 45000 : 240000);
+      judgeContinue(7, S, after);
+      assert.ok(after.tail.join('\n').includes(DEFAULT_MARK));
+      return `1 continue, agent count ${n0} -> ${await agentCount()}, continue in the same agent timeline; ${after.text}`;
     });
     if (!MIN) {
       await checkProviderOff(S, S, `${S} provider off`);
