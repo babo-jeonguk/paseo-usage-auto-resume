@@ -360,7 +360,8 @@ export function createResumer(options: {
   /**
    * Finds agents that a limit stopped while this plugin was not running (before install, or
    * during a reload), whose turn_ended was therefore never seen. Codex failures leave the
-   * agent in `error` with the notice as `lastError`; Claude ends idle with a closing notice.
+   * agent in `error` with the notice as `lastError`; Claude, and Antigravity over ACP (Paseo
+   * 0.17), end idle with a closing notice.
    */
   async function scan(api: ResumerApi): Promise<void> {
     const settings = await readSettings();
@@ -386,7 +387,7 @@ export function createResumer(options: {
       let stop = null;
       if (agent.status === "error" && agent.lastError) {
         stop = detectLimitStop({ kind: "failed", error: { message: agent.lastError } }, [], observedAt);
-      } else if (source === "claude") {
+      } else if (source === "claude" || source === "antigravity") {
         stop = detectLimitStop({ kind: "completed" }, await timelineTail(api, agent.id), observedAt);
       }
       if (stop) await schedule(api, agent, source, stop.resetAt, observedAt, { onlyIfNone: true });

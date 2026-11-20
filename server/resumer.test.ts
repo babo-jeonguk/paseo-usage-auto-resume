@@ -1837,6 +1837,33 @@ test("startup scan schedules an Antigravity agent that hit its limit before the 
   assert.equal(job?.resetAt, "2026-10-06T04:50:00.000Z");
 });
 
+// Paseo 0.17 over agy ACP ends a 429 turn as completed, with the notice as the last answer only.
+const ACP_LIMIT = "\n\u26a0 agent executor error: generating and executing: Error 429, Message: Individual quota reached. Resets in 2h., Status: RESOURCE_EXHAUSTED, Details: []\n";
+
+test("startup scan finds an Antigravity limit that ended a turn as completed, but not one answered since", async () => {
+  clock = new Date("2026-10-06T03:10:00.000Z");
+  const recent = "2026-10-06T03:05:00.000Z";
+  const answered: AgentTimelineItem[] = [
+    { type: "user_message", text: "Work on the task." },
+    { type: "assistant_message", text: ACP_LIMIT },
+    { type: "user_message", text: "Try again." },
+    { type: "assistant_message", text: "Done." },
+  ];
+  const { timelineReads } = await setup(
+    {
+      g1: { provider: "antigravity-fast", status: "idle", lastError: null, updatedAt: recent },
+      g2: { provider: "antigravity", status: "idle", lastError: null, updatedAt: recent },
+      g3: { provider: "antigravity", status: "error", lastError: ANTIGRAVITY_LIMIT, updatedAt: recent },
+      c1: { provider: "codex", status: "idle", updatedAt: recent },
+    },
+    { timelines: { g1: [{ type: "user_message", text: "Work on the task." }, { type: "assistant_message", text: ACP_LIMIT }], g2: answered } },
+  );
+  const jobs = await store.list();
+  assert.deepEqual(jobs.map((job) => job.agentId).sort(), ["g1", "g3"]);
+  assert.equal(jobs.find((job) => job.agentId === "g1")?.dueAt, "2026-10-06T05:07:00.000Z");
+  assert.deepEqual([...new Set(timelineReads.map((read) => read.agentId))].sort(), ["g1", "g2"], "Codex idle timelines are not read");
+});
+
 test("an Antigravity provider can be turned off while another built on it resumes", async () => {
   const customSettings: ProviderSettings = { ...DEFAULT_PROVIDER_SETTINGS, disabledProviders: ["antigravity"] };
   const { api, resumer } = await setup(
