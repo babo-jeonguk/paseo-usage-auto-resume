@@ -19,7 +19,7 @@ Actual Paseo web interface with sample reservations. Each row shows what is sche
 - **Paseo daemon and app 0.16.0 or later**, with plugins enabled in **Settings → Plugins**.
 - The provider CLI already signed in on the daemon host, and the host kept awake.
 - **OpenCode 2.2.2 or later** for OpenCode agents.
-- On Paseo 0.17, a custom Antigravity command must include `acp`, as Paseo requires; quota is read when its other flags are among those listed in [behavior](docs/behavior.md#troubleshooting). Codex agents started under Paseo 0.16 need Codex CLI 0.121.0 or later to be reopened by Paseo 0.17.
+- On Paseo 0.17, a custom Antigravity command must include `acp`, as Paseo requires; with other flags than those [behavior](docs/behavior.md#data-access-and-storage) lists, the quota check is skipped and the limit message is followed. Codex agents started under Paseo 0.16 need Codex CLI 0.121.0 or later to be reopened by Paseo 0.17.
 
 | Provider | Before sending |
 | --- | --- |

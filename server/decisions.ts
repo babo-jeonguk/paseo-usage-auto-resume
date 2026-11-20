@@ -82,11 +82,11 @@ const ANTIGRAVITY_THINKING_SUFFIXES = new Set(["xhigh", "high", "medium", "low",
  * conversation as that model plus the thinking option, which is the same model.
  */
 function runsModel(agent: PaseoAgent, model: string, source: UsageSource): boolean {
-  const current = subscriptionModel(agent);
-  if (current === model) return true;
+  if (subscriptionModel(agent) === model) return true;
   if (source !== "antigravity") return false;
-  const thinking = agent.runtimeInfo?.thinkingOptionId;
-  return !!current && !!thinking && ANTIGRAVITY_THINKING_SUFFIXES.has(thinking) && `${current}-${thinking}` === model;
+  // Both parts must come from the runtime, not a configured model paired with a runtime thinking level.
+  const { model: running, thinkingOptionId: thinking } = agent.runtimeInfo ?? {};
+  return !!running && !!thinking && ANTIGRAVITY_THINKING_SUFFIXES.has(thinking) && `${running}-${thinking}` === model;
 }
 
 /** What the agent checks at the due time decide: cancel, wait for its turn, skip, or go on. */

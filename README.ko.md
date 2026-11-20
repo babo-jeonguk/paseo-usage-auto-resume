@@ -19,7 +19,7 @@
 - **Paseo 데몬과 앱 0.16.0 이상**, **Settings → Plugins**에서 플러그인 활성화
 - 데몬 호스트에 로그인된 provider CLI, 그리고 절전 상태에 들어가지 않는 데몬 호스트
 - OpenCode 에이전트는 **OpenCode 2.2.2 이상**이 필요합니다.
-- Paseo 0.17에서는 Paseo가 요구하는 대로 Antigravity 사용자 지정 명령에 `acp`가 있어야 합니다. 나머지 플래그가 [동작 문서](docs/behavior.md#troubleshooting)에 적힌 것뿐이면 쿼터를 확인합니다. Paseo 0.16에서 시작한 Codex 에이전트를 Paseo 0.17이 다시 열려면 Codex CLI 0.121.0 이상이 필요합니다.
+- Paseo 0.17에서는 Paseo가 요구하는 대로 Antigravity 사용자 지정 명령에 `acp`가 있어야 합니다. [동작 문서](docs/behavior.md#data-access-and-storage)에 적힌 것 외의 플래그가 있으면 쿼터 확인을 건너뛰고 한도 안내를 따릅니다. Paseo 0.16에서 시작한 Codex 에이전트를 Paseo 0.17이 다시 열려면 Codex CLI 0.121.0 이상이 필요합니다.
 
 | Provider | 보내기 전에 |
 | --- | --- |

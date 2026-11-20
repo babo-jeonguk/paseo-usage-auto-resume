@@ -24,8 +24,9 @@ export const agyFallback = (): SubscriptionCheck => ({ auth: "subscription", sta
 
 // Bucket IDs, not translated group names. Argon without a dedicated bucket is unverified:
 // the plans documentation does not establish which shared buckets apply on every plan.
+// Paseo 0.16 reports a model with its thinking suffix (`gemini-4-argon-high`), 0.17 without it.
 function bucketApplies(model: string, id: string): boolean {
-  if (model.startsWith("gemini-4-argon-")) return id.startsWith("gemini-argon-");
+  if (/^gemini-4-argon(?:-|$)/.test(model)) return id.startsWith("gemini-argon-");
   if (model.startsWith("gemini-")) return id.startsWith("gemini-") && !id.startsWith("gemini-argon-");
   if (model.startsWith("claude-") || model.startsWith("gpt-oss-")) return id.startsWith("3p-");
   return false;
