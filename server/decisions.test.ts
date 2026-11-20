@@ -107,6 +107,8 @@ test("an Antigravity model saved with a thinking suffix is the same model Paseo 
   assert.equal(agy(legacy, runtime("gemini-4-carbon")), "model_changed", "thinking option absent");
   assert.equal(agy(job({ provider: "antigravity", model: "gemini-4-carbon-max" }), runtime("gemini-4-carbon", "max")), "model_changed", "not a suffix Paseo converts");
   assert.equal(agy(job({ provider: "antigravity", model: "gemini-4-carbon" }), runtime("gemini-4-carbon", "high")), null, "a reservation saved on 0.17");
+  const configuredOnly = agent({ provider: "antigravity", model: "gemini-4-carbon", runtimeInfo: { provider: "antigravity", sessionId: "s", model: null, thinkingOptionId: "high" } } as Partial<PaseoAgent>);
+  assert.equal(agy(legacy, configuredOnly), "model_changed", "the runtime must report the model itself");
   for (const source of ["codex", "claude", "opencode"] as const) {
     const result = agentGate(legacy, runtime("gemini-4-carbon", "high"), "auto", source);
     assert.equal(result && typeof result === "object" ? result.reason : result, "model_changed", source);

@@ -43,6 +43,20 @@ test("usage maps only the selected model's buckets, without account identity", (
   assert.equal(agyUsage(fixture, "claude-opus-5-5-high").windows?.[0]?.resetAt, "2026-11-01T15:15:44.000Z");
 });
 
+test("a model Paseo 0.17 reports without its thinking suffix maps to the same buckets", () => {
+  // Over ACP the runtime model is the base ID (`gemini-4-argon`) with thinking reported apart.
+  for (const [model, ids] of [
+    ["gemini-4-argon", ["gemini-argon-wtu-weekly"]],
+    ["gemini-4-carbon", ["gemini-weekly", "gemini-5h"]],
+    ["claude-opus-5-5", ["3p-weekly", "3p-5h"]],
+    ["gpt-oss-120b", ["3p-weekly", "3p-5h"]],
+  ] as const) assert.deepEqual(agyWindows(fixture, model)?.map((w) => w.id), ids.map((id) => `agy:${id}`), model);
+  const exhausted = copy();
+  exhausted.command.data.groups[2].buckets[0].remaining_fraction = 0;
+  assert.equal(agyUsage(exhausted, "gemini-4-argon").status, "limited");
+  assert.deepEqual(agyWindows(fixture, "gemini-4-argonaut")?.map((w) => w.id), ["agy:gemini-weekly", "agy:gemini-5h"], "only the Argon family itself");
+});
+
 test("zero alone is exhausted; stale or missing reset never makes zero ready", () => {
   for (const remaining of [0, Number.MIN_VALUE, 0.5, 1]) {
     const usage = copy();

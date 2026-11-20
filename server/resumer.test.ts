@@ -1889,6 +1889,36 @@ test("an Antigravity reservation made before Paseo 0.17 split its model still co
   }
 });
 
+test("exhausted quota read through an ACP launch command holds the tick and Resume now", async () => {
+  const weekly = "2026-10-09T03:00:00.000Z";
+  const usage = { status: "SUCCESS", num_turns: 0, command: { name: "usage", data: { groups: [{ buckets: [
+    { id: "gemini-5h", remaining_fraction: 0.5, reset_time: "2026-10-06T05:00:00Z" },
+    { id: "gemini-weekly", remaining_fraction: 0, reset_time: weekly },
+  ] }] } } };
+  const calls: Array<[string, string[]]> = [];
+  const real = createSubscriptionReader({ run: async (binary, args) => {
+    calls.push([binary, args]);
+    return args[0] === "--version" ? "1.5.10" : JSON.stringify(usage);
+  } });
+  // The fake daemon's own config has no Antigravity command; this one is Paseo 0.17's documented override.
+  const readSubscription: SubscriptionReader = (_api, ...rest) => real(
+    { config: { get: async () => ({ config: { providers: { antigravity: { command: ["/opt/agy", "acp", "--disable-telemetry"] } } } }) } } as unknown as Parameters<SubscriptionReader>[0],
+    ...rest,
+  );
+  const split = { model: "gemini-4-carbon", runtimeInfo: { provider: "antigravity", sessionId: "s1", model: "gemini-4-carbon", thinkingOptionId: "high" } } as Partial<PaseoAgent>;
+  const { api, sent, resumer } = await setup({ g1: { provider: "antigravity", ...split } }, { readSubscription });
+  await resumer.onTurnEnded(turnEnded("g1", "antigravity", { kind: "completed" }, [
+    { type: "user_message", text: "Work on the task." }, { type: "assistant_message", text: ACP_LIMIT },
+  ]), api);
+  const [job] = await store.list();
+  assert.deepEqual(await resumer.resumeNow(api, "g1", { id: job!.id, dueAt: job!.dueAt }), { result: "used_up", until: weekly });
+  clock = new Date(job!.dueAt);
+  await resumer.tick();
+  assert.equal(sent.length, 0);
+  assert.equal((await store.list())[0]?.dueAt, "2026-10-09T03:02:00.000Z");
+  assert.ok(calls.length > 0 && calls.every(([binary, args]) => binary === "/opt/agy" && !args.includes("acp")));
+});
+
 test("an Antigravity provider can be turned off while another built on it resumes", async () => {
   const customSettings: ProviderSettings = { ...DEFAULT_PROVIDER_SETTINGS, disabledProviders: ["antigravity"] };
   const { api, resumer } = await setup(
