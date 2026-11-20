@@ -228,7 +228,9 @@ test("an ACP launch command probes its own executable, inherited and with the pr
     const inherited = { config: { get: async () => ({ config }) } } as unknown as Pick<PaseoApi, "config">;
     const check = await read(inherited, { ...agent, provider: "antigravity-sub" }, "antigravity", at, launch);
     assert.equal(check.windows?.length, 2);
-    assert.deepEqual(calls, [["/abs/agy", ["--version"], "/agy-home"], ["/abs/agy", ["-p", "/usage", "--output-format", "json"], "/agy-home"]]);
+    // An absolute path is resolved as Paseo spawns it, which adds the drive on Windows.
+    const agy = resolve("/abs/agy");
+    assert.deepEqual(calls, [[agy, ["--version"], "/agy-home"], [agy, ["-p", "/usage", "--output-format", "json"], "/agy-home"]]);
   }
 });
 

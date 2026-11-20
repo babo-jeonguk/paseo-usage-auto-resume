@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, beforeEach, mock, test } from "node:test";
 import type { PaseoAgent } from "@getpaseo/client";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
@@ -1915,7 +1915,8 @@ test("exhausted quota read through an ACP launch command holds the tick and Resu
   await resumer.tick();
   assert.equal(sent.length, 0);
   assert.equal((await store.list())[0]?.dueAt, "2026-11-01T15:17:44.000Z");
-  assert.ok(calls.length > 0 && calls.every(([binary, args]) => binary === "/opt/agy" && !args.includes("acp")));
+  // An absolute path is resolved as Paseo spawns it, which adds the drive on Windows.
+  assert.ok(calls.length > 0 && calls.every(([binary, args]) => binary === resolve("/opt/agy") && !args.includes("acp")));
 });
 
 test("an Antigravity provider can be turned off while another built on it resumes", async () => {
