@@ -234,17 +234,17 @@ const timelineText = async (id) => {
     return items.map((e) => { const i = e.item ?? e; return `${i.type}:${String(i.text ?? i.message ?? i.content ?? '').slice(0, 400)}`; });
   } catch (e) { return ['timeline unreadable: ' + e.message]; }
 };
-// What a continue led to, each read from what the continue itself produced: its turn ended (an
-// answer after the continue's own message, and the agent no longer running), whether that answer is
-// a limit notice in the provider's error form, and the row once the plugin has handled that turn end.
-// The continue leaves a `sent` row that the turn end clears, or replaces with a new reservation.
+// What a continue led to, each read from what the continue itself produced. The continue leaves a
+// `sent` row (the reservation it delivered) that the plugin clears when that turn ends, or replaces
+// with a new reservation when the turn ends at a limit.
 const LIMIT_NOTICE = /\b429\b|RESOURCE_EXHAUSTED|usage limit/i;
+/** A limit notice in a provider's error form: an error item, or a reply the CLI marks as its error. */
 const isErrorNotice = (line) => {
   const [type, ...rest] = line.split(':');
   const text = rest.join(':').trim();
   return (type === 'error' || (type === 'assistant_message' && /^(?:\[System Error\]|⚠)/.test(text))) && LIMIT_NOTICE.test(text);
 };
-const afterContinue = async (id, waitMs) => {
+const afterContinue = async (id, continuedId, waitMs) => {
   const sinceContinue = async () => {
     const tail = await timelineText(id);
     const mark = tail.findLastIndex((line) => line.startsWith('user_message:') && line.includes(DEFAULT_MARK));
@@ -252,26 +252,36 @@ const afterContinue = async (id, waitMs) => {
     const unknown = tail[0]?.startsWith('timeline unreadable') ? 'timeline unreadable' : mark < 0 ? "continue not in the timeline's tail" : null;
     return { tail, answers, unknown };
   };
+  // 1. The turn the continue started ended: an answer after the continue's own message, and the agent no longer running.
   const ended = await waitFor(async () => (await sinceContinue()).answers.length > 0 && ['idle', 'error', 'closed'].includes(await agentStatus(id)),
     'continue turn ended', waitMs, 1000).then(() => true, () => false);
-  const handled = await waitFor(async () => { const row = await jobOf(id); return !row || !['sent', 'sending'].includes(row.state); },
-    'turn end handled by the plugin', waitMs, 1000).then(() => true, () => false);
+  // 2. The plugin handled that turn end: the delivered reservation is no longer `sent` or `sending`.
+  const delivered = (row) => row?.id === continuedId && ['sent', 'sending'].includes(row.state);
+  const handled = await waitFor(async () => !delivered(await jobOf(id)), 'turn end handled by the plugin', waitMs, 1000).then(() => true, () => false);
+  // The final reads decide what is reported, whatever the waits saw.
   const { tail, answers, unknown } = await sinceContinue();
   const notice = unknown ? null : answers.some(isErrorNotice);
-  const row = await jobOf(id);
-  const text = `turn ended ${ended ? 'yes' : 'NO'}; new limit notice ${notice === null ? `unknown (${unknown})` : notice ? 'YES' : 'no'}; `
-    + `row ${!handled ? 'still sent (turn end not handled)' : row ? `left (${row.state}, due ${row.dueAt})` : 'cleared'}`;
-  return { ended, handled, notice, row, tail, text };
+  const row = (await jobOf(id)) ?? null;
+  const rowText = !row ? 'cleared' : `${row.id === continuedId ? 'the continued reservation' : 'a new reservation'} left (${row.state}, due ${row.dueAt})`;
+  const text = `turn ended ${ended ? 'yes' : 'NO (timed out)'}; turn end handled ${handled ? 'yes' : 'NO (timed out)'}; `
+    + `new limit notice ${notice === null ? `unknown (${unknown})` : notice ? 'YES' : 'no'}; row ${rowText}`;
+  return { ended, handled, notice, row, continuedId, tail, text };
 };
 /**
- * The pass rule items 6 and 7 share: the continue's turn ends and the plugin handles it. A row may be
- * left only as a new reservation for a limit notice seen after the continue, as agy can replay its
- * earlier 429 on Paseo 0.16; that is a NOTE for agy and a failure for any other provider.
+ * The pass rule items 6 and 7 share, for every provider:
+ * 1. the continue's turn ended, and 2. the plugin handled that turn end;
+ * 3. with no row left, no limit notice followed the continue (an unknown notice fails);
+ * 4. a row left passes, as a NOTE, only for Antigravity, only after a limit notice that followed the
+ *    continue, and only as a pending reservation other than the one just continued. agy can replay
+ *    its earlier 429 after the continue's reply on Paseo 0.16, which the plugin reserves again.
  */
 const judgeContinue = (item, S, after) => {
   assert.ok(after.ended && after.handled, after.text);
-  if (!after.row) return;
-  assert.ok(S === 'antigravity' && after.notice === true && after.row.state === 'pending', after.text);
+  if (!after.row) {
+    assert.equal(after.notice, false, after.text);
+    return;
+  }
+  assert.ok(S === 'antigravity' && after.notice === true && after.row.state === 'pending' && after.row.id !== after.continuedId, after.text);
   note(item, S, 'row after the continue', `${after.text}; timeline ${JSON.stringify(after.tail.slice(-3))}`);
 };
 const agentStatus = async (id) => { try { const r = await client.fetchAgent(id); return r?.agent?.status ?? r?.status ?? JSON.stringify(r).slice(0, 80); } catch (e) { return 'err ' + e.message; } };
@@ -735,19 +745,19 @@ try {
       await waitFor(async () => continues(S).length === sent0 + 1, 'continue reached the model', 240000, 1000);
       await sleep(6000);
       assert.equal(continues(S).length, sent0 + 1);
-      const after = await afterContinue(a.id, S === 'antigravity' ? 45000 : 240000);
+      const after = await afterContinue(a.id, job.id, S === 'antigravity' ? 45000 : 240000);
       judgeContinue(6, S, after);
       assert.equal((await readHistory()).find((e) => e.agentId === a.id && e.outcome === 'continued')?.trigger, 'manual');
       return `${S === 'codex' ? 'used_up blocked first; ' : 'no usage check for antigravity; '}sent exactly 1 continue; ${after.text}; history trigger=manual`;
     });
     await step(7, S, 'tick sends exactly one continue to the same agent', async () => {
-      if (!tickJob) await hit(b, S, limitWith(S, resetSec));
+      const continued = tickJob ?? await hit(b, S, limitWith(S, resetSec));
       const n0 = await agentCount(), sent0 = continues(S).length;
       await editJob(b.id, { resetAt: iso(Date.now() - 120000), dueAt: iso(Date.now() - 60000) });
       await waitFor(async () => continues(S).length === sent0 + 1, 'tick continue', 240000, 1000);
       await sleep(6000);
       assert.equal(continues(S).length, sent0 + 1);
-      const after = await afterContinue(b.id, S === 'antigravity' ? 45000 : 240000);
+      const after = await afterContinue(b.id, continued.id, S === 'antigravity' ? 45000 : 240000);
       judgeContinue(7, S, after);
       assert.ok(after.tail.join('\n').includes(DEFAULT_MARK));
       return `1 continue, agent count ${n0} -> ${await agentCount()}, continue in the same agent timeline; ${after.text}`;
