@@ -259,7 +259,7 @@ const afterContinue = async (id, waitMs) => {
 };
 /**
  * The pass rule items 6 and 7 share: the continue's turn must end. A row left behind by a limit
- * notice after it is a NOTE for agy, which replays its earlier 429 on Paseo 0.16, and fails elsewhere.
+ * notice after it is a NOTE for agy, which can replay its earlier 429 on Paseo 0.16, and fails elsewhere.
  */
 const judgeContinue = (item, S, after) => {
   assert.ok(after.ended, after.text);
