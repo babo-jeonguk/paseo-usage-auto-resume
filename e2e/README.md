@@ -47,6 +47,7 @@ node e2e/e2e.mjs --label linux-0.16.0 --cli /tmp/paseo-0.16.0/node_modules/@getp
 | `--min 1` | Skips items 9–11, 16, the newer sections (17–20) and the `--ui 1` phase |
 | `--ui 1` | Also runs `ui-steps.mjs` in the web app (items 4, 5, 6, 9, 12, 15 and 21) |
 | `--only` | Runs only the listed newer sections (`17`, `18`, `19`, `20`); items 1–16 always run |
+| `--agy` | Path to the `agy` binary. The harness configures it as `[path]` on Paseo 0.16 and as `[path, "acp", "--disable-telemetry"]` on Paseo 0.17 and later, which starts Antigravity as an ACP server |
 | `--opencode` | Path to the `opencode` binary, for `--suites opencode` |
 | `--model` | OpenCode model the fake `opencode-go` provider serves (default `opencode-go/deepseek-v4.1-flash`) |
 | `--hold 1` | Pauses after item 3 until `<root>/release` exists |
@@ -90,7 +91,19 @@ Each run writes `results.json` (one row per checked item), `daemon.log` and `mod
 
 Items 17 and 18 turn the background switch through Paseo's settings API (`settings.providers.write`), because a direct file edit does not notify the plugin's settings subscribers. Codex and Antigravity run items 3, 6, 7, 9, 11 and 16; OpenCode runs 19a–c instead of item 3, because its limit message carries no reset. The fake-request total, the refused connections and the harness's longest event-loop stall (`loopMaxMs`) are printed in the final `SUMMARY` line. The harness keeps one daemon session open for the whole run, and the daemon closes a session that sends nothing for 45 seconds, so the harness must not block its event loop: it runs the `paseo` CLI asynchronously.
 
+Items 6 and 7 report what the continue led to: whether its turn ended, whether a limit notice followed it, and whether a reservation was left. On Paseo 0.16, agy replays the earlier 429 after the continue's reply and the plugin reserves it again, which is a NOTE; on Paseo 0.17 the row is cleared.
+
 Time is advanced through the reschedule RPC, or by editing `jobs.json` to a past due time and letting the real tick fire. The tick cannot move a reservation earlier than its reset plus two minutes.
+
+## Upgrade check
+
+Reservations made on one Paseo version must survive the next. Run this by hand when the Paseo line changes:
+
+1. On an isolated Paseo home, run the old version and make a limit reservation for each provider to check, through the same fake model API. The harness covers this up to item 3 and keeps its daemon there with `--hold 1` (the Claude suite only); other providers need their agents made by hand.
+2. Stop that daemon. Start the new version's CLI on the same home with `agents.resumeOnStartup` off, so Paseo's own restart recovery does not send first.
+3. Press **Resume now** on one reservation, and move another's due time into the past for the tick. Each must send exactly one continue into the same agent and record `continued`, not `model_changed`.
+
+For Paseo 0.16 to 0.17, Codex needs CLI 0.121.0 or later to reopen a conversation that 0.16 started.
 
 ## Not covered
 

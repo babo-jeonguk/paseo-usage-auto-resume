@@ -138,6 +138,9 @@ const claudeEnv = (dir) => ({ CLAUDE_CODE_OAUTH_TOKEN: 'e2e-fixture-only', ANTHR
 const codexHome = join(root, 'codex-home'), agyHome = join(root, 'agy-home');
 const providers = {};
 const withCmd = (bin) => bin ? { command: [bin] } : {};
+// Paseo 0.17 runs Antigravity as an ACP server and requires the subcommand in a command override.
+const [paseoMajor, paseoMinor] = paseoVersion.split('.').map(Number);
+const agyCmd = (bin) => !bin ? {} : paseoMajor > 0 || paseoMinor >= 17 ? { command: [bin, 'acp', '--disable-telemetry'] } : { command: [bin] };
 if (suites.includes('claude')) {
   providers.claude = { ...withCmd(args.claude), env: claudeEnv('claude-cfg') };
   providers['claude-sub'] = { extends: 'claude', label: 'Claude Sub', ...withCmd(args.claude), env: claudeEnv('claude-sub-cfg') };
@@ -150,7 +153,7 @@ if (suites.includes('codex')) {
 if (suites.includes('antigravity')) {
   await mkdir(join(agyHome, '.gemini', 'antigravity-cli'), { recursive: true });
   await writeFile(join(agyHome, '.gemini', 'antigravity-cli', 'settings.json'), '{"modelProvider":"gemini"}');
-  providers.antigravity = { ...withCmd(args.agy), env: { HOME: agyHome, USERPROFILE: agyHome, GEMINI_API_KEY: 'e2e-fixture-only', GOOGLE_GEMINI_BASE_URL: modelUrl, ...proxyEnv } };
+  providers.antigravity = { ...agyCmd(args.agy), env: { HOME: agyHome, USERPROFILE: agyHome, GEMINI_API_KEY: 'e2e-fixture-only', GOOGLE_GEMINI_BASE_URL: modelUrl, ...proxyEnv } };
 }
 if (suites.includes('opencode')) {
   // OpenCode keeps config/data/state/cache under XDG homes; its opencode-go provider points at the
@@ -227,6 +230,16 @@ const timelineText = async (id) => {
     const items = t.entries ?? t.items ?? t.timeline ?? [];
     return items.map((e) => { const i = e.item ?? e; return `${i.type}:${String(i.text ?? i.message ?? i.content ?? '').slice(0, 400)}`; });
   } catch (e) { return ['timeline unreadable: ' + e.message]; }
+};
+// What a continue led to: whether its turn ended, a limit notice after it, and the row left behind.
+const afterContinue = async (id, waitMs) => {
+  const ended = await waitFor(async () => ['idle', 'error', 'closed'].includes(await agentStatus(id)), 'continue turn ended', waitMs, 1000).then(() => true, () => false);
+  const cleared = await waitFor(async () => !(await jobOf(id)), 'row cleared', waitMs, 1000).then(() => true, () => false);
+  const tail = await timelineText(id);
+  const since = tail.findLastIndex((line) => line.includes(DEFAULT_MARK));
+  const notice = since >= 0 && tail.slice(since + 1).some((line) => /\b429\b|RESOURCE_EXHAUSTED|usage limit|quota/i.test(line));
+  const row = cleared ? null : await jobOf(id);
+  return { ended, notice, row, tail, text: `turn ended ${ended ? 'yes' : 'NO'}; new limit notice ${notice ? 'YES' : 'no'}; row ${row ? 'left (due ' + row.dueAt + ')' : 'cleared'}` };
 };
 const agentStatus = async (id) => { try { const r = await client.fetchAgent(id); return r?.agent?.status ?? r?.status ?? JSON.stringify(r).slice(0, 80); } catch (e) { return 'err ' + e.message; } };
 const agentCount = async () => { try { const r = await client.fetchAgents(); return (r.entries ?? r.agents ?? []).length; } catch { return -1; } };
@@ -651,10 +664,12 @@ try {
       await waitFor(async () => continues(S).length === sent0 + 1, 'continue reached the model', 240000, 1000);
       await sleep(6000);
       assert.equal(continues(S).length, sent0 + 1);
-      const cleared = await waitFor(async () => !(await jobOf(a.id)), 'row cleared', S === 'antigravity' ? 45000 : 240000, 1000).catch((e) => { if (S !== 'antigravity') throw e; return false; });
+      const after = await afterContinue(a.id, S === 'antigravity' ? 45000 : 240000);
+      // agy on Paseo 0.16 replays the earlier 429 after the continue's reply, and the plugin reserves it again.
+      if (S !== 'antigravity') assert.ok(after.ended && !after.row, after.text);
       assert.equal((await readHistory()).find((e) => e.agentId === a.id && e.outcome === 'continued')?.trigger, 'manual');
-      if (!cleared) note(6, S, 'row after the continue', `NOT cleared: ${JSON.stringify(await timelineText(a.id))} -> the agy agent re-emitted the earlier 429 after the continue's reply and the plugin re-reserved (new row ${JSON.stringify((await jobOf(a.id))?.dueAt)})`);
-      return `${S === 'codex' ? 'used_up blocked first; ' : 'no usage check for antigravity; '}sent exactly 1 continue, row cleared, history trigger=manual`;
+      if (after.row) note(6, S, 'row after the continue', `${after.text}; timeline ${JSON.stringify(after.tail.slice(-3))}`);
+      return `${S === 'codex' ? 'used_up blocked first; ' : 'no usage check for antigravity; '}sent exactly 1 continue; ${after.text}; history trigger=manual`;
     });
     const b = await mkAgent(`${S} tick`, S);
     await step(7, S, 'tick sends exactly one continue to the same agent', async () => {
@@ -664,10 +679,11 @@ try {
       await waitFor(async () => continues(S).length === sent0 + 1, 'tick continue', 240000, 1000);
       await sleep(6000);
       assert.equal(continues(S).length, sent0 + 1);
-      const cleared = await waitFor(async () => !(await jobOf(b.id)), 'row cleared', S === 'antigravity' ? 45000 : 240000, 1000).catch((e) => { if (S !== 'antigravity') throw e; return false; });
-      if (!cleared) note(7, S, 'row after the continue', `NOT cleared: timeline tail ${JSON.stringify((await timelineText(b.id)).slice(-3))}; new row ${JSON.stringify((await jobOf(b.id))?.dueAt)} (the agy agent re-emitted the earlier 429 after "Done.")`);
-      assert.ok((await timelineText(b.id)).join('\n').includes(DEFAULT_MARK));
-      return `1 continue, agent count ${n0} -> ${await agentCount()}, continue in the same agent timeline, row cleared`;
+      const after = await afterContinue(b.id, S === 'antigravity' ? 45000 : 240000);
+      if (S !== 'antigravity') assert.ok(after.ended && !after.row, after.text);
+      if (after.row) note(7, S, 'row after the continue', `${after.text}; timeline ${JSON.stringify(after.tail.slice(-3))}`);
+      assert.ok(after.tail.join('\n').includes(DEFAULT_MARK));
+      return `1 continue, agent count ${n0} -> ${await agentCount()}, continue in the same agent timeline; ${after.text}`;
     });
     if (!MIN) {
       await checkProviderOff(S, S, `${S} provider off`);
