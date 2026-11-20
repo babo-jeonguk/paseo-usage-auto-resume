@@ -672,11 +672,17 @@ try {
       await writeFile(join(home, 'config.json'), JSON.stringify(current, null, 2));
       await startDaemon();
       const listed = (await rpc('auto-resume.list')).jobs;
+      const runtime = [];
       for (const { a, job, b, tickJob } of limited) {
         assert.equal(listed.find((j) => j.agentId === a.id)?.id, job.id, `${a.title} kept its reservation`);
         assert.equal(listed.find((j) => j.agentId === b.id)?.id, tickJob.id, `${b.title} kept its reservation`);
+        // Opening a conversation, as the app does, loads the agent on the newer Paseo, which may
+        // report its model differently from the one the reservation saved.
+        for (const agent of [a, b]) await client.fetchAgentTimeline(agent.id, { direction: 'tail', limit: 30 });
+        const info = (await client.fetchAgent(a.id))?.agent?.runtimeInfo;
+        runtime.push(`${job.model ?? 'none'} -> ${info?.model ?? 'none'}${info?.thinkingOptionId ? ' + ' + info.thinkingOptionId : ''}`);
       }
-      return `Paseo ${from} -> ${paseoVersion}; ${limited.length * 2} reservations listed with the same IDs (models ${limited.map(({ job }) => job.model ?? 'none').join(', ')})`;
+      return `Paseo ${from} -> ${paseoVersion}; ${limited.length * 2} reservations listed with the same IDs; conversations opened, saved -> runtime model: ${runtime.join(', ')}`;
     });
   }
   for (const { S, a, job, b, tickJob } of limited) {

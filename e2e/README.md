@@ -106,7 +106,7 @@ node e2e/e2e.mjs --label upgrade-0.16-0.17 --cli /tmp/paseo-0.16.2/node_modules/
   --codex ~/.local/bin/codex --agy ~/.local/bin/agy --from v1.3.2 --to main --min 1
 ```
 
-With `--upgrade-cli`, each Codex and Antigravity suite makes its limit (item 3) and tick reservations on the `--cli` version. The `upgrade` step then stops the daemon, switches to the newer CLI on the same home, rewrites the `--agy` command for that version, and checks that every reservation is still listed. Items 6 and 7 then send them on the newer version, through **Resume now** and the tick. Each must send exactly one continue into the same agent; a reservation canceled as `model_changed` fails the item. Paseo's own restart recovery stays off, as in every run.
+With `--upgrade-cli`, each Codex and Antigravity suite makes its limit (item 3) and tick reservations on the `--cli` version. The `upgrade` step then stops the daemon, switches to the newer CLI on the same home, rewrites the `--agy` command for that version, checks that every reservation is still listed, and opens each conversation as the app does, which loads the agent on the newer version. Items 6 and 7 then send them on the newer version, through **Resume now** and the tick. Each must send exactly one continue into the same agent; a reservation canceled as `model_changed` fails the item. Paseo's own restart recovery stays off, as in every run.
 
 For Paseo 0.16 to 0.17, Codex needs CLI 0.121.0 or later to reopen a conversation that 0.16 started.
 
