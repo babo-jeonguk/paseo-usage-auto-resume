@@ -253,17 +253,20 @@ const afterContinue = async (id, continuedId, waitMs) => {
     return { tail, answers, unknown };
   };
   // 1. The turn the continue started ended: an answer after the continue's own message, and the agent no longer running.
-  const ended = await waitFor(async () => (await sinceContinue()).answers.length > 0 && ['idle', 'error', 'closed'].includes(await agentStatus(id)),
-    'continue turn ended', waitMs, 1000).then(() => true, () => false);
+  // A wait ends in success, its deadline, or an error from a read; each is reported as what it was.
+  const outcome = (wait) => wait.then(() => null, (e) => String(e?.message ?? e).startsWith('Timeout:') ? 'timed out' : `read failed: ${String(e?.message ?? e).slice(0, 120)}`);
+  const endedFailure = await outcome(waitFor(async () => (await sinceContinue()).answers.length > 0 && ['idle', 'error', 'closed'].includes(await agentStatus(id)),
+    'continue turn ended', waitMs, 1000));
   // 2. The plugin handled that turn end: the delivered reservation is no longer `sent` or `sending`.
   const delivered = (row) => row?.id === continuedId && ['sent', 'sending'].includes(row.state);
-  const handled = await waitFor(async () => !delivered(await jobOf(id)), 'turn end handled by the plugin', waitMs, 1000).then(() => true, () => false);
+  const handledFailure = await outcome(waitFor(async () => !delivered(await jobOf(id)), 'turn end handled by the plugin', waitMs, 1000));
+  const ended = !endedFailure, handled = !handledFailure;
   // The final reads decide what is reported, whatever the waits saw.
   const { tail, answers, unknown } = await sinceContinue();
   const notice = unknown ? null : answers.some(isErrorNotice);
   const row = (await jobOf(id)) ?? null;
   const rowText = !row ? 'cleared' : `${row.id === continuedId ? 'the continued reservation' : 'a new reservation'} left (${row.state}, due ${row.dueAt})`;
-  const text = `turn ended ${ended ? 'yes' : 'NO (timed out)'}; turn end handled ${handled ? 'yes' : 'NO (timed out)'}; `
+  const text = `turn ended ${ended ? 'yes' : `NO (${endedFailure})`}; turn end handled ${handled ? 'yes' : `NO (${handledFailure})`}; `
     + `new limit notice ${notice === null ? `unknown (${unknown})` : notice ? 'YES' : 'no'}; row ${rowText}`;
   return { ended, handled, notice, row, continuedId, tail, text };
 };
