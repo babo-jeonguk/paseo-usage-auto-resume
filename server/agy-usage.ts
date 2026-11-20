@@ -87,6 +87,26 @@ type Unavailable =
 
 type Probe = { usage: unknown; reason?: never } | { reason: Unavailable; usage?: never };
 
+/**
+ * `agy acp` flags that leave the account, data directory and endpoint as they are. Others, such
+ * as `--app-data-dir`, `--gemini-dir` or `--cloud_code_endpoint`, select what print mode cannot,
+ * so a probe without them could read another account.
+ */
+const NEUTRAL_ACP_FLAGS = new Set([
+  "--disable-telemetry", "--disable_telemetry", "--dangerously-skip-permissions", "--sandbox", "--stdio", "--process-per-session",
+]);
+
+/**
+ * The executable that answers `/usage` for a launch command: a lone executable, or one started as
+ * an ACP server (Paseo 0.17) with only neutral flags. Anything else is an unknown wrapper.
+ */
+function agyExecutable(command: string[]): string | null {
+  const [executable, subcommand, ...flags] = command;
+  if (!executable) return null;
+  if (subcommand === undefined) return executable;
+  return subcommand === "acp" && flags.every((flag) => NEUTRAL_ACP_FLAGS.has(flag)) ? executable : null;
+}
+
 /** How Paseo starts agy for the agent: its configured command, working directory and environment. */
 export interface AgyLaunch {
   command: string[] | undefined;
@@ -134,12 +154,11 @@ export function createAgyUsageReader(deps: {
       log(`antigravity usage unavailable for ${agentId}: ${reason}`);
       return agyFallback();
     };
-    const command = launch.command ?? ["agy"];
-    // Arguments a launcher adds before agy's own are ambiguous for a status command.
-    if (command.length !== 1 || !command[0]) return unavailable("unsupported_launcher");
+    const executable = agyExecutable(launch.command ?? ["agy"]);
+    if (!executable) return unavailable("unsupported_launcher");
     if (!model) return unavailable("missing_model");
     // The probe runs in a temporary directory, so a relative launch path is resolved where Paseo runs agy.
-    const binary = /[\\/]/.test(command[0]) ? resolve(launch.cwd, command[0]) : command[0];
+    const binary = /[\\/]/.test(executable) ? resolve(launch.cwd, executable) : executable;
     const key = launchKey(binary, launch.env);
     if (disabled.has(key)) return unavailable("probe_disabled");
     for (const [id, entry] of cache) if (entry.expires <= now()) cache.delete(id);

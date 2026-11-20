@@ -202,6 +202,50 @@ test("a relative launcher path is probed where Paseo runs agy", async () => {
   assert.deepEqual(binaries, [resolve("/project", "bin/agy"), resolve("/project", "bin/agy")]);
 });
 
+test("an ACP launch command probes its own executable, inherited and with the provider's environment", async () => {
+  // Paseo 0.17 runs Antigravity as `agy acp` and documents this override form.
+  for (const command of [["/abs/agy", "acp"], ["/abs/agy", "acp", "--disable-telemetry"]]) {
+    const calls: [string, string[], string | undefined][] = [];
+    const read = createSubscriptionReader({ run: async (binary, args, options) => {
+      calls.push([binary, args, options.env.HOME]);
+      return args[0] === "--version" ? "1.5.10" : JSON.stringify(fixture);
+    } });
+    const config = { providers: { antigravity: { command, env: { HOME: "/agy-home" } }, "antigravity-sub": { extends: "antigravity" } } };
+    const inherited = { config: { get: async () => ({ config }) } } as unknown as Pick<PaseoApi, "config">;
+    const check = await read(inherited, { ...agent, provider: "antigravity-sub" }, "antigravity", at, launch);
+    assert.equal(check.windows?.length, 2);
+    assert.deepEqual(calls, [["/abs/agy", ["--version"], "/agy-home"], ["/abs/agy", ["-p", "/usage", "--output-format", "json"], "/agy-home"]]);
+  }
+});
+
+test("a relative ACP executable is probed where Paseo runs agy", async () => {
+  const binaries: string[] = [];
+  const read = createAgyUsageReader({ log: () => {}, run: async (binary, args) => {
+    binaries.push(binary);
+    return args[0] === "--version" ? "1.5.10" : JSON.stringify(fixture);
+  } });
+  await read({ command: ["./bin/agy", "acp", "--disable_telemetry"], cwd: "/project", env: {} }, flash, "a");
+  assert.deepEqual(binaries, [resolve("/project", "bin/agy"), resolve("/project", "bin/agy")]);
+});
+
+test("ACP flags that may select another account, data or endpoint, and other shapes, are not probed", async () => {
+  for (const command of [
+    ["agy", "acp", "--app-data-dir", "x"], ["agy", "acp", "--gemini-dir=x"], ["agy", "acp", "--cloud_code_endpoint", "https://x"],
+    ["agy", "acp", "--unknown"], ["agy", "acp", "--add-dir", "/x"], ["npx", "agy", "acp"], ["agy", "--disable-telemetry"], ["agy", "acp", ""],
+  ]) {
+    const logs: string[] = [];
+    const read = createAgyUsageReader({ log: (line) => logs.push(line), run: async () => { throw new Error("must not run agy"); } });
+    assert.deepEqual(await read(launchOf({}, command), flash, "a"), agyFallback(), command.join(" "));
+    assert.deepEqual(logs.map((line) => line.split(": ")[1]), ["unsupported_launcher"], command.join(" "));
+  }
+});
+
+test("an exhausted quota read through an ACP command is limited", async () => {
+  const read = createAgyUsageReader({ log: () => {}, run: async (_binary, args) => args[0] === "--version" ? "1.5.10" : JSON.stringify(fixture) });
+  const check = await read(launchOf({}, ["agy", "acp", "--disable-telemetry", "--sandbox"]), "claude-opus-5-5-high", "a");
+  assert.equal(check.status, "limited");
+});
+
 test("the real process runner reads a fake agy executable without a model or account", { skip: process.platform === "win32" }, async () => {
   const home = await mkdtemp(join(tmpdir(), "agy-process-test-"));
   try {
