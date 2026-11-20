@@ -1890,11 +1890,10 @@ test("an Antigravity reservation made before Paseo 0.17 split its model still co
 });
 
 test("exhausted quota read through an ACP launch command holds the tick and Resume now", async () => {
-  const weekly = "2026-10-09T03:00:00.000Z";
-  const usage = { status: "SUCCESS", num_turns: 0, command: { name: "usage", data: { groups: [{ buckets: [
-    { id: "gemini-5h", remaining_fraction: 0.5, reset_time: "2026-10-06T05:00:00Z" },
-    { id: "gemini-weekly", remaining_fraction: 0, reset_time: weekly },
-  ] }] } } };
+  // The agy usage fixture with its Gemini weekly bucket used up.
+  const usage = JSON.parse(await readFile(new URL("./fixtures/agy-usage-synthetic.json", import.meta.url), "utf8"));
+  usage.command.data.groups[0].buckets[0].remaining_fraction = 0;
+  const weekly = "2026-11-01T15:15:44.000Z";
   const calls: Array<[string, string[]]> = [];
   const real = createSubscriptionReader({ run: async (binary, args) => {
     calls.push([binary, args]);
@@ -1915,7 +1914,7 @@ test("exhausted quota read through an ACP launch command holds the tick and Resu
   clock = new Date(job!.dueAt);
   await resumer.tick();
   assert.equal(sent.length, 0);
-  assert.equal((await store.list())[0]?.dueAt, "2026-10-09T03:02:00.000Z");
+  assert.equal((await store.list())[0]?.dueAt, "2026-11-01T15:17:44.000Z");
   assert.ok(calls.length > 0 && calls.every(([binary, args]) => binary === "/opt/agy" && !args.includes("acp")));
 });
 

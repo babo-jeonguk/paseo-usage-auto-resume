@@ -235,36 +235,44 @@ const timelineText = async (id) => {
   } catch (e) { return ['timeline unreadable: ' + e.message]; }
 };
 // What a continue led to, each read from what the continue itself produced: its turn ended (an
-// answer after the continue's own message, and the agent no longer running), whether that answer
-// carries a limit notice, and the row as it stands when the report is written.
+// answer after the continue's own message, and the agent no longer running), whether that answer is
+// a limit notice in the provider's error form, and the row once the plugin has handled that turn end.
+// The continue leaves a `sent` row that the turn end clears, or replaces with a new reservation.
 const LIMIT_NOTICE = /\b429\b|RESOURCE_EXHAUSTED|usage limit/i;
+const isErrorNotice = (line) => {
+  const [type, ...rest] = line.split(':');
+  const text = rest.join(':').trim();
+  return (type === 'error' || (type === 'assistant_message' && /^(?:\[System Error\]|⚠)/.test(text))) && LIMIT_NOTICE.test(text);
+};
 const afterContinue = async (id, waitMs) => {
   const sinceContinue = async () => {
     const tail = await timelineText(id);
-    const readable = !tail[0]?.startsWith('timeline unreadable');
     const mark = tail.findLastIndex((line) => line.startsWith('user_message:') && line.includes(DEFAULT_MARK));
     const answers = mark < 0 ? [] : tail.slice(mark + 1).filter((line) => line.startsWith('assistant_message:') || line.startsWith('error:'));
-    return { tail, readable, answers };
+    const unknown = tail[0]?.startsWith('timeline unreadable') ? 'timeline unreadable' : mark < 0 ? "continue not in the timeline's tail" : null;
+    return { tail, answers, unknown };
   };
   const ended = await waitFor(async () => (await sinceContinue()).answers.length > 0 && ['idle', 'error', 'closed'].includes(await agentStatus(id)),
     'continue turn ended', waitMs, 1000).then(() => true, () => false);
-  // A replayed notice can reserve again right after the row clears, so the last read decides.
-  await waitFor(async () => !(await jobOf(id)), 'row cleared', waitMs, 1000).catch(() => {});
-  await sleep(3000);
-  const { tail, readable, answers } = await sinceContinue();
-  const notice = readable ? answers.some((line) => LIMIT_NOTICE.test(line)) : null;
+  const handled = await waitFor(async () => { const row = await jobOf(id); return !row || !['sent', 'sending'].includes(row.state); },
+    'turn end handled by the plugin', waitMs, 1000).then(() => true, () => false);
+  const { tail, answers, unknown } = await sinceContinue();
+  const notice = unknown ? null : answers.some(isErrorNotice);
   const row = await jobOf(id);
-  const text = `turn ended ${ended ? 'yes' : 'NO'}; new limit notice ${notice === null ? 'unknown (timeline unreadable)' : notice ? 'YES' : 'no'}; row ${row ? 'left (due ' + row.dueAt + ')' : 'cleared'}`;
-  return { ended, notice, row, tail, text };
+  const text = `turn ended ${ended ? 'yes' : 'NO'}; new limit notice ${notice === null ? `unknown (${unknown})` : notice ? 'YES' : 'no'}; `
+    + `row ${!handled ? 'still sent (turn end not handled)' : row ? `left (${row.state}, due ${row.dueAt})` : 'cleared'}`;
+  return { ended, handled, notice, row, tail, text };
 };
 /**
- * The pass rule items 6 and 7 share: the continue's turn must end. A row left behind by a limit
- * notice after it is a NOTE for agy, which can replay its earlier 429 on Paseo 0.16, and fails elsewhere.
+ * The pass rule items 6 and 7 share: the continue's turn ends and the plugin handles it. A row may be
+ * left only as a new reservation for a limit notice seen after the continue, as agy can replay its
+ * earlier 429 on Paseo 0.16; that is a NOTE for agy and a failure for any other provider.
  */
 const judgeContinue = (item, S, after) => {
-  assert.ok(after.ended, after.text);
-  if (S !== 'antigravity') assert.ok(!after.row && after.notice === false, after.text);
-  else if (after.row) note(item, S, 'row after the continue', `${after.text}; timeline ${JSON.stringify(after.tail.slice(-3))}`);
+  assert.ok(after.ended && after.handled, after.text);
+  if (!after.row) return;
+  assert.ok(S === 'antigravity' && after.notice === true && after.row.state === 'pending', after.text);
+  note(item, S, 'row after the continue', `${after.text}; timeline ${JSON.stringify(after.tail.slice(-3))}`);
 };
 const agentStatus = async (id) => { try { const r = await client.fetchAgent(id); return r?.agent?.status ?? r?.status ?? JSON.stringify(r).slice(0, 80); } catch (e) { return 'err ' + e.message; } };
 const agentCount = async () => { try { const r = await client.fetchAgents(); return (r.entries ?? r.agents ?? []).length; } catch { return -1; } };
