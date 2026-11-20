@@ -43,7 +43,7 @@ node e2e/e2e.mjs --label linux-0.16.0 --cli /tmp/paseo-0.16.0/node_modules/@getp
 | `--root` | Run directory; deleted first |
 | `--suites` | Any of `claude,codex,antigravity,opencode` |
 | `--from`, `--to` | Release installed first and rolled back to (default `v1.2.2`), and the ref under test (default `main`) |
-| `--source` | Plugin git source (default `git:babo-jeonguk/paseo-usage-auto-resume`) |
+| `--source` | Plugin git source (default `git:babo-jeonguk/paseo-usage-auto-resume`); `file://<checkout>` installs an unpushed local branch with `--to <SHA>` |
 | `--min 1` | Skips items 9–11, 16, the newer sections (17–20) and the `--ui 1` phase |
 | `--ui 1` | Also runs `ui-steps.mjs` in the web app (items 4, 5, 6, 9, 12, 15 and 21) |
 | `--only` | Runs only the listed newer sections (`17`, `18`, `19`, `20`); items 1–16 always run |
