@@ -1905,7 +1905,8 @@ test("exhausted quota read through an ACP launch command holds the tick and Resu
     ...rest,
   );
   const split = { model: "gemini-4-carbon", runtimeInfo: { provider: "antigravity", sessionId: "s1", model: "gemini-4-carbon", thinkingOptionId: "high" } } as Partial<PaseoAgent>;
-  const { api, sent, resumer } = await setup({ g1: { provider: "antigravity", ...split } }, { readSubscription });
+  // A real agent always has a working directory; the probe resolves the launch path against it.
+  const { api, sent, resumer } = await setup({ g1: { provider: "antigravity", cwd: "/repo", ...split } }, { readSubscription });
   await resumer.onTurnEnded(turnEnded("g1", "antigravity", { kind: "completed" }, [
     { type: "user_message", text: "Work on the task." }, { type: "assistant_message", text: ACP_LIMIT },
   ]), api);
