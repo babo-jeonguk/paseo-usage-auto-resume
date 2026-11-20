@@ -5,7 +5,7 @@
 //
 // node e2e.mjs --label linux-0.16 --cli <@getpaseo/cli dir> --root <run dir> --suites claude,codex,antigravity,opencode \
 //   [--from <ref, default v1.2.2>] [--to <ref, default main>] [--source <git source>] [--out <results dir>] \
-//   [--min 1] [--ui 1] [--hold 1] [--only 17,18,19] [--claude <bin>] [--codex <bin>] [--agy <bin>] \
+//   [--min 1] [--ui 1] [--hold 1] [--only 17,18,19] [--upgrade-cli <newer @getpaseo/cli dir>] [--claude <bin>] [--codex <bin>] [--agy <bin>] \
 //   [--opencode <bin>] [--model <opencode model>] [--path <extra PATH dirs>]
 // --ui 1 reads Playwright from PW_ROOT and the browser from CHROME, else Chromium on Linux and Edge on Windows (see ui-steps.mjs).
 import assert from 'node:assert/strict';
@@ -49,7 +49,8 @@ const tools = createRequire(join(cliDir, 'package.json'));
 const { DaemonClient } = await import(pathToFileURL(tools.resolve('@getpaseo/client/internal/daemon-client')));
 const { readLocalCredentialForTarget } = await import(pathToFileURL(tools.resolve('@getpaseo/server/daemon-control')));
 const { WebSocket } = tools('ws');
-const paseoVersion = JSON.parse(readFileSync(join(cliDir, 'package.json'), 'utf8')).version;
+// --upgrade-cli switches both to the newer CLI midway; see the upgrade step.
+let paseoVersion = JSON.parse(readFileSync(join(cliDir, 'package.json'), 'utf8')).version;
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const waitFor = async (fn, what, timeout = 180000, every = 500) => {
@@ -125,7 +126,7 @@ const baseEnv = isWin ? {
   PATH: [dirname(nodeBin), ...extraPath, `${sys}\\System32`, sys, `${sys}\\System32\\WindowsPowerShell\\v1.0`].join(';'),
 } : { HOME: join(root, 'home'), PATH: [dirname(nodeBin), ...extraPath, '/usr/local/bin', '/usr/bin', '/bin'].join(':') };
 if (!isWin) await mkdir(baseEnv.HOME, { recursive: true });
-const paseoBin = join(cliDir, 'bin', 'paseo');
+let paseoBin = join(cliDir, 'bin', 'paseo');
 // Must not block: the client below only keeps its session by sending a heartbeat from this event loop, and the daemon
 // closes a socket that sends nothing for 45 s. A CLI call (start + plugin update) under load can take longer than that.
 const run = promisify(execFile);
@@ -139,8 +140,10 @@ const codexHome = join(root, 'codex-home'), agyHome = join(root, 'agy-home');
 const providers = {};
 const withCmd = (bin) => bin ? { command: [bin] } : {};
 // Paseo 0.17 runs Antigravity as an ACP server and requires the subcommand in a command override.
-const [paseoMajor, paseoMinor] = paseoVersion.split('.').map(Number);
-const agyCmd = (bin) => !bin ? {} : paseoMajor > 0 || paseoMinor >= 17 ? { command: [bin, 'acp', '--disable-telemetry'] } : { command: [bin] };
+const agyCmd = (bin) => {
+  const [major, minor] = paseoVersion.split('.').map(Number);
+  return !bin ? {} : major > 0 || minor >= 17 ? { command: [bin, 'acp', '--disable-telemetry'] } : { command: [bin] };
+};
 if (suites.includes('claude')) {
   providers.claude = { ...withCmd(args.claude), env: claudeEnv('claude-cfg') };
   providers['claude-sub'] = { extends: 'claude', label: 'Claude Sub', ...withCmd(args.claude), env: claudeEnv('claude-sub-cfg') };
@@ -637,8 +640,11 @@ try {
 
   // ---- codex / antigravity suites -------------------------------------------------------------
   // OpenCode has no reset in its limit message; items 19a-19c cover its limit, tick and scan.
+  // With --upgrade-cli, each suite's limit and tick reservations are made on the first Paseo, and
+  // items 6 and 7 send them on the newer one after the daemon restarts on the same home.
+  const resetSec = 7200;
+  const limited = [];
   for (const S of suites.filter((s) => s !== 'claude' && s !== 'opencode')) {
-    const resetSec = 7200;
     const a = await mkAgent(`${S} limit`, S);
     let job;
     await step(3, S, `real ${S} CLI limit -> reservation at stated reset + 2 min`, async () => {
@@ -651,6 +657,29 @@ try {
       return `notice [${text.slice(0, 160)}]; resetAt ${job.resetAt}, dueAt ${job.dueAt}; probe ${(await probeFor(a.id)).join(' | ')}; status ${await agentStatus(a.id)}`;
     });
     if (!job) continue;
+    const b = await mkAgent(`${S} tick`, S);
+    const tickJob = args['upgrade-cli'] ? await hit(b, S, limitWith(S, resetSec)) : null;
+    limited.push({ S, a, job, b, tickJob });
+  }
+  if (args['upgrade-cli'] && limited.length) {
+    await step('upgrade', 'plugin', 'saved reservations survive restarting the daemon on the newer Paseo', async () => {
+      const from = paseoVersion;
+      await stopDaemon();
+      paseoBin = join(args['upgrade-cli'], 'bin', 'paseo');
+      paseoVersion = JSON.parse(readFileSync(join(args['upgrade-cli'], 'package.json'), 'utf8')).version;
+      const current = JSON.parse(await readFile(join(home, 'config.json'), 'utf8'));
+      if (current.agents?.providers?.antigravity) Object.assign(current.agents.providers.antigravity, agyCmd(args.agy));
+      await writeFile(join(home, 'config.json'), JSON.stringify(current, null, 2));
+      await startDaemon();
+      const listed = (await rpc('auto-resume.list')).jobs;
+      for (const { a, job, b, tickJob } of limited) {
+        assert.equal(listed.find((j) => j.agentId === a.id)?.id, job.id, `${a.title} kept its reservation`);
+        assert.equal(listed.find((j) => j.agentId === b.id)?.id, tickJob.id, `${b.title} kept its reservation`);
+      }
+      return `Paseo ${from} -> ${paseoVersion}; ${limited.length * 2} reservations listed with the same IDs (models ${limited.map(({ job }) => job.model ?? 'none').join(', ')})`;
+    });
+  }
+  for (const { S, a, job, b, tickJob } of limited) {
     await step(6, S, 'Resume now sends exactly one continue (manual)', async () => {
       const sent0 = continues(S).length;
       if (S === 'codex') {
@@ -671,9 +700,8 @@ try {
       if (after.row) note(6, S, 'row after the continue', `${after.text}; timeline ${JSON.stringify(after.tail.slice(-3))}`);
       return `${S === 'codex' ? 'used_up blocked first; ' : 'no usage check for antigravity; '}sent exactly 1 continue; ${after.text}; history trigger=manual`;
     });
-    const b = await mkAgent(`${S} tick`, S);
     await step(7, S, 'tick sends exactly one continue to the same agent', async () => {
-      await hit(b, S, limitWith(S, resetSec));
+      if (!tickJob) await hit(b, S, limitWith(S, resetSec));
       const n0 = await agentCount(), sent0 = continues(S).length;
       await editJob(b.id, { resetAt: iso(Date.now() - 120000), dueAt: iso(Date.now() - 60000) });
       await waitFor(async () => continues(S).length === sent0 + 1, 'tick continue', 240000, 1000);

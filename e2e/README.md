@@ -50,6 +50,7 @@ node e2e/e2e.mjs --label linux-0.16.0 --cli /tmp/paseo-0.16.0/node_modules/@getp
 | `--agy` | Path to the `agy` binary. The harness configures it as `[path]` on Paseo 0.16 and as `[path, "acp", "--disable-telemetry"]` on Paseo 0.17 and later, which starts Antigravity as an ACP server |
 | `--opencode` | Path to the `opencode` binary, for `--suites opencode` |
 | `--model` | OpenCode model the fake `opencode-go` provider serves (default `opencode-go/deepseek-v4.1-flash`) |
+| `--upgrade-cli` | A newer `@getpaseo/cli` directory; see [Upgrade check](#upgrade-check) |
 | `--hold 1` | Pauses after item 3 until `<root>/release` exists |
 | `--path` | Extra `PATH` entries, such as the Windows npm prefix, MinGit and agy |
 | `--out` | Results directory (default `e2e/out-<label>/`) |
@@ -97,11 +98,15 @@ Time is advanced through the reschedule RPC, or by editing `jobs.json` to a past
 
 ## Upgrade check
 
-Reservations made on one Paseo version must survive the next. Run this by hand when the Paseo line changes:
+Reservations made on one Paseo version must survive the next. Run this when the Paseo line changes:
 
-1. On an isolated Paseo home, run the old version and make a limit reservation for each provider to check, through the same fake model API. The harness covers this up to item 3 and keeps its daemon there with `--hold 1` (the Claude suite only); other providers need their agents made by hand.
-2. Stop that daemon. Start the new version's CLI on the same home with `agents.resumeOnStartup` off, so Paseo's own restart recovery does not send first.
-3. Press **Resume now** on one reservation, and move another's due time into the past for the tick. Each must send exactly one continue into the same agent and record `continued`, not `model_changed`.
+```bash
+node e2e/e2e.mjs --label upgrade-0.16-0.17 --cli /tmp/paseo-0.16.2/node_modules/@getpaseo/cli \
+  --upgrade-cli /tmp/paseo-0.17.0/node_modules/@getpaseo/cli --root /tmp/uar-e2e-upgrade --suites codex,antigravity \
+  --codex ~/.local/bin/codex --agy ~/.local/bin/agy --from v1.3.2 --to main --min 1
+```
+
+With `--upgrade-cli`, each Codex and Antigravity suite makes its limit (item 3) and tick reservations on the `--cli` version. The `upgrade` step then stops the daemon, switches to the newer CLI on the same home, rewrites the `--agy` command for that version, and checks that every reservation is still listed. Items 6 and 7 then send them on the newer version, through **Resume now** and the tick. Each must send exactly one continue into the same agent; a reservation canceled as `model_changed` fails the item. Paseo's own restart recovery stays off, as in every run.
 
 For Paseo 0.16 to 0.17, Codex needs CLI 0.121.0 or later to reopen a conversation that 0.16 started.
 
