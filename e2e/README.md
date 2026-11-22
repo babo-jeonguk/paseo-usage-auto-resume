@@ -43,12 +43,14 @@ node e2e/e2e.mjs --label linux-0.16.0 --cli /tmp/paseo-0.16.0/node_modules/@getp
 | `--root` | Run directory; deleted first |
 | `--suites` | Any of `claude,codex,antigravity,opencode` |
 | `--from`, `--to` | Release installed first and rolled back to (default `v1.2.2`), and the ref under test (default `main`) |
-| `--source` | Plugin git source (default `git:babo-jeonguk/paseo-usage-auto-resume`) |
+| `--source` | Plugin git source (default `git:babo-jeonguk/paseo-usage-auto-resume`); `file://<checkout>` installs an unpushed local branch with `--to <SHA>` |
 | `--min 1` | Skips items 9–11, 16, the newer sections (17–20) and the `--ui 1` phase |
 | `--ui 1` | Also runs `ui-steps.mjs` in the web app (items 4, 5, 6, 9, 12, 15 and 21) |
 | `--only` | Runs only the listed newer sections (`17`, `18`, `19`, `20`); items 1–16 always run |
+| `--agy` | Path to the `agy` binary. The harness configures it as `[path]` on Paseo 0.16 and as `[path, "acp", "--disable-telemetry"]` on Paseo 0.17 and later, which starts Antigravity as an ACP server |
 | `--opencode` | Path to the `opencode` binary, for `--suites opencode` |
 | `--model` | OpenCode model the fake `opencode-go` provider serves (default `opencode-go/deepseek-v4.1-flash`) |
+| `--upgrade-cli` | A newer `@getpaseo/cli` directory; see [Upgrade check](#upgrade-check) |
 | `--hold 1` | Pauses after item 3 until `<root>/release` exists |
 | `--path` | Extra `PATH` entries, such as the Windows npm prefix, MinGit and agy |
 | `--out` | Results directory (default `e2e/out-<label>/`) |
@@ -90,7 +92,23 @@ Each run writes `results.json` (one row per checked item), `daemon.log` and `mod
 
 Items 17 and 18 turn the background switch through Paseo's settings API (`settings.providers.write`), because a direct file edit does not notify the plugin's settings subscribers. Codex and Antigravity run items 3, 6, 7, 9, 11 and 16; OpenCode runs 19a–c instead of item 3, because its limit message carries no reset. The fake-request total, the refused connections and the harness's longest event-loop stall (`loopMaxMs`) are printed in the final `SUMMARY` line. The harness keeps one daemon session open for the whole run, and the daemon closes a session that sends nothing for 45 seconds, so the harness must not block its event loop: it runs the `paseo` CLI asynchronously.
 
+Items 6 and 7 report what the continue led to, from the final reads: whether its turn ended, whether the plugin handled that turn end (the delivered reservation is no longer being sent), whether a limit notice in the provider's error form followed it, and which reservation is left. They pass when the turn ended and was handled and either no row is left with no notice after the continue, or, for Antigravity only, a new pending reservation other than the one just continued is left after such a notice, which is a NOTE. A notice that cannot be read fails. On Paseo 0.16, agy can replay the earlier 429 after the continue's reply (seen in some runs, not all) and the plugin reserves it again, which is a NOTE; on Paseo 0.17.0-beta.1 and 0.17.1 no replay was seen and the row is cleared.
+
 Time is advanced through the reschedule RPC, or by editing `jobs.json` to a past due time and letting the real tick fire. The tick cannot move a reservation earlier than its reset plus two minutes.
+
+## Upgrade check
+
+Reservations made on one Paseo version must survive the next. Run this when the Paseo line changes:
+
+```bash
+node e2e/e2e.mjs --label upgrade-0.16-0.17 --cli /tmp/paseo-0.16.2/node_modules/@getpaseo/cli \
+  --upgrade-cli /tmp/paseo-0.17.1/node_modules/@getpaseo/cli --root /tmp/uar-e2e-upgrade --suites codex,antigravity \
+  --codex ~/.local/bin/codex --agy ~/.local/bin/agy --from v1.3.2 --to main --min 1
+```
+
+With `--upgrade-cli`, each Codex and Antigravity suite makes its limit (item 3) and tick reservations on the `--cli` version. The `upgrade` step then stops the daemon, switches to the newer CLI on the same home, rewrites the `--agy` command for that version, checks that every reservation is still listed, and opens each conversation as the app does, which loads the agent on the newer version. Items 6 and 7 then send them on the newer version, through **Resume now** and the tick. Each must send exactly one continue into the same agent; a reservation canceled as `model_changed` fails the item. Paseo's own restart recovery stays off, as in every run.
+
+For Paseo 0.16 to 0.17, Codex needs CLI 0.121.0 or later to reopen a conversation that 0.16 started.
 
 ## Not covered
 

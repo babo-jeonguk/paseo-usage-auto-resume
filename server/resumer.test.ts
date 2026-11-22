@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, beforeEach, mock, test } from "node:test";
 import type { PaseoAgent } from "@getpaseo/client";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
@@ -1835,6 +1835,89 @@ test("startup scan schedules an Antigravity agent that hit its limit before the 
   assert.equal(job?.agentId, "g1");
   assert.equal(job?.provider, "antigravity");
   assert.equal(job?.resetAt, "2026-10-06T04:50:00.000Z");
+});
+
+// Paseo 0.17 over agy ACP ends a 429 turn as completed, with the notice as the last answer only.
+const ACP_LIMIT = "\n\u26a0 agent executor error: generating and executing: Error 429, Message: Individual quota reached. Resets in 2h., Status: RESOURCE_EXHAUSTED, Details: []\n";
+
+test("startup scan finds an Antigravity limit that ended a turn as completed, but not one answered since", async () => {
+  clock = new Date("2026-10-06T03:10:00.000Z");
+  const recent = "2026-10-06T03:05:00.000Z";
+  const answered: AgentTimelineItem[] = [
+    { type: "user_message", text: "Work on the task." },
+    { type: "assistant_message", text: ACP_LIMIT },
+    { type: "user_message", text: "Try again." },
+    { type: "assistant_message", text: "Done." },
+  ];
+  const { timelineReads } = await setup(
+    {
+      g1: { provider: "antigravity-fast", status: "idle", updatedAt: recent },
+      g2: { provider: "antigravity", status: "idle", updatedAt: recent },
+      g3: { provider: "antigravity", status: "error", lastError: ANTIGRAVITY_LIMIT, updatedAt: recent },
+      c1: { provider: "codex", status: "idle", updatedAt: recent },
+    },
+    { timelines: { g1: [{ type: "user_message", text: "Work on the task." }, { type: "assistant_message", text: ACP_LIMIT }], g2: answered } },
+  );
+  const jobs = await store.list();
+  assert.deepEqual(jobs.map((job) => job.agentId).sort(), ["g1", "g3"]);
+  assert.equal(jobs.find((job) => job.agentId === "g1")?.dueAt, "2026-10-06T05:07:00.000Z");
+  assert.deepEqual([...new Set(timelineReads.map((read) => read.agentId))].sort(), ["g1", "g2"], "Codex idle timelines are not read");
+});
+
+test("an Antigravity reservation made before Paseo 0.17 split its model still continues, unless the model changed", async () => {
+  const split = { model: "gemini-4-carbon-high", runtimeInfo: { provider: "antigravity", sessionId: "s1", model: "gemini-4-carbon", thinkingOptionId: "high" } } as Partial<PaseoAgent>;
+  for (const [name, latest, expected] of [
+    ["same model", split, { result: "sent" }],
+    ["changed between the checks", { ...split, runtimeInfo: { ...split.runtimeInfo!, thinkingOptionId: "low" } }, { result: "canceled", reason: "model_changed" }],
+  ] as const) {
+    clock = START;
+    await store.update("g1", () => null);
+    let agents: Map<string, Partial<PaseoAgent>> | undefined;
+    const readSubscription: SubscriptionReader = async () => {
+      agents!.set("g1", { provider: "antigravity-fast", ...latest });
+      return agyFallback();
+    };
+    const fake = await setup({ g1: { provider: "antigravity-fast", ...split } }, { readSubscription });
+    agents = fake.agents;
+    await store.update("g1", () => ({
+      agentId: "g1", provider: "antigravity-fast", resetAt: null, dueAt: "2026-10-06T05:02:00.000Z", model: "gemini-4-carbon-high",
+      baseline: "2026-10-06T02:00:00.000Z", attempts: 0, state: "pending", enabled: true, retries: 0,
+    }));
+    const outcome = await fake.resumer.resumeNow(fake.api, "g1", await pinOf(store, "g1", "2026-10-06T05:02:00.000Z"));
+    assert.deepEqual(outcome, expected, name);
+    assert.equal(fake.sent.length, expected.result === "sent" ? 1 : 0, name);
+  }
+});
+
+test("exhausted quota read through an ACP launch command holds the tick and Resume now", async () => {
+  // The agy usage fixture with its Gemini weekly bucket used up.
+  const usage = JSON.parse(await readFile(new URL("./fixtures/agy-usage-synthetic.json", import.meta.url), "utf8"));
+  usage.command.data.groups[0].buckets[0].remaining_fraction = 0;
+  const weekly = "2026-11-01T15:15:44.000Z";
+  const calls: Array<[string, string[]]> = [];
+  const real = createSubscriptionReader({ run: async (binary, args) => {
+    calls.push([binary, args]);
+    return args[0] === "--version" ? "1.5.10" : JSON.stringify(usage);
+  } });
+  // The fake daemon's own config has no Antigravity command; this one is Paseo 0.17's documented override.
+  const readSubscription: SubscriptionReader = (_api, ...rest) => real(
+    { config: { get: async () => ({ config: { providers: { antigravity: { command: ["/opt/agy", "acp", "--disable-telemetry"] } } } }) } } as unknown as Parameters<SubscriptionReader>[0],
+    ...rest,
+  );
+  const split = { model: "gemini-4-carbon", runtimeInfo: { provider: "antigravity", sessionId: "s1", model: "gemini-4-carbon", thinkingOptionId: "high" } } as Partial<PaseoAgent>;
+  // A real agent always has a working directory; the probe resolves the launch path against it.
+  const { api, sent, resumer } = await setup({ g1: { provider: "antigravity", cwd: "/repo", ...split } }, { readSubscription });
+  await resumer.onTurnEnded(turnEnded("g1", "antigravity", { kind: "completed" }, [
+    { type: "user_message", text: "Work on the task." }, { type: "assistant_message", text: ACP_LIMIT },
+  ]), api);
+  const [job] = await store.list();
+  assert.deepEqual(await resumer.resumeNow(api, "g1", { id: job!.id, dueAt: job!.dueAt }), { result: "used_up", until: weekly });
+  clock = new Date(job!.dueAt);
+  await resumer.tick();
+  assert.equal(sent.length, 0);
+  assert.equal((await store.list())[0]?.dueAt, "2026-11-01T15:17:44.000Z");
+  // An absolute path is resolved as Paseo spawns it, which adds the drive on Windows.
+  assert.ok(calls.length > 0 && calls.every(([binary, args]) => binary === resolve("/opt/agy") && !args.includes("acp")));
 });
 
 test("an Antigravity provider can be turned off while another built on it resumes", async () => {

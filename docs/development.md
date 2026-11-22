@@ -4,7 +4,7 @@
 
 ## Local development
 
-The plugin requires Paseo daemon and app **0.16.0 or later**; its manifest rejects older hosts, and the development dependencies are pinned to that SDK line.
+The plugin requires Paseo daemon and app **0.16.0 or later**; its manifest rejects older hosts. The development dependencies are pinned to the newest supported SDK line (0.17), whose types include APIs Paseo 0.16 lacks; run the E2E on 0.16 too before relying on a new one.
 
 The `Paseo release` workflow checks npm every day at 18:00 KST. The first beta or release of a Paseo line newer than the `@getpaseo/plugin` pin opens one `paseo-release` issue for that line, mentioning the repository owner; later betas of the line and its `.0` release are comments on that issue, and patch releases are ignored. The pull request that prepares the plugin for the line closes it. `npx tsx scripts/watch-paseo-release.ts --dry-run` prints what it would post.
 
@@ -18,7 +18,7 @@ paseo plugin install "$PWD"
 
 `npm run check` runs TypeScript checking and the Node test suite. `npm run test:native` runs the account check against an installed CLI selected by `NATIVE_CLI=claude` or `NATIVE_CLI=codex`, using fixture logins in a temporary home; CI runs it on Linux and Windows for Claude Code (native installer and npm) and Codex (npm: a pinned release through the full check, and the latest release started and stopped only, since it does not answer a fixture login).
 
-`e2e/` holds a by-hand end-to-end simulation. It installs the plugin from GitHub into an isolated real Paseo daemon and drives limit stops, reservations, Resume now, the tick, cancellations, the startup scan, background agents, restart recovery and a rollback, with the real Claude Code, Codex, Antigravity and OpenCode CLIs against local fake model APIs, on Linux and Windows. OpenCode needs 2.2.2 or later and its own `--opencode` binary. Run it before a release or after a Paseo upgrade; see [its README](../e2e/README.md).
+`e2e/` holds a by-hand end-to-end simulation. It installs the plugin from GitHub (or a local checkout with `--source file://…`) into an isolated real Paseo daemon and drives limit stops, reservations, Resume now, the tick, cancellations, the startup scan, background agents, restart recovery, a rollback and, with `--upgrade-cli`, reservations carried across a Paseo upgrade, with the real Claude Code, Codex, Antigravity and OpenCode CLIs against local fake model APIs, on Linux and Windows. OpenCode needs 2.2.2 or later and its own `--opencode` binary. Run it before a release or after a Paseo upgrade; see [its README](../e2e/README.md).
 
 After changing an installed directory plugin:
 
