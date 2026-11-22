@@ -92,7 +92,7 @@ Each run writes `results.json` (one row per checked item), `daemon.log` and `mod
 
 Items 17 and 18 turn the background switch through Paseo's settings API (`settings.providers.write`), because a direct file edit does not notify the plugin's settings subscribers. Codex and Antigravity run items 3, 6, 7, 9, 11 and 16; OpenCode runs 19a–c instead of item 3, because its limit message carries no reset. The fake-request total, the refused connections and the harness's longest event-loop stall (`loopMaxMs`) are printed in the final `SUMMARY` line. The harness keeps one daemon session open for the whole run, and the daemon closes a session that sends nothing for 45 seconds, so the harness must not block its event loop: it runs the `paseo` CLI asynchronously.
 
-Items 6 and 7 report what the continue led to, from the final reads: whether its turn ended, whether the plugin handled that turn end (the delivered reservation is no longer being sent), whether a limit notice in the provider's error form followed it, and which reservation is left. They pass when the turn ended and was handled and either no row is left with no notice after the continue, or, for Antigravity only, a new pending reservation other than the one just continued is left after such a notice, which is a NOTE. A notice that cannot be read fails. On Paseo 0.16, agy can replay the earlier 429 after the continue's reply (seen in some runs, not all) and the plugin reserves it again, which is a NOTE; on Paseo 0.17.0-beta.1 no replay was seen and the row is cleared.
+Items 6 and 7 report what the continue led to, from the final reads: whether its turn ended, whether the plugin handled that turn end (the delivered reservation is no longer being sent), whether a limit notice in the provider's error form followed it, and which reservation is left. They pass when the turn ended and was handled and either no row is left with no notice after the continue, or, for Antigravity only, a new pending reservation other than the one just continued is left after such a notice, which is a NOTE. A notice that cannot be read fails. On Paseo 0.16, agy can replay the earlier 429 after the continue's reply (seen in some runs, not all) and the plugin reserves it again, which is a NOTE; on Paseo 0.17.0-beta.1 and 0.17.1 no replay was seen and the row is cleared.
 
 Time is advanced through the reschedule RPC, or by editing `jobs.json` to a past due time and letting the real tick fire. The tick cannot move a reservation earlier than its reset plus two minutes.
 
@@ -102,7 +102,7 @@ Reservations made on one Paseo version must survive the next. Run this when the 
 
 ```bash
 node e2e/e2e.mjs --label upgrade-0.16-0.17 --cli /tmp/paseo-0.16.2/node_modules/@getpaseo/cli \
-  --upgrade-cli /tmp/paseo-0.17.0/node_modules/@getpaseo/cli --root /tmp/uar-e2e-upgrade --suites codex,antigravity \
+  --upgrade-cli /tmp/paseo-0.17.1/node_modules/@getpaseo/cli --root /tmp/uar-e2e-upgrade --suites codex,antigravity \
   --codex ~/.local/bin/codex --agy ~/.local/bin/agy --from v1.3.2 --to main --min 1
 ```
 
