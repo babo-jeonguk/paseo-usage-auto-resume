@@ -4,7 +4,7 @@
 
 ## Local development
 
-The plugin requires Paseo daemon and app **0.16.0 or later**; its manifest rejects older hosts, and the development dependencies are pinned to that SDK line.
+The plugin requires Paseo daemon and app **0.16.0 or later**; its manifest rejects older hosts. The development dependencies are pinned to the newest supported SDK line (0.17), whose types include APIs Paseo 0.16 lacks; run the E2E on 0.16 too before relying on a new one.
 
 The `Paseo release` workflow checks npm every day at 18:00 KST. The first beta or release of a Paseo line newer than the `@getpaseo/plugin` pin opens one `paseo-release` issue for that line, mentioning the repository owner; later betas of the line and its `.0` release are comments on that issue, and patch releases are ignored. The pull request that prepares the plugin for the line closes it. `npx tsx scripts/watch-paseo-release.ts --dry-run` prints what it would post.
 
