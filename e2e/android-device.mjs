@@ -5,6 +5,7 @@ import { once } from 'node:events';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { freePort, inherited, killTree, run, running, spawnLogged, waitFor } from './core.mjs';
+import { locateScreenshotText } from './android-visual.mjs';
 
 export const PACKAGE = 'sh.paseo';
 const quote = value => "'" + String(value).replaceAll("'", "'\\''") + "'";
@@ -62,19 +63,20 @@ export async function androidDevice(ctx, fixture, args) {
       { env, timeout, encoding, maxBuffer: 48 * 1024 * 1024 })).stdout;
   const shell = (...args) => adb(['shell', args.map(quote).join(' ')]);
   const tapNode = node => shell('input', 'tap', Math.floor((node.left + node.right) / 2), Math.floor((node.top + node.bottom) / 2));
-  let lastXml = '', emulator;
+  let emulator;
   report.anrDismissed = 0;
 
+  const dump = timeout => adb(['exec-out', 'uiautomator', 'dump', '/dev/tty'], { timeout });
   async function nodes(timeout = 12_000) {
+    let xml;
     try {
-      const xml = await adb(['exec-out', 'uiautomator', 'dump', '/dev/tty'], { timeout });
+      xml = await dump(timeout);
       if (!xml.includes('<hierarchy')) return [];
-      lastXml = xml;
     } catch (error) {
       if (emulator && !running(emulator)) throw new Error('Emulator exited during UI polling', { cause: error });
       return [];
     }
-    const list = hierarchy(lastXml);
+    const list = hierarchy(xml);
     const dialog = list.find(node => node.pkg === 'android' && node.id === 'android:id/alertTitle' &&
       /^(?:Process system|System UI|com\.android\.systemui) isn.t responding$/i.test(node.text));
     const wait = dialog && list.find(node => node.pkg === dialog.pkg && node.id === 'android:id/aerr_wait');
@@ -178,9 +180,8 @@ export async function androidDevice(ctx, fixture, args) {
     }, 'clean emulator boot', 600_000);
     report.android = (await shell('getprop', 'ro.build.version.release')).trim();
     ctx.screenshots(async name => {
-      await nodes(5000);
-      await shot(name);
-      await writeFile(join(out, name + '.xml'), lastXml);
+      try { await shot(name); }
+      finally { await writeFile(join(out, name + '.xml'), await dump(12_000)); }
     });
     const logcat = join(root, 'logcat.txt');
     artifacts['logcat.txt'] = logcat;
@@ -206,7 +207,7 @@ export async function androidDevice(ctx, fixture, args) {
     });
   }
 
-  async function connect() {
+  async function connect(observerPort) {
     assert(running(emulator), 'Fixture emulator exited before APK installation');
     assert.equal(await avdName(), avd, 'Refusing to install on a different AVD');
     await adb(['install', apk], { timeout: 1_200_000 });
@@ -216,9 +217,16 @@ export async function androidDevice(ctx, fixture, args) {
     assert.equal(report.apkVersion, fixture.version, 'APK version must match the Paseo CLI');
     if (Number((await shell('getprop', 'ro.build.version.sdk')).trim()) >= 33)
       await shell('pm', 'grant', PACKAGE, 'android.permission.POST_NOTIFICATIONS');
-    await adb(['reverse', `tcp:${fixture.port}`, `tcp:${fixture.port}`]);
+    await adb(['reverse', `tcp:${fixture.port}`, `tcp:${observerPort}`]);
     await launch();
-    await tap('Direct connection', 120_000);
+    let direct;
+    try { direct = await find('Direct connection', 120_000); }
+    catch (error) {
+      if (error.message !== 'Timeout: Android UI Direct connection') throw error;
+      // UI Automator can time out waiting for idle while the welcome button is already drawn.
+      direct = await locateScreenshotText(await screenshotRaw(), 'Direct connection', join(out, 'direct-connection.pgm'));
+    }
+    await tapNode(direct);
     await type('Host', '127.0.0.1');
     await type('Port', String(fixture.port));
     await tap('Connect');

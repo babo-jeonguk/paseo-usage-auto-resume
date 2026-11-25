@@ -8,6 +8,7 @@ import { DEFAULT_CONTINUE_PROMPT } from '../shared/prompt.ts';
 import { cliBin, iso, killTree, nativeRun, options, run, running, SOURCE, spawnLogged, waitFor } from './core.mjs';
 import { assertDaemonLogs, editSavedJobs, localClock, nativeDefaults, nativeFixture, tomorrowAtNoon } from './native-fixture.mjs';
 import { patchEntry } from './patch-plugin.mjs';
+import { observeAndroidWire, scheduleWire } from './schedule-wire.mjs';
 
 const args = options(['cli', 'apk'], { ...nativeDefaults, source: SOURCE, port: '5584',
   sdk: process.env.ANDROID_HOME ?? join(homedir(), 'Android', 'Sdk'),
@@ -23,6 +24,9 @@ await nativeRun('android', args, async ctx => {
   const fixture = await nativeFixture(ctx, args);
   await fixture.configure({ claude: { env: { ...fixture.claudeEnv, CLAUDE_CODE_OAUTH_TOKEN: 'e2e-fixture-only' } } });
   const device = await androidDevice(ctx, fixture, args);
+  const wire = scheduleWire();
+  const observer = await observeAndroidWire(fixture.cli, fixture.target, wire);
+  dispose(() => observer.close());
   const log = join(root, 'daemon.log');
   artifacts['daemon.log'] = log;
   const { waitJob } = fixture;
@@ -72,7 +76,7 @@ await nativeRun('android', args, async ctx => {
   };
 
   const primaryTitle = 'Android live limit';
-  let primary, primaryJob, listOpenedAt;
+  let primary, primaryJob, liveList;
   await check('Clean AVD, APK version match, Direct connection, Hermes bundle and live push', async () => {
     let daemon;
     // The device registers logcat capture during boot. Capture before stopping the host daemon.
@@ -88,36 +92,45 @@ await nativeRun('android', args, async ctx => {
       { env: fixture.environment, cwd: fixture.work, log });
     await fixture.attach(() => running(daemon));
     await fixture.install(source => patchEntry(source, fixture.usageFile));
-    await device.connect();
-    listOpenedAt = performance.now();
+    await device.connect(observer.port);
     await menu(autoResumeItem);
     await device.find('Nothing scheduled');
     primary = await fixture.agent(primaryTitle);
+    const client = await wire.ready(2);
+    const mark = wire.checkpoint(client);
     // Start UI Automator before sending the turn. Starting the device-side command only after
     // the daemon reports the row would count its cold launch against the UI’s push deadline.
     const visible = device.find('Open ' + primaryTitle, 90_000).then(() => performance.now());
     const [{ job, observedAt }, visibleAt] = await Promise.all([fixture.limit(primary), visible]);
     primaryJob = job;
-    const pushMs = Math.max(0, Math.round(visibleAt - observedAt));
+    const pushed = wire.pushed(mark, primary.id);
+    liveList = { client, at: pushed.listReceivedAt };
+    const pushMs = Math.max(0, Math.round(visibleAt - Math.min(observedAt, pushed.eventReceivedAt)));
     assert(pushMs <= 5000, `Native row took ${pushMs} ms after the reservation reached the daemon`);
     await device.find('resume-row-' + job.id);
     await device.shot('live-push');
-    return { pushMs, cliVersion: fixture.version, apkVersion: report.apkVersion, revision: report.revision };
+    return { pushMs, pushedRevision: pushed.revision, cliVersion: fixture.version, apkVersion: report.apkVersion, revision: report.revision };
   });
 
   await check('Pull-to-refresh reads changes that were not pushed to the open list', async () => {
-    // The open list has already received a real push. There are no pending UI mutations here.
-    // Two independent transitions distinguish the gesture from a stray startup refetch.
+    // Measure from the real pushed list response. There are no pending UI mutations here.
     const toggle = switchFor(primary);
     for (const enabled of [false, true]) {
       const node = await device.find(entry => toggle(entry) && entry.checked !== enabled);
+      await wire.settled(liveList.client);
       await editSavedJobs(fixture, jobs => jobs.map(saved => saved.id === primaryJob.id ? { ...saved, enabled } : saved));
       assert.equal((await device.find(toggle)).checked, !enabled, 'The file edit must not update the open list');
+      const mark = wire.checkpoint(liveList.client);
       const x = Math.floor((node.left + node.right) / 2);
       await device.swipe(x, node.top, node.top + 420);
       await device.find(entry => toggle(entry) && entry.checked === enabled);
+      const messages = wire.messagesSince(mark);
+      assert(!messages.some(message => message.subscriptionId), 'The swipe must not overlap an unrelated schedule push');
+      assert(messages.some(message => message.jobs?.some(job => job.id === primaryJob.id && job.enabled === enabled)),
+        'The swipe must fetch the edited reservation');
+      await waitFor(() => wire.messagesSince(mark).some(message => message.method === 'auto-resume.history'), 'history refetch from pull-to-refresh', 5_000);
     }
-    assert(performance.now() - listOpenedAt < 120_000, 'Refresh check overlapped the periodic list poll');
+    assert(performance.now() - liveList.at < 120_000, 'Refresh check overlapped the periodic list poll');
     assert.equal((await fixture.job(primary.id)).enabled, true);
   });
 

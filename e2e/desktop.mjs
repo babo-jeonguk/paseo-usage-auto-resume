@@ -8,6 +8,7 @@ import { freePort, inherited, isWin, iso, killTree, nativeRun, options, pidAlive
 import { assertDesktopOffline, isOfflineRegistryFailure } from './desktop-network.mjs';
 import { assertSubscriptionRequests, patchDesktopEntry, prepareLogins } from './desktop-subscription.mjs';
 import { assertDaemonLogs, editSavedJobs, localClock, nativeDefaults, nativeFixture, tomorrowAtNoon } from './native-fixture.mjs';
+import { scheduleWire } from './schedule-wire.mjs';
 
 const args = options(['cli', 'app', 'source', 'to'], {
   out: nativeDefaults.out, path: nativeDefaults.path, 'expect-platform': process.platform,
@@ -29,6 +30,7 @@ await nativeRun('desktop', args, async ctx => {
   assert(process.env.PW_ROOT, 'Set PW_ROOT to the node_modules directory containing playwright-core');
   const { chromium } = createRequire(join(resolve(process.env.PW_ROOT), '_e2e.cjs'))('playwright-core');
   const fixture = await nativeFixture(ctx, args);
+  const wire = scheduleWire();
   const emails = await prepareLogins(fixture.profile);
   if (!isWin) await writeFile(join(fixture.profile, '.hushlogin'), '');
   await fixture.configure({
@@ -63,6 +65,7 @@ await nativeRun('desktop', args, async ctx => {
   assert(report.runtime.electron && report.runtime.node, 'Expected Electron bundled runtime');
 
   let app, browser, page, launch = 0;
+  let windowsShutdown = new Map();
   const closeBrowser = () => withDeadline(() => browser?.close(), 'Electron CDP disconnect', 10_000);
   const daemonInstance = () => readJson(join(fixture.home, 'paseo.pid'));
   const shot = name => page?.screenshot({ path: join(out, name + '.png'), timeout: 10_000 });
@@ -82,6 +85,13 @@ await nativeRun('desktop', args, async ctx => {
     }, 'Electron CDP');
     page = await waitFor(() => browser.contexts().flatMap(context => context.pages()).find(tab => tab.url().startsWith('paseo://')), 'Paseo window');
     page.setDefaultTimeout(30_000);
+    page.on('websocket', socket => {
+      if (new URL(socket.url()).pathname !== '/ws') return;
+      const observer = wire.connect();
+      socket.on('framesent', ({ payload }) => observer.frame('sent', payload));
+      socket.on('framereceived', ({ payload }) => observer.frame('received', payload));
+      socket.once('close', observer.close);
+    });
     page.on('pageerror', error => report.pageErrors.push(error.message));
     const ready = page.getByText('New workspace', { exact: true }).first();
     const failure = page.getByText(/did not return a server id|failed to start/i).first();
@@ -120,14 +130,25 @@ await nativeRun('desktop', args, async ctx => {
   async function processTable() {
     if (isWin) {
       const { stdout } = await run('powershell.exe', ['-NoProfile', '-Command',
-        'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress'],
+        'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate | ConvertTo-Json -Compress'],
       { timeout: 15_000, windowsHide: true });
-      return JSON.parse(stdout).map(row => ({ pid: row.ProcessId, parent: row.ParentProcessId }));
+      return JSON.parse(stdout).map(row => ({ pid: row.ProcessId, parent: row.ParentProcessId, started: row.CreationDate }));
     }
     const { stdout } = await run('ps', ['-eo', 'pid=,ppid=,pgid=,stat='], { timeout: 10_000 });
     return stdout.trim().split('\n').map(row => row.trim().split(/\s+/))
       .filter(([, , , state]) => !state.startsWith('Z'))
       .map(([pid, parent, group]) => ({ pid: Number(pid), parent: Number(parent), group: Number(group) }));
+  }
+  const isWindowsSurvivor = ({ pid, started }) => started && windowsShutdown.get(pid) === started;
+  async function stopWindowsSurvivors() {
+    for (const process of (await processTable()).filter(isWindowsSurvivor)) {
+      // taskkill may lose a race to an ordinary exit or to another tree's termination.
+      try { await run('taskkill.exe', ['/PID', String(process.pid), '/T', '/F'], { timeout: 15_000, windowsHide: true }); }
+      catch (error) {
+        if ((await processTable()).some(row => row.pid === process.pid && isWindowsSurvivor(row))) throw error;
+      }
+    }
+    await waitFor(async () => !(await processTable()).some(isWindowsSurvivor), 'tracked Windows children exit', 15_000);
   }
   async function closeApp(daemon) {
     const groups = new Set([app.pid, daemon.pid]);
@@ -139,10 +160,12 @@ await nativeRun('desktop', args, async ctx => {
         if (children.has(parent) || groups.has(group)) children.add(pid);
       }
     }
+    if (isWin) windowsShutdown = new Map(processes.filter(({ pid }) => children.has(pid)).map(({ pid, started }) => [pid, started]));
     const startedAt = Date.now();
     await withDeadline(() => page.evaluate(() => window.close()), 'Electron window close', 15_000);
-    await waitFor(async () => !running(app) && !(await processTable()).some(({ pid, group }) =>
-      children.has(pid) || groups.has(group)), 'desktop daemon and child processes exit', 60_000);
+    const owned = isWin ? isWindowsSurvivor : ({ pid, group }) => children.has(pid) || groups.has(group);
+    await waitFor(async () => !running(app) && !(await processTable()).some(owned), 'desktop daemon and child processes exit', 60_000);
+    windowsShutdown.clear();
     shutdowns.push({ startedAt, finishedAt: Date.now() });
     await closeBrowser();
     browser = page = app = undefined;
@@ -158,8 +181,11 @@ await nativeRun('desktop', args, async ctx => {
           await waitFor(() => !pidAlive(instance.pid), 'managed daemon cleanup', 20_000);
         }
       } finally {
-        try { await killTree(app); }
-        finally { await closeBrowser(); }
+        try { if (!isWin || app && running(app)) await killTree(app); }
+        finally {
+          try { if (windowsShutdown.size) await stopWindowsSurvivors(); }
+          finally { await closeBrowser(); }
+        }
       }
     }
   });
@@ -215,9 +241,11 @@ await nativeRun('desktop', args, async ctx => {
     await leaveSettings();
     await conversation(primary);
     assert.equal(await pill().count(), 0);
+    const mark = wire.checkpoint(await wire.ready(1));
     const { job, observedAt } = await fixture.limit(primary);
     await pill().waitFor({ timeout: 5000 });
-    const pushMs = Math.round(performance.now() - observedAt);
+    const pushed = wire.pushed(mark, primary.id);
+    const pushMs = Math.round(performance.now() - Math.min(observedAt, pushed.eventReceivedAt));
     assert(pushMs <= 5000, `Pill took ${pushMs} ms after the reservation reached the daemon`);
     const view = await panel(primary);
     await button('Delay 10 minutes', view).click();
