@@ -134,20 +134,36 @@ Use `--out <directory>` to choose the report location. The default is `e2e/out-n
 
 Extract the matching desktop release archive and point `--app` at the directory containing `Paseo` and `Paseo.bin` on Linux, or `Paseo.exe` on Windows. Install `playwright-core` in a separate prefix and set `PW_ROOT` to its `node_modules` directory. CDP connects to the released app, so a Playwright browser download is unnecessary. Linux needs an X display. Windows needs native Node and an interactive desktop session.
 
+With network access, run the GitHub install check. It starts a CLI-launched Paseo daemon with a separate home, installs the requested plugin revision, and writes a local Git repository pinned to the installed commit. Take `localSource` and `revision` from the passing `results.json` into the Desktop run. For an unpublished commit, use the file URL and full SHA of your local checkout to exercise the Desktop stage independently.
+
 ```bash
-PW_ROOT=/tmp/uar-tools/node_modules xvfb-run -a -s '-screen 0 1440x900x24' \
-  node e2e/desktop.mjs --cli /tmp/paseo-0.17.1/node_modules/@getpaseo/cli \
-  --app /path/to/Paseo-0.17.1-x64 --path "$HOME/.local/bin" --out /tmp/uar-results
+node e2e/desktop-source.mjs --cli /tmp/paseo-0.17.1/node_modules/@getpaseo/cli --to main --out /tmp/uar-results
 ```
+
+On Linux, run the whole Desktop scenario in a loopback-only network namespace. This example uses Bubblewrap with unprivileged user namespaces enabled. Set `STAGED_SOURCE` and `STAGED_REVISION` from the passing online report.
+
+```bash
+PW_ROOT=/tmp/uar-tools/node_modules bwrap --unshare-net --bind / / -- \
+  xvfb-run -a -s '-screen 0 1440x900x24' \
+  node e2e/desktop.mjs --cli /tmp/paseo-0.17.1/node_modules/@getpaseo/cli \
+  --app /path/to/Paseo-0.17.1-x64 --source "$STAGED_SOURCE" --to "$STAGED_REVISION" \
+  --path "$HOME/.local/bin" --out /tmp/uar-results
+```
+
+On Windows, copy the staged `source.git` and the other prerequisites into a dedicated Windows VM with its network adapters removed. Use the file URL for the repository's location inside that VM and the revision from the online report.
 
 ```powershell
 $env:PW_ROOT = 'C:\uar-tools\node_modules'
-node e2e/desktop.mjs --expect-platform win32 --cli C:\tools\node_modules\@getpaseo\cli --app C:\Paseo-0.17.1-x64 --path 'C:\provider-bin;C:\MinGit\cmd' --out C:\uar-results
+node e2e/desktop.mjs --expect-platform win32 --cli C:\tools\node_modules\@getpaseo\cli `
+  --app C:\Paseo-0.17.1-x64 --source file:///C:/uar-source/source.git --to $env:STAGED_REVISION `
+  --path 'C:\provider-bin;C:\MinGit\cmd' --out C:\uar-results
 ```
 
 The runner checks the Electron-owned daemon's version and executable, real Claude and Codex subscription CLI launches, Settings account discovery, live composer updates within five seconds, the keyboard time editor, extra instructions, blocked and successful Resume now, day sections, Labs hover and provider-off cancellation. It closes the window and checks that its daemon and child processes exit. A new app instance must restore the reservation and let the real 30-second tick send one continue to the closed conversation. The report includes bundled Node and SQLite availability and any startup retries.
 
-Only the installed copy's subscription HTTP boundary is replaced. The Claude model turn uses the loopback API, and its auth check uses the login fixture in the isolated home. The Codex app-server probe uses the default model provider and receives a used-up usage window so the pending reservation stays in place without starting a model turn. Electron's Chromium update traffic has a separate refusing proxy, and the runner checks the isolated cache for updater files. The daemon retains direct GitHub access for the plugin install. The fixture disables Paseo’s separate built-in usage polling. Use a Codex build that accepts the synthetic login, such as the version pinned for the repository’s full native CLI integration check. Some CLI releases make their own account or catalog requests during startup. The provider proxy blocks and records those attempts, and Desktop fails the zero-attempt check when they occur.
+Only the installed copy's subscription HTTP boundary is replaced. The Claude model turn uses the loopback API, and its auth check uses the login fixture in the isolated home. The Codex app-server probe uses the default model provider and receives a used-up usage window so the pending reservation stays in place without starting a model turn. The fixture disables Paseo’s separate built-in usage polling. Use a Codex build that accepts the synthetic login, such as the version pinned for the repository’s full native CLI integration check.
+
+The Desktop runner requires loopback-only networking and probes direct IPv4 and IPv6 connections before launching Paseo and again at the end. Electron and the provider CLIs have separate refusing proxies that record attempted connections. Refused attempts are included in the report. The runner fails if the network boundary checks fail or updater files appear in the isolated cache.
 
 ### Android on Linux
 

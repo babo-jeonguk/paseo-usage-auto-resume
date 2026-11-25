@@ -16,6 +16,7 @@ import { refusingProxy } from './blackhole-proxy.mjs';
 export { sleep };
 export const PLUGIN = 'usage-auto-resume';
 export const SOURCE = 'git:babo-jeonguk/paseo-usage-auto-resume';
+export const githubPluginUrl = source => `https://github.com/${source.slice(4)}.git`;
 export const DEFAULT_MARK = 'Continue the unfinished work from where it stopped.';
 export const isWin = process.platform === 'win32';
 export const run = promisify(execFile);
@@ -189,7 +190,7 @@ export async function installPlugin(paseo, source, ref, env) {
   const revision = revisionOf(plugin);
   assert(revision, 'No installed revision reported');
   if (source.startsWith('git:')) {
-    const { stdout } = await run('git', ['ls-remote', `https://github.com/${source.slice(4)}.git`, ref, `${ref}^{}`],
+    const { stdout } = await run('git', ['ls-remote', githubPluginUrl(source), ref, `${ref}^{}`],
       { cwd: tmpdir(), env, timeout: 60_000, windowsHide: true });
     const rows = stdout.trim().split('\n').map(line => line.split(/\s+/));
     const expected = rows.find(([, name]) => name?.endsWith('^{}')) ?? rows[0];

@@ -4,15 +4,22 @@ import { access, readFile, readdir, realpath, writeFile } from 'node:fs/promises
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import { freePort, inherited, isWin, iso, killTree, nativeRun, options, pidAlive, readJson,
-  run, running, SOURCE, spawnLogged, startProxy, waitFor, withDeadline } from './core.mjs';
+  run, running, spawnLogged, startProxy, waitFor, withDeadline } from './core.mjs';
+import { assertDesktopOffline } from './desktop-network.mjs';
 import { assertSubscriptionRequests, patchDesktopEntry, prepareLogins } from './desktop-subscription.mjs';
 import { assertDaemonLogs, editSavedJobs, localClock, nativeDefaults, nativeFixture, tomorrowAtNoon } from './native-fixture.mjs';
 
-const args = options(['cli', 'app'], { ...nativeDefaults, source: SOURCE, 'expect-platform': process.platform });
+const args = options(['cli', 'app', 'source', 'to'], {
+  out: nativeDefaults.out, path: nativeDefaults.path, 'expect-platform': process.platform,
+});
 await nativeRun('desktop', args, async ctx => {
   const { root, out, report, artifacts, dispose, check } = ctx;
   assert(['linux', 'win32'].includes(process.platform), 'Desktop E2E requires Linux or Windows');
   assert.equal(process.platform, args['expect-platform'], 'Use Node on the requested native OS');
+  const source = new URL(args.source);
+  assert(source.protocol === 'file:' && !source.hostname, 'Use the local file URL produced by desktop-source.mjs');
+  assert.match(args.to, /^[a-f0-9]{40}$/, 'Use the full verified commit from desktop-source.mjs');
+  await check('The operating system rejects direct external TCP connections', assertDesktopOffline);
   assert(isWin || process.env.DISPLAY || process.env.WAYLAND_DISPLAY, 'Run under xvfb-run on a headless Linux host');
   const appDir = resolve(args.app);
   report.app = appDir;
@@ -189,6 +196,7 @@ await nativeRun('desktop', args, async ctx => {
     report.daemon = await assertManaged();
     report.installStartedAt = Date.now();
     await fixture.install(source => patchDesktopEntry(source, fixture.usageFile, fetchLog));
+    assert.equal(report.revision, args.to, 'Desktop must load the same commit verified in the online stage');
     report.installFinishedAt = Date.now();
     await page.reload();
     const skip = page.getByText('Skip setup', { exact: true });
@@ -316,7 +324,7 @@ await nativeRun('desktop', args, async ctx => {
     return { before, after, deliveryMs: Math.round(performance.now() - advancedAt), modelContinues: 1 };
   });
 
-  await check('No self-update files, external provider requests, renderer errors or plugin log errors', async () => {
+  await check('No direct external connections, self-update files, renderer errors or unexpected daemon errors', async () => {
     const cache = await readdir(fixture.cache, { recursive: true, withFileTypes: true }).catch(error => {
       if (error.code === 'ENOENT') return [];
       throw error;
@@ -334,6 +342,6 @@ await nativeRun('desktop', args, async ctx => {
     });
     assert.deepEqual(report.updateFiles, []);
     assert.deepEqual(report.pageErrors, []);
-    assert.equal(report.providerProxyHits.length, 0, 'Provider CLIs attempted external connections. See providers-proxy.log.');
+    return { directTcp: await assertDesktopOffline(), refusedProviderRequests: report.providerProxyHits.length };
   });
 });
