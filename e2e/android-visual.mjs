@@ -3,6 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import { run } from './core.mjs';
 
 const words = text => text.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+const ocr = (...args) => run('tesseract', args, { env: { ...process.env, OMP_THREAD_LIMIT: '1' }, timeout: 20_000 });
 
 async function writeScreenshotCrop(screenshot, bounds, cropPath) {
   const { left, top, right, bottom } = bounds;
@@ -25,7 +26,7 @@ async function writeScreenshotCrop(screenshot, bounds, cropPath) {
 
 export async function assertScreenshotText(screenshot, bounds, expected, cropPath) {
   await writeScreenshotCrop(screenshot, bounds, cropPath);
-  const { stdout } = await run('tesseract', [cropPath, 'stdout', '-l', 'eng', '--psm', '6'], { timeout: 20_000 });
+  const { stdout } = await ocr(cropPath, 'stdout', '-l', 'eng', '--psm', '6');
   assert.deepEqual(words(stdout), words(expected), 'The screenshot must contain every word in the tooltip paragraph');
   return stdout.trim();
 }
@@ -33,7 +34,7 @@ export async function assertScreenshotText(screenshot, bounds, expected, cropPat
 export async function locateScreenshotText(screenshot, expected, cropPath) {
   const padding = await writeScreenshotCrop(screenshot,
     { left: 0, top: 0, right: screenshot.width, bottom: screenshot.height }, cropPath);
-  const { stdout } = await run('tesseract', [cropPath, 'stdout', '-l', 'eng', '--psm', '11', 'tsv'], { timeout: 20_000 });
+  const { stdout } = await ocr(cropPath, 'stdout', '-l', 'eng', '--psm', '11', '-c', 'tessedit_create_tsv=1', '-c', 'tessedit_create_txt=0');
   const lines = new Map();
   for (const row of stdout.split('\n').slice(1)) {
     const [level, page, block, paragraph, line, , x, y, width, height, , text] = row.split('\t');

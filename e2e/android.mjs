@@ -103,7 +103,7 @@ await nativeRun('android', args, async ctx => {
     const visible = device.find('Open ' + primaryTitle, 90_000).then(() => performance.now());
     const [{ job, observedAt }, visibleAt] = await Promise.all([fixture.limit(primary), visible]);
     primaryJob = job;
-    const pushed = wire.pushed(mark, primary.id);
+    const pushed = wire.pushed(mark, job.id);
     liveList = { client, at: pushed.listReceivedAt };
     const pushMs = Math.max(0, Math.round(visibleAt - Math.min(observedAt, pushed.eventReceivedAt)));
     assert(pushMs <= 5000, `Native row took ${pushMs} ms after the reservation reached the daemon`);

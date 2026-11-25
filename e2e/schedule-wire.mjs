@@ -10,7 +10,7 @@ const scheduleReads = new Set(['auto-resume.list', 'auto-resume.history']);
 export function scheduleWire() {
   const connections = new Set();
   function connect() {
-    const state = { pending: new Map(), subscriptions: new Set(), messages: [] };
+    const state = { pending: new Map(), subscriptions: new Set(), messages: [], sequence: 0 };
     connections.add(state);
     function frame(direction, data) {
       let envelope;
@@ -23,19 +23,21 @@ export function scheduleWire() {
         if (message.pluginId !== PLUGIN) return;
         if (type === 'plugin.rpc.subscribe.request' && message.method === 'auto-resume.changes' ||
           type === 'plugin.rpc.invoke.request' && scheduleReads.has(message.method)) {
-          state.pending.set(message.requestId, message.method);
+          state.pending.set(message.requestId, { method: message.method, sequence: ++state.sequence, at: performance.now() });
         }
         return;
       }
       if (type === 'plugin.rpc.closed') state.subscriptions.delete(payload?.subscriptionId);
       if (type === 'plugin.rpc.event' && state.subscriptions.has(payload?.subscriptionId)) {
-        state.messages.push({ subscriptionId: payload.subscriptionId, revision: payload.event?.revision, at: performance.now() });
+        state.messages.push({ subscriptionId: payload.subscriptionId, revision: payload.event?.revision,
+          sequence: ++state.sequence, at: performance.now() });
       }
-      const method = state.pending.get(payload?.requestId);
-      if (!method) return;
+      const request = state.pending.get(payload?.requestId);
+      if (!request) return;
       state.pending.delete(payload.requestId);
       if (type === 'plugin.rpc.subscribe.response') state.subscriptions.add(payload.subscriptionId);
-      if (type === 'plugin.rpc.invoke.response') state.messages.push({ method, jobs: payload.output?.jobs, at: performance.now() });
+      if (type === 'plugin.rpc.invoke.response') state.messages.push({ method: request.method, request,
+        jobs: payload.output?.jobs, at: performance.now() });
     }
     return { frame, close: () => connections.delete(state) };
   }
@@ -45,7 +47,8 @@ export function scheduleWire() {
   const settled = state => waitFor(() => connections.has(state) && !state.pending.size, 'in-flight schedule reads to finish', 15_000, 100);
   const checkpoint = state => {
     assert(connections.has(state) && !state.pending.size, 'Checkpoint requires a connected, settled schedule observer');
-    return { state, since: state.messages.length, subscriptions: new Set(state.subscriptions) };
+    const listAt = state.messages.findLast(message => message.method === 'auto-resume.list').at;
+    return { state, since: state.messages.length, subscriptions: new Set(state.subscriptions), listAt };
   };
   function messagesSince({ state, since, subscriptions }) {
     assert(connections.has(state), 'Paseo UI reconnected during the measurement');
@@ -54,12 +57,13 @@ export function scheduleWire() {
   }
   return {
     connect, ready, settled, checkpoint, messagesSince,
-    pushed(mark, agentId) {
+    pushed(mark, reservationId) {
       const messages = messagesSince(mark);
-      const eventIndex = messages.findIndex(message => Number.isSafeInteger(message.revision));
-      const listIndex = messages.findIndex(message => message.jobs?.some(job => job.agentId === agentId));
-      assert(eventIndex >= 0 && listIndex > eventIndex, 'The UI must receive a live schedule event before a list response containing the new reservation');
-      return { revision: messages[eventIndex].revision, eventReceivedAt: messages[eventIndex].at, listReceivedAt: messages[listIndex].at };
+      const list = messages.find(message => message.jobs?.some(job => job.id === reservationId));
+      const event = list && messages.find(message => Number.isSafeInteger(message.revision) && message.sequence < list.request.sequence);
+      assert(event, 'The UI must request the list containing the new reservation after receiving a live schedule event');
+      assert(list.request.at - mark.listAt < 120_000, 'The live change measurement overlapped the periodic list poll');
+      return { revision: event.revision, eventReceivedAt: event.at, listReceivedAt: list.at };
     },
   };
 }

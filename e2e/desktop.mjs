@@ -130,9 +130,9 @@ await nativeRun('desktop', args, async ctx => {
   async function processTable() {
     if (isWin) {
       const { stdout } = await run('powershell.exe', ['-NoProfile', '-Command',
-        'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate | ConvertTo-Json -Compress'],
+        "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,@{Name='Started';Expression={if ($_.CreationDate) {$_.CreationDate.ToUniversalTime().ToString('yyyyMMddHHmmss.ffffffZ')}}} | ConvertTo-Json -Compress"],
       { timeout: 15_000, windowsHide: true });
-      return JSON.parse(stdout).map(row => ({ pid: row.ProcessId, parent: row.ParentProcessId, started: row.CreationDate }));
+      return JSON.parse(stdout).map(row => ({ pid: row.ProcessId, parent: row.ParentProcessId, started: row.Started }));
     }
     const { stdout } = await run('ps', ['-eo', 'pid=,ppid=,pgid=,stat='], { timeout: 10_000 });
     return stdout.trim().split('\n').map(row => row.trim().split(/\s+/))
@@ -141,12 +141,20 @@ await nativeRun('desktop', args, async ctx => {
   }
   const isWindowsSurvivor = ({ pid, started }) => started && windowsShutdown.get(pid) === started;
   async function stopWindowsSurvivors() {
-    for (const process of (await processTable()).filter(isWindowsSurvivor)) {
-      // taskkill may lose a race to an ordinary exit or to another tree's termination.
-      try { await run('taskkill.exe', ['/PID', String(process.pid), '/T', '/F'], { timeout: 15_000, windowsHide: true }); }
-      catch (error) {
-        if ((await processTable()).some(row => row.pid === process.pid && isWindowsSurvivor(row))) throw error;
-      }
+    for (const { pid, started } of (await processTable()).filter(isWindowsSurvivor)) {
+      assert(Number.isSafeInteger(pid) && /^\d{14}\.\d{6}Z$/.test(started), 'Tracked Windows process identity');
+      // Open the process handle and verify its creation time in the same command that stops it.
+      await run('powershell.exe', ['-NoProfile', '-Command', `$ErrorActionPreference = 'Stop';
+        $process = Get-Process -Id ${pid} -ErrorAction SilentlyContinue;
+        if ($process) {
+          try {
+            $null = $process.Handle;
+            if ($process.StartTime.ToUniversalTime().ToString('yyyyMMddHHmmss.ffffffZ') -eq '${started}') {
+              $process.Kill();
+              if (!$process.WaitForExit(10000)) { throw 'Tracked process did not exit' }
+            }
+          } catch { if (!$process.HasExited) { throw } }
+        }`], { timeout: 15_000, windowsHide: true });
     }
     await waitFor(async () => !(await processTable()).some(isWindowsSurvivor), 'tracked Windows children exit', 15_000);
   }
@@ -160,7 +168,9 @@ await nativeRun('desktop', args, async ctx => {
         if (children.has(parent) || groups.has(group)) children.add(pid);
       }
     }
-    if (isWin) windowsShutdown = new Map(processes.filter(({ pid }) => children.has(pid)).map(({ pid, started }) => [pid, started]));
+    if (isWin) for (const { pid, started } of processes) {
+      if (children.has(pid) && started && !windowsShutdown.has(pid)) windowsShutdown.set(pid, started);
+    }
     const startedAt = Date.now();
     await withDeadline(() => page.evaluate(() => window.close()), 'Electron window close', 15_000);
     const owned = isWin ? isWindowsSurvivor : ({ pid, group }) => children.has(pid) || groups.has(group);
@@ -242,10 +252,10 @@ await nativeRun('desktop', args, async ctx => {
     await conversation(primary);
     assert.equal(await pill().count(), 0);
     const mark = wire.checkpoint(await wire.ready(1));
-    const { job, observedAt } = await fixture.limit(primary);
-    await pill().waitFor({ timeout: 5000 });
-    const pushed = wire.pushed(mark, primary.id);
-    const pushMs = Math.round(performance.now() - Math.min(observedAt, pushed.eventReceivedAt));
+    const visible = pill().waitFor({ timeout: 90_000 }).then(() => performance.now());
+    const [{ job, observedAt }, visibleAt] = await Promise.all([fixture.limit(primary), visible]);
+    const pushed = wire.pushed(mark, job.id);
+    const pushMs = Math.max(0, Math.round(visibleAt - Math.min(observedAt, pushed.eventReceivedAt)));
     assert(pushMs <= 5000, `Pill took ${pushMs} ms after the reservation reached the daemon`);
     const view = await panel(primary);
     await button('Delay 10 minutes', view).click();
