@@ -23,19 +23,22 @@ await nativeRun('android', args, async ctx => {
   artifacts['daemon.log'] = log;
   const waitJob = (agent, test, what) => waitFor(async () => test(await fixture.job(agent.id)), what, 20_000, 200);
 
+  const menuButton = /^(Open|Close) menu$/;
+  const autoResumeItem = 'plugin-sidebar-usage-auto-resume-scheduled';
   const menu = async label => {
-    await device.tap('Open menu');
+    const trigger = await device.find(menuButton, 120_000);
+    if (trigger.desc === 'Open menu') await device.tapNode(trigger);
     await device.tap(label);
   };
   const backToWorkspace = async () => {
     // Settings is a nested stack. The hardware Back key is reserved for dismissing the IME.
     for (let depth = 0; depth < 6; depth++) {
       const nodes = await device.nodes();
-      if (nodes.some(matchNode('Open menu'))) return;
+      if (nodes.some(matchNode(menuButton))) return;
       const back = nodes.find(matchNode(/^(Go back|Back(?: to plugins)?|Close settings|settings-back-to-workspace)$/i));
       if (back) await device.tapNode(back);
     }
-    await device.find('Open menu');
+    await device.find(menuButton);
   };
   const settings = async () => {
     await menu('sidebar-settings');
@@ -52,8 +55,8 @@ await nativeRun('android', args, async ctx => {
   const closeKeyboard = () => device.shell('input', 'keyevent', 'KEYCODE_BACK');
   const confirmResume = async toast => {
     await device.tap('Resume now');
-    await device.tap('Send');
-    await device.find(toast, 15_000);
+    const send = await device.find('Send');
+    await Promise.all([device.find(toast, 15_000), device.tapNode(send)]);
   };
 
   const primaryTitle = 'Android live limit';
@@ -71,7 +74,7 @@ await nativeRun('android', args, async ctx => {
     await fixture.attach(() => running(daemon));
     await fixture.install(source => patchEntry(source, fixture.usageFile));
     await device.connect();
-    await menu('Auto Resume');
+    await menu(autoResumeItem);
     await device.find('Nothing scheduled');
     primary = await fixture.agent(primaryTitle);
     // Start UI Automator before sending the turn. Starting the device-side command only after
@@ -255,7 +258,7 @@ await nativeRun('android', args, async ctx => {
 
   await check('Recent activity shows native outcome text and Hermes dates', async () => {
     await backToWorkspace();
-    await menu('Auto Resume');
+    await menu(autoResumeItem);
     await device.tapNode(await device.scrollTo('resume-history-header'));
     const history = await fixture.history();
     for (const [agent, outcome] of [[primary, /^Continued/], [same, /^Canceled/]]) {
@@ -282,8 +285,7 @@ await nativeRun('android', args, async ctx => {
     await device.shell('am', 'force-stop', PACKAGE);
     assert.equal(await device.shell('pidof', PACKAGE).catch(() => ''), '');
     await device.launch();
-    await device.find('Open menu', 120_000);
-    await menu('Auto Resume');
+    await menu(autoResumeItem);
     await device.find(row(job));
     await device.tap('Open ' + recovery.title);
     await composer();
