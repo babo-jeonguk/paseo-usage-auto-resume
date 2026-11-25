@@ -101,8 +101,13 @@ export async function androidDevice(ctx, fixture, args) {
     assert(/^[ -~]*$/.test(value) && !value.includes('%s'), 'adb input text requires ASCII and reserves %s for a space');
     await tapNode(field);
     await shell('input', 'keyevent', 'KEYCODE_MOVE_END', ...Array(Math.max(1, field.text?.length ?? 0)).fill('KEYCODE_DEL'));
-    await shell('input', 'text', value.replaceAll(' ', '%s'));
-    await find(node => input(node) && node.text === value, 40_000, `typed text in ${label}`);
+    // Give a controlled React Native input time to render each batch before injecting the next.
+    let typed = '';
+    for (const batch of value.match(/.{1,4}/g) ?? []) {
+      await shell('input', 'text', batch.replaceAll(' ', '%s'));
+      typed += batch;
+      await find(node => input(node) && node.text === typed, 40_000, `typed text in ${label}`);
+    }
   }
 
   const swipe = (x, y, endY) => shell('input', 'swipe', x, y, x, endY, 500);
