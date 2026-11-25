@@ -31,7 +31,6 @@ await nativeRun('desktop', args, async ctx => {
   assert(process.env.PW_ROOT, 'Set PW_ROOT to the node_modules directory containing playwright-core');
   const { chromium } = createRequire(join(resolve(process.env.PW_ROOT), '_e2e.cjs'))('playwright-core');
   const fixture = await nativeFixture(ctx, args);
-  const wire = scheduleWire();
   const emails = await prepareLogins(fixture.profile);
   if (!isWin) await writeFile(join(fixture.profile, '.hushlogin'), '');
   await fixture.configure({
@@ -89,13 +88,6 @@ await nativeRun('desktop', args, async ctx => {
     }, 'Electron CDP');
     page = await waitFor(() => browser.contexts().flatMap(context => context.pages()).find(tab => tab.url().startsWith('paseo://')), 'Paseo window');
     page.setDefaultTimeout(30_000);
-    page.on('websocket', socket => {
-      if (new URL(socket.url()).pathname !== '/ws') return;
-      const observer = wire.connect();
-      socket.on('framesent', ({ payload }) => observer.frame('sent', payload));
-      socket.on('framereceived', ({ payload }) => observer.frame('received', payload));
-      socket.once('close', observer.close);
-    });
     page.on('pageerror', error => report.pageErrors.push(error.message));
     const ready = page.getByText('New workspace', { exact: true }).first();
     const failure = page.getByText(/did not return a server id|failed to start/i).first();
@@ -246,6 +238,15 @@ await nativeRun('desktop', args, async ctx => {
   await check('Live composer pill, keyboard editing, and guarded Resume now on the real Claude CLI', async () => {
     await leaveSettings();
     await conversation(primary);
+    // Playwright can discard pre-navigation socket records without a close event.
+    const wire = scheduleWire();
+    page.on('websocket', socket => {
+      if (new URL(socket.url()).pathname !== '/ws') return;
+      const observer = wire.connect();
+      socket.on('framesent', ({ payload }) => observer.frame('sent', payload));
+      socket.on('framereceived', ({ payload }) => observer.frame('received', payload));
+      socket.once('close', observer.close);
+    });
     // Start before this renderer installs its composer poll. No reload occurs during the measurement.
     const screenStartedAt = performance.now();
     await page.reload();
@@ -254,7 +255,7 @@ await nativeRun('desktop', args, async ctx => {
     const mark = wire.checkpoint(await wire.ready(1), screenStartedAt);
     const visible = pill().waitFor({ timeout: 90_000 }).then(() => performance.now());
     const [{ job, observedAt }, visibleAt] = await Promise.all([fixture.limit(primary), visible]);
-    const pushed = wire.pushed(mark, job.id);
+    const pushed = wire.pushed(mark, job.id, visibleAt);
     const pushMs = Math.max(0, Math.round(visibleAt - Math.min(observedAt, pushed.eventReceivedAt)));
     assert(pushMs <= 5000, `Pill took ${pushMs} ms after the reservation reached the daemon`);
     const view = await panel(primary);

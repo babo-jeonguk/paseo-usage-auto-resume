@@ -105,7 +105,7 @@ await nativeRun('android', args, async ctx => {
     const visible = device.find('Open ' + primaryTitle, 90_000).then(() => performance.now());
     const [{ job, observedAt }, visibleAt] = await Promise.all([fixture.limit(primary), visible]);
     primaryJob = job;
-    const pushed = wire.pushed(mark, job.id);
+    const pushed = wire.pushed(mark, job.id, visibleAt);
     await waitFor(() => wire.messagesSince(mark).some(message => message.method === 'auto-resume.history' &&
       message.request.at >= pushed.eventReceivedAt), 'the open list history response after the schedule event', 15_000);
     liveList = { client, at: pushed.listReceivedAt };
