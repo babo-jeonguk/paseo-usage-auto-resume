@@ -3,7 +3,7 @@ import { access } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { androidDevice, matchNode, PACKAGE, within } from './android-device.mjs';
-import { assertScreenshotText } from './android-visual.mjs';
+import { assertScreenshotText, readScreenshotText } from './android-visual.mjs';
 import { DEFAULT_CONTINUE_PROMPT } from '../shared/prompt.ts';
 import { cliBin, iso, killTree, nativeRun, options, run, running, SOURCE, spawnLogged, waitFor } from './core.mjs';
 import { assertDaemonLogs, editSavedJobs, localClock, nativeDefaults, nativeFixture, tomorrowAtNoon } from './native-fixture.mjs';
@@ -71,10 +71,15 @@ await nativeRun('android', args, async ctx => {
   const switchFor = agent => node => node.pkg === PACKAGE &&
     (node.desc ?? '').startsWith('Continue ' + agent.title + ' automatically');
   const closeKeyboard = () => device.shell('input', 'keyevent', 'KEYCODE_BACK');
-  const confirmResume = async toast => {
+  const confirmResume = async (toast, artifact) => {
     await device.tap('Resume now');
     const send = await device.find('Send');
-    await Promise.all([device.find(toast, 15_000), device.tapNode(send)]);
+    // UI Automator waits for an idle window, which can outlast a transient toast.
+    const observe = waitFor(async () => {
+      const text = await readScreenshotText(await device.screenshotRaw(), join(out, artifact + '.pgm'));
+      return toast.test(text);
+    }, `visible Android toast ${toast}`, 15_000, 50);
+    await Promise.all([observe, device.tapNode(send)]);
   };
 
   const primaryTitle = 'Android live limit';
@@ -178,12 +183,18 @@ await nativeRun('android', args, async ctx => {
     const spoken = await device.scrollTo(node => node.pkg === PACKAGE && /^in \d+d(?: \d+h)?$/.test(node.text ?? '') &&
       /^in \d+ days?(?: \d+ hours?)?$/.test(node.desc ?? ''));
     await device.shot('compact-list');
-    await device.tapNode(await device.scrollTo('Turn all off', 'up'));
+    const tapCompactBulk = async mode => {
+      const label = `All ${mode}`;
+      await device.scrollTo(`Turn all ${mode}`, 'up');
+      const nodes = await device.nodes();
+      const button = nodes.find(matchNode(`Turn all ${mode}`));
+      assert(button && nodes.some(node => node.text === label && (node === button || within(node, button))),
+        `Compact bulk control must show ${label}`);
+      await device.tapNode(button);
+    };
+    await tapCompactBulk('off');
     await waitFor(() => allEnabled(false), 'tracked jobs off');
-    const compactAllOn = await device.find(node => node.pkg === PACKAGE && node.desc === 'Turn all on');
-    assert(compactAllOn.text === 'All on' || (await device.nodes()).some(node => node.text === 'All on'),
-      'Compact bulk control must show All on');
-    await device.tap('Turn all on');
+    await tapCompactBulk('on');
     await waitFor(() => allEnabled(true), 'tracked jobs on');
     const rowSwitch = switchFor(primary);
     await device.tapNode(await device.scrollTo(rowSwitch));
@@ -229,11 +240,11 @@ await nativeRun('android', args, async ctx => {
   await check('Resume now shows blocked and successful toasts and sends exactly one continue', async () => {
     const before = await fixture.job(primary.id);
     await fixture.setUsage('limited', iso(Date.now() + 40 * 60_000));
-    await confirmResume(/^Usage is still used up/);
+    await confirmResume(/\bUsage is still used up\b/i, 'resume-blocked');
     assert.deepEqual(await fixture.job(primary.id), before);
     assert.equal(fixture.continues().length, 0);
     await fixture.setUsage('ready');
-    await confirmResume('Continue sent');
+    await confirmResume(/\bContinue sent\b/i, 'resume-sent');
     await waitJob(primary, row => !row, 'continued row clears');
     const lists = await device.nodes();
     assert(lists.some(node => node.pkg === PACKAGE), 'Paseo must still be in the foreground');

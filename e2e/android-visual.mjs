@@ -31,7 +31,7 @@ export async function assertScreenshotText(screenshot, bounds, expected, cropPat
   return stdout.trim();
 }
 
-export async function locateScreenshotText(screenshot, expected, cropPath) {
+async function screenshotLines(screenshot, cropPath) {
   const padding = await writeScreenshotCrop(screenshot,
     { left: 0, top: 0, right: screenshot.width, bottom: screenshot.height }, cropPath);
   const { stdout } = await ocr(cropPath, 'stdout', '-l', 'eng', '--psm', '11', '-c', 'tessedit_create_tsv=1', '-c', 'tessedit_create_txt=0');
@@ -49,7 +49,15 @@ export async function locateScreenshotText(screenshot, expected, cropPath) {
     box.text += ` ${text}`;
     lines.set(key, box);
   }
-  const matches = [...lines.values()].filter(line => words(line.text).join(' ') === words(expected).join(' '));
+  return [...lines.values()];
+}
+
+export async function readScreenshotText(screenshot, cropPath) {
+  return (await screenshotLines(screenshot, cropPath)).map(line => line.text.trim()).join(' ');
+}
+
+export async function locateScreenshotText(screenshot, expected, cropPath) {
+  const matches = (await screenshotLines(screenshot, cropPath)).filter(line => words(line.text).join(' ') === words(expected).join(' '));
   assert.equal(matches.length, 1, `The screenshot must show one ${expected} label`);
   return matches[0];
 }

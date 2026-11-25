@@ -167,7 +167,7 @@ The Desktop runner requires loopback-only networking and probes direct IPv4 and 
 
 ### Android on Linux
 
-Use a Linux Android SDK with `platform-tools`, `emulator`, `cmdline-tools/latest`, Java, KVM acceleration, and a matching released `paseo-v<version>-android.apk`. Install Tesseract with English text recognition (`tesseract-ocr` and `tesseract-ocr-eng` on Debian-based hosts) for the tooltip screenshot check. The default image is `system-images;android-34;google_apis;x86_64`. Install the image before running. Use `--sdk` to override `ANDROID_HOME` or `~/Android/Sdk` and `--system-image` to select an installed replacement. `--port` selects the unused even emulator console port (default 5584).
+Use a Linux Android SDK with `platform-tools`, `emulator`, `cmdline-tools/latest`, Java, KVM acceleration, and a matching released `paseo-v<version>-android.apk`. Install Tesseract with English text recognition (`tesseract-ocr` and `tesseract-ocr-eng` on Debian-based hosts) for the tooltip and toast screenshot checks. The default image is `system-images;android-34;google_apis;x86_64`. Install the image before running. Use `--sdk` to override `ANDROID_HOME` or `~/Android/Sdk` and `--system-image` to select an installed replacement. `--port` selects the unused even emulator console port (default 5584).
 
 ```bash
 node e2e/android.mjs --cli /tmp/paseo-0.17.1/node_modules/@getpaseo/cli \
