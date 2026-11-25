@@ -19,6 +19,7 @@ paseo plugin install "$PWD"
 `npm run check` runs TypeScript checking and the Node test suite. `npm run test:native` runs the account check against an installed CLI selected by `NATIVE_CLI=claude` or `NATIVE_CLI=codex`, using fixture logins in a temporary home; CI runs it on Linux and Windows for Claude Code (native installer and npm) and Codex (npm: a pinned release through the full check, and the latest release started and stopped only, since it does not answer a fixture login).
 
 `e2e/` holds a by-hand end-to-end simulation. It installs the plugin from GitHub (or a local checkout with `--source file://…`) into an isolated real Paseo daemon and drives limit stops, reservations, Resume now, the tick, cancellations, the startup scan, background agents, restart recovery, a rollback and, with `--upgrade-cli`, reservations carried across a Paseo upgrade, with the real Claude Code, Codex, Antigravity and OpenCode CLIs against local fake model APIs, on Linux and Windows. OpenCode needs 2.2.2 or later and its own `--opencode` binary. Run it before a release or after a Paseo upgrade; see [its README](../e2e/README.md).
+The [native app runners](../e2e/README.md#native-apps) exercise the released Electron app on Linux and Windows and the released Android app on an isolated Linux emulator.
 
 After changing an installed directory plugin:
 

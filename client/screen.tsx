@@ -249,7 +249,7 @@ function JobRow(props: {
   );
 
   return (
-    <View style={[styles.row, props.divided ? styles.rowDivider : null]}>
+    <View style={[styles.row, props.divided ? styles.rowDivider : null]} testID={`resume-row-${job.id}`}>
       {editing === "time" && session?.time ? (
         <TimeEditor
           job={job}
@@ -391,6 +391,7 @@ function HistorySection(props: {
   return (
     <View style={styles.section}>
       <Pressable
+        testID="resume-history-header"
         accessibilityRole="button"
         accessibilityState={{ expanded: open }}
         accessibilityLabel={`Recent activity in the last 24 hours: ${summary}`}
@@ -413,7 +414,7 @@ function HistorySection(props: {
           {entries.map((entry, index) => {
             const title = entry.title ?? "Untitled agent";
             return (
-              <View key={entry.id} style={[styles.historyRow, index > 0 ? styles.rowDivider : null]}>
+              <View key={entry.id} testID={`resume-history-row-${entry.id}`} style={[styles.historyRow, index > 0 ? styles.rowDivider : null]}>
                 <View style={styles.historyTime}>
                   <Text style={styles.historyClock}>{clockLabel(entry.at)}</Text>
                   <Text style={styles.relative}>{historyDateLabel(entry.at)}</Text>
@@ -631,8 +632,8 @@ export function AutoResumeScreen({ theme, host, layout, navigation }: PluginScre
           )}
         </View>
         {groupByDay(jobs, now).map((group) => (
-          <View key={group.label} style={styles.section}>
-            <Text style={styles.sectionTitle}>{group.label}</Text>
+          <View key={group.label} testID={`resume-day-${group.label}`} style={styles.section}>
+            <Text accessibilityRole="header" style={styles.sectionTitle}>{group.label}</Text>
             <View style={styles.card}>
               {group.jobs.map((job, index) => (
                 <JobRow

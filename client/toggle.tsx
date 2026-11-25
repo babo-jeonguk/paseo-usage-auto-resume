@@ -33,6 +33,7 @@ export function Toggle(props: {
   onValueChange(value: boolean): void;
   disabled?: boolean;
   accessibilityLabel: string;
+  testID?: string;
   theme: PluginScreenProps["theme"];
 }) {
   const { value, disabled, theme } = props;
@@ -62,6 +63,7 @@ export function Toggle(props: {
       accessibilityState={{ checked: value, disabled: !!disabled }}
       aria-checked={value}
       accessibilityLabel={props.accessibilityLabel}
+      testID={props.testID}
       style={{ opacity: disabled ? 0.5 : 1, minHeight: 28, justifyContent: "center" }}
     >
       <View style={{ width: TRACK_WIDTH, height: TRACK_HEIGHT, borderRadius: TRACK_HEIGHT / 2, overflow: "hidden" }}>

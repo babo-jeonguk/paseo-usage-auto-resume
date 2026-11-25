@@ -121,3 +121,41 @@ For Paseo 0.16 to 0.17, Codex needs CLI 0.121.0 or later to reopen a conversatio
 
 - **Background agents in the agent list.** `fetchAgents({ includeBackground: true })` may not return an agent-level background agent even though the plugin's own list and its scan see it; item 17d records what the connected client sees and is a NOTE, not a failure.
 - **Windows: an item that saves a reservation or history entry fails now and then.** The plugin saves `jobs.json` and `history.json` by renaming a temporary file over them. Windows refuses that rename while another process has the file open, and the harness reads both files throughout the run, so a save that lands on a read fails. On a Windows host this failed 1.8% of saves with a reader polling every second and 3.6% every 0.3 seconds (the UI phase's pace); no save failed out of 1000 without one. The failed save is lost, so the item waiting for it times out (seen in 8, the UI phase's 4, 9 and 15). The daemon log then holds an `EPERM: operation not permitted, rename '…jobs.json.….tmp' -> '…jobs.json'` (or `history.json`) line from the same moment; rerun the item. The plugin keeps a single rename because no other program normally reads these files. Item 14 does not catch a failure on an RPC path, which the daemon logs as `Error handling message` rather than as plugin output.
+
+## Native apps
+
+Run these manual checks alongside the CLI/web simulation before releasing the plugin or upgrading Paseo. Use Node 24, Git, an isolated installation of `@getpaseo/cli`, and released app artifacts of the same Paseo version. Put the real provider binaries on the isolated run's `PATH` with `--path` (use the OS path separator for several directories). On Windows, include the directory containing Git and any provider command shims.
+
+Each runner makes a separate temporary Paseo home and provider profile with a space and Korean characters in the path. It uses a loopback fake model server and a refusing provider proxy. Pass `--source git:owner/repo` to override the default GitHub source and `--to <branch, tag or SHA>` to select its revision. To exercise a local commit first, pass `--source "file://$PWD" --to "$(git rev-parse HEAD)"` from the plugin checkout. The native checks require a revision that includes the accessibility identifiers in this change.
+
+Use `--out <directory>` to choose the report location. The default is `e2e/out-native`. Each run writes a new subdirectory with `results.json`, daemon and model logs, proxy logs, app or emulator diagnostics, and screenshots. Failed runs keep the temporary home and include its path in the report. Successful runs remove it after copying the evidence.
+
+### Desktop on Linux and Windows
+
+Extract the matching desktop release archive and point `--app` at the directory containing `Paseo` and `Paseo.bin` on Linux, or `Paseo.exe` on Windows. Install `playwright-core` in a separate prefix and set `PW_ROOT` to its `node_modules` directory. CDP connects to the released app, so a Playwright browser download is unnecessary. Linux needs an X display. Windows needs native Node and an interactive desktop session.
+
+```bash
+PW_ROOT=/tmp/uar-tools/node_modules xvfb-run -a -s '-screen 0 1440x900x24' \
+  node e2e/desktop.mjs --cli /tmp/paseo-0.17.1/node_modules/@getpaseo/cli \
+  --app /path/to/Paseo-0.17.1-x64 --path "$HOME/.local/bin" --out /tmp/uar-results
+```
+
+```powershell
+$env:PW_ROOT = 'C:\uar-tools\node_modules'
+node e2e/desktop.mjs --expect-platform win32 --cli C:\tools\node_modules\@getpaseo\cli --app C:\Paseo-0.17.1-x64 --path 'C:\provider-bin;C:\MinGit\cmd' --out C:\uar-results
+```
+
+The runner checks the Electron-owned daemon's version and executable, real Claude and Codex subscription CLI launches, Settings account discovery, live composer updates within five seconds, the keyboard time editor, extra instructions, blocked and successful Resume now, day sections, Labs hover and provider-off cancellation. It closes the window and checks that its daemon and child processes exit. A new app instance must restore the reservation and let the real 30-second tick send one continue to the closed conversation. The report includes bundled Node and SQLite availability and any startup retries.
+
+Only the installed copy's subscription HTTP boundary is replaced. The Claude model turn uses the loopback API, and its auth check uses the login fixture in the isolated home. A clean Codex app-server probe receives a used-up usage window so the pending reservation stays in place without starting a model turn. Electron's Chromium update traffic has a separate refusing proxy, and the runner checks the isolated cache for updater files. The daemon retains direct GitHub access for the plugin install.
+
+### Android on Linux
+
+Use a Linux Android SDK with `platform-tools`, `emulator`, `cmdline-tools/latest`, Java, KVM acceleration, and a matching released `paseo-v<version>-android.apk`. The default image is `system-images;android-34;google_apis;x86_64`. Install the image before running. Use `--sdk` to override `ANDROID_HOME` or `~/Android/Sdk` and `--system-image` to select an installed replacement. `--port` selects the unused even emulator console port (default 5584).
+
+```bash
+node e2e/android.mjs --cli /tmp/paseo-0.17.1/node_modules/@getpaseo/cli \
+  --apk /path/to/paseo-v0.17.1-android.apk --path "$HOME/.local/bin" --out /tmp/uar-results
+```
+
+The runner uses its own AVD and adb server. It boots with wiped data, two cores, 2 GB RAM and software rendering. The app connects over `adb reverse` from device loopback to the isolated host daemon. UI Automator drives the compact list and pull-to-refresh, checks Hermes date formatting and spoken time, opens the native composer sheet, types times and notes, and checks both Resume now toasts and the exact model-request count. It also checks provider-off cancellation, visible Labs tooltip pixels, prompt edit and reset, recent activity, and reservation recovery after Android force-stops the app. The report counts dismissed System UI ANR dialogs and includes `logcat` for React Native and Hermes failures.

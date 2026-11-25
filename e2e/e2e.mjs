@@ -9,20 +9,23 @@
 //   [--opencode <bin>] [--model <opencode model>] [--path <extra PATH dirs>]
 // --ui 1 reads Playwright from PW_ROOT and the browser from CHROME, else Chromium on Linux and Edge on Windows (see ui-steps.mjs).
 import assert from 'node:assert/strict';
-import { execFile, execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { closeSync, existsSync, openSync, readFileSync, appendFileSync } from 'node:fs';
-import { cp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
-import { createServer } from 'node:net';
+import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
-import { dirname, join, delimiter } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { promisify } from 'node:util';
 import { patchEntry } from './patch-plugin.mjs';
+import { cliBin, connectToDaemon, daemonErrors, DEFAULT_MARK, freePort, installedPlugin, isWin, iso, options,
+  paseoCommand, patchInstalled as patchCopy, PLUGIN, pluginDirectory, providerEnvironment, replace, revisionOf,
+  run, runHome, saveReport, sleep, SOURCE, startModels, startProxy, waitFor } from './core.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const args = Object.fromEntries(process.argv.slice(2).reduce((a, v, i, all) => v.startsWith('--') ? [...a, [v.slice(2), all[i + 1]]] : a, []));
-const isWin = process.platform === 'win32';
+const args = options(['cli', 'root'], {
+  label: 'run', suites: 'claude', min: '0', ui: '0', only: '', source: SOURCE,
+  from: 'v1.2.2', to: 'main', out: '', path: '', hold: '', overload: '', 'upgrade-cli': '',
+  claude: '', codex: '', agy: '', opencode: '', model: '',
+});
 const label = args.label ?? 'run';
 const suites = (args.suites ?? 'claude').split(',');
 const MIN = args.min === '1';
@@ -30,46 +33,29 @@ const UI = args.ui === '1';
 // Only the newer sections (17+) honour this; the existing items always run.
 const ONLY = (args.only ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 const wants = (id) => ONLY.length === 0 || ONLY.includes(String(id));
-const GIT_SOURCE = args.source ?? 'git:babo-jeonguk/paseo-usage-auto-resume';
+const GIT_SOURCE = args.source;
 // The release a user updates from and rolls back to, and the version under test.
 const OLD_REF = args.from ?? 'v1.2.2', NEW_REF = args.to ?? 'main';
 let oldRevision = '';
-const PLUGIN = 'usage-auto-resume';
 // Must stay in sync with DEFAULT_CONTINUE_PROMPT in shared/prompt.ts. The check below fails the
 // run early instead of silently counting nothing.
-const DEFAULT_MARK = 'Continue the unfinished work from where it stopped.';
 if (!readFileSync(join(here, '..', 'shared', 'prompt.ts'), 'utf8').includes(DEFAULT_MARK)) {
   throw new Error('e2e DEFAULT_MARK drifted from shared/prompt.ts');
 }
 // Paseo 0.16 restart recovery; the model log counts this marker.
 const RECOVERY_MARK = 'UAR-RECOVERY-MARK go on.';
 
-const cliDir = args.cli;
-const tools = createRequire(join(cliDir, 'package.json'));
-const { DaemonClient } = await import(pathToFileURL(tools.resolve('@getpaseo/client/internal/daemon-client')));
-const { readLocalCredentialForTarget } = await import(pathToFileURL(tools.resolve('@getpaseo/server/daemon-control')));
-const { WebSocket } = tools('ws');
-// --upgrade-cli switches both to the newer CLI midway; see the upgrade step.
+let cliDir = resolve(args.cli);
 let paseoVersion = JSON.parse(readFileSync(join(cliDir, 'package.json'), 'utf8')).version;
 
-const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
-const waitFor = async (fn, what, timeout = 180000, every = 500) => {
-  const until = Date.now() + timeout;
-  while (Date.now() < until) { const v = await fn(); if (v) return v; await sleep(every); }
-  throw new Error('Timeout: ' + what);
-};
-const freePort = () => new Promise((done) => { const s = createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => done(p)); }); });
-const iso = (ms) => new Date(ms).toISOString();
-
-const root = args.root;
+const root = resolve(args.root);
 await rm(root, { recursive: true, force: true });
-const home = join(root, 'paseo'), profile = join(root, 'profile'), work = join(root, 'work');
-for (const d of [home, profile, work]) await mkdir(d, { recursive: true });
-const out = args.out ?? join(here, 'out-' + label);
+const { home, work, env: baseEnv } = await runHome(root, args.path);
+const out = args.out || join(here, 'out-' + label);
 await mkdir(out, { recursive: true });
-const usageFile = join(root, 'usage.json'), modelCtl = join(root, 'model.json'), modelLog = join(root, 'model.jsonl'), proxyLog = join(root, 'proxy.log');
-await writeFile(usageFile, '{}'); await writeFile(modelCtl, '{}'); await writeFile(modelLog, ''); await writeFile(proxyLog, '');
-const port = await freePort(), modelPort = await freePort(), proxyPort = await freePort();
+const usageFile = join(root, 'usage.json'), modelLog = join(root, 'model.jsonl'), proxyLog = join(root, 'proxy.log');
+await writeFile(usageFile, '{}');
+const port = await freePort();
 const target = `127.0.0.1:${port}`, origin = `http://${target}`;
 const data = join(home, 'plugin-data', PLUGIN);
 const jobsFile = join(data, 'jobs.json'), historyFile = join(data, 'history.json');
@@ -90,20 +76,13 @@ const note = (item, suite, name, ev) => { results.push({ item, suite, ok: null, 
 // ---- data files ---------------------------------------------------------------------------
 const readJobs = async () => existsSync(jobsFile) ? JSON.parse(await readFile(jobsFile, 'utf8')).jobs : [];
 const readHistory = async () => existsSync(historyFile) ? JSON.parse(await readFile(historyFile, 'utf8')).entries : [];
-// Windows refuses to rename over a file another process (the plugin) has open, unlike POSIX; the refusal ends on its own.
-const replace = async (path, text) => {
-  await writeFile(path + '.tmp', text);
-  for (const until = Date.now() + 10000; ; await sleep(100)) {
-    try { return await rename(path + '.tmp', path); } catch (e) { if (!isWin || !['EPERM', 'EACCES', 'EBUSY'].includes(e.code) || Date.now() > until) throw e; }
-  }
-};
 const writeJobs = async (jobs) => { await mkdir(data, { recursive: true }); await replace(jobsFile, JSON.stringify({ version: 1, jobs }, null, 2)); };
 const jobOf = async (id) => (await readJobs()).find((j) => j.agentId === id);
 const editJob = async (id, patch) => writeJobs((await readJobs()).map((j) => j.agentId === id ? { ...j, ...patch } : j));
 const setUsage = (v) => replace(usageFile, JSON.stringify(v));
-const modelState = {};
-const setModel = (api, v) => { modelState[api] = v; return replace(modelCtl, JSON.stringify(modelState)); };
-const allRequests = () => readFileSync(modelLog, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+let models, proxy;
+const setModel = (api, value) => models.set(api, value);
+const allRequests = () => models.requests();
 const API = { claude: 'claude', codex: 'codex', antigravity: 'agy', opencode: 'opencode' };
 // agy puts the continue in an earlier user turn and repeats it in later requests, so count distinct user turns (they carry a timestamp).
 const continues = (suite, mark = DEFAULT_MARK) => {
@@ -117,83 +96,13 @@ const writeSettings = async (id, version, values) => { await mkdir(settingsDir, 
 
 // ---- processes ----------------------------------------------------------------------------
 const nodeBin = process.execPath;
-const sys = process.env.SystemRoot;
-const extraPath = (args.path ?? '').split(delimiter).filter(Boolean);
-const baseEnv = isWin ? {
-  SystemRoot: sys, windir: sys, ComSpec: process.env.ComSpec, PATHEXT: process.env.PATHEXT, SystemDrive: process.env.SystemDrive,
-  TEMP: process.env.TEMP, TMP: process.env.TMP, USERPROFILE: profile, APPDATA: join(profile, 'AppData', 'Roaming'), LOCALAPPDATA: join(profile, 'AppData', 'Local'),
-  USERNAME: process.env.USERNAME, COMPUTERNAME: process.env.COMPUTERNAME,
-  PATH: [dirname(nodeBin), ...extraPath, `${sys}\\System32`, sys, `${sys}\\System32\\WindowsPowerShell\\v1.0`].join(';'),
-} : { HOME: join(root, 'home'), PATH: [dirname(nodeBin), ...extraPath, '/usr/local/bin', '/usr/bin', '/bin'].join(':') };
-if (!isWin) await mkdir(baseEnv.HOME, { recursive: true });
-let paseoBin = join(cliDir, 'bin', 'paseo');
-// Must not block: the client below only keeps its session by sending a heartbeat from this event loop, and the daemon
-// closes a socket that sends nothing for 45 s. A CLI call (start + plugin update) under load can take longer than that.
-const run = promisify(execFile);
-const paseo = async (...a) => (await run(nodeBin, [paseoBin, ...a, '--home', home], { encoding: 'utf8', env: { ...baseEnv, PASEO_HOME: home }, timeout: 240000, windowsHide: true })).stdout;
-
-const proxyEnv = { HTTPS_PROXY: `http://127.0.0.1:${proxyPort}`, HTTP_PROXY: `http://127.0.0.1:${proxyPort}`, NO_PROXY: '127.0.0.1,localhost', https_proxy: `http://127.0.0.1:${proxyPort}`, http_proxy: `http://127.0.0.1:${proxyPort}`, no_proxy: '127.0.0.1,localhost' };
-const modelUrl = `http://127.0.0.1:${modelPort}`;
-const claudeEnv = (dir) => ({ CLAUDE_CODE_OAUTH_TOKEN: 'e2e-fixture-only', ANTHROPIC_BASE_URL: modelUrl, CLAUDE_CONFIG_DIR: join(root, dir),
-  ...(args.overload ? { CLAUDE_CODE_MAX_RETRIES: '0' } : {}), CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_TELEMETRY: '1', DISABLE_AUTOUPDATER: '1', DISABLE_ERROR_REPORTING: '1', ...proxyEnv });
+const paseo = paseoCommand(() => cliBin(cliDir), home, baseEnv);
+const claudeEnv = (dir) => ({ CLAUDE_CODE_OAUTH_TOKEN: 'e2e-fixture-only', CLAUDE_CONFIG_DIR: join(root, dir),
+  ...(args.overload ? { CLAUDE_CODE_MAX_RETRIES: '0' } : {}), ...providerEnvironment(modelUrl, proxyEnv) });
+let modelUrl, proxyEnv;
 const codexHome = join(root, 'codex-home'), agyHome = join(root, 'agy-home');
-const providers = {};
-const withCmd = (bin) => bin ? { command: [bin] } : {};
-// Paseo 0.17 runs Antigravity as an ACP server and requires the subcommand in a command override.
-const agyCmd = (bin) => {
-  const [major, minor] = paseoVersion.split('.').map(Number);
-  return !bin ? {} : major > 0 || minor >= 17 ? { command: [bin, 'acp', '--disable-telemetry'] } : { command: [bin] };
-};
-if (suites.includes('claude')) {
-  providers.claude = { ...withCmd(args.claude), env: claudeEnv('claude-cfg') };
-  providers['claude-sub'] = { extends: 'claude', label: 'Claude Sub', ...withCmd(args.claude), env: claudeEnv('claude-sub-cfg') };
-}
-if (suites.includes('codex')) {
-  await mkdir(codexHome, { recursive: true });
-  await writeFile(join(codexHome, 'config.toml'), `model = "gpt-fake"\nmodel_provider = "fake"\n[model_providers.fake]\nname = "fake"\nbase_url = "${modelUrl}/v1"\nenv_key = "FAKE_KEY"\nwire_api = "responses"\n`);
-  providers.codex = { ...withCmd(args.codex), env: { CODEX_HOME: codexHome, FAKE_KEY: 'e2e-fixture-only', ...proxyEnv } };
-}
-if (suites.includes('antigravity')) {
-  await mkdir(join(agyHome, '.gemini', 'antigravity-cli'), { recursive: true });
-  await writeFile(join(agyHome, '.gemini', 'antigravity-cli', 'settings.json'), '{"modelProvider":"gemini"}');
-  providers.antigravity = { ...agyCmd(args.agy), env: { HOME: agyHome, USERPROFILE: agyHome, GEMINI_API_KEY: 'e2e-fixture-only', GOOGLE_GEMINI_BASE_URL: modelUrl, ...proxyEnv } };
-}
-if (suites.includes('opencode')) {
-  // OpenCode keeps config/data/state/cache under XDG homes; its opencode-go provider points at the
-  // fake chat-completions API, so the real CLI reports a real free-limit error.
-  const ocHome = join(root, 'opencode-home');
-  for (const dir of ['config/opencode', 'data', 'state', 'cache']) await mkdir(join(ocHome, dir), { recursive: true });
-  await writeFile(join(ocHome, 'config', 'opencode', 'opencode.json'), JSON.stringify({
-    model: args.model ?? 'opencode-go/deepseek-v4.1-flash',
-    provider: { 'opencode-go': { options: { baseURL: modelUrl, apiKey: 'e2e-fixture-only' } } },
-  }, null, 2));
-  providers.opencode = { ...withCmd(args.opencode), env: { HOME: ocHome, XDG_CONFIG_HOME: join(ocHome, 'config'), XDG_DATA_HOME: join(ocHome, 'data'),
-    XDG_STATE_HOME: join(ocHome, 'state'), XDG_CACHE_HOME: join(ocHome, 'cache'), OPENCODE_DISABLE_AUTOUPDATE: '1', ...proxyEnv } };
-}
-const cfg = { version: 1, daemon: { listen: target, relay: { enabled: false }, mcp: { enabled: false } }, pluginsEnabled: true,
-  features: { webUi: { enabled: UI }, dictation: { enabled: false }, voiceMode: { enabled: false } },
-  agents: { providers, resumeOnStartup: false, resumePrompt: RECOVERY_MARK } };
-await writeFile(join(home, 'config.json'), JSON.stringify(cfg, null, 2));
-
-const spawned = [];
-const startAux = (script, a) => { const p = spawn(nodeBin, [join(here, script), ...a], { stdio: 'ignore', windowsHide: true, detached: !isWin }); spawned.push(p); return p; };
 let daemon, client, ui;
-const startDaemon = async () => {
-  const fd = openSync(daemonLog, 'a');
-  daemon = spawn(nodeBin, ['--no-maglev', paseoBin, 'daemon', 'run', '--home', home], {
-    env: { ...baseEnv, PASEO_HOME: home, PASEO_LISTEN: target, PASEO_RELAY_ENABLED: 'false', PASEO_WEB_UI_ENABLED: UI ? 'true' : 'false' },
-    stdio: ['ignore', fd, fd], detached: !isWin, windowsHide: true });
-  closeSync(fd);
-  client = await waitFor(async () => {
-    if (daemon.exitCode !== null) throw new Error('daemon exited; see ' + daemonLog);
-    const c = new DaemonClient({ url: `ws://${target}/ws`, clientId: 'uar-e2e', clientType: 'cli', appVersion: paseoVersion,
-      localCredential: () => readLocalCredentialForTarget(home, target) ?? undefined,
-      webSocketFactory: (url, options) => new WebSocket(url, options?.protocols, { headers: options?.headers }),
-      reconnect: { enabled: false }, connectTimeoutMs: 1000 });
-    try { await c.connect(); return c; } catch { await c.close().catch(() => {}); return null; }
-  }, 'daemon connection', 240000);
-};
-const stopAll = async () => {
+async function stopAll() {
   await client?.close().catch(() => {});
   await paseo('daemon', 'stop').catch(() => {});
   await sleep(1500);
@@ -201,20 +110,62 @@ const stopAll = async () => {
     if (isWin) { try { execFileSync('taskkill', ['/pid', String(daemon.pid), '/T', '/F'], { stdio: 'ignore' }); } catch {} }
     else { try { process.kill(-daemon.pid, 'SIGTERM'); } catch {} await sleep(2000); try { process.kill(-daemon.pid, 'SIGKILL'); } catch {} }
   }
-  for (const p of spawned) { if (isWin) { try { execFileSync('taskkill', ['/pid', String(p.pid), '/T', '/F'], { stdio: 'ignore' }); } catch {} } else { try { process.kill(-p.pid, 'SIGKILL'); } catch { try { p.kill('SIGKILL'); } catch {} } } }
+
 };
 
+async function configureProviders() {
+  const providers = {};
+  const withCmd = (bin) => bin ? { command: [bin] } : {};
+  // Paseo 0.17 runs Antigravity as an ACP server and requires the subcommand in a command override.
+  const agyCmd = (bin) => {
+    const [major, minor] = paseoVersion.split('.').map(Number);
+    return !bin ? {} : major > 0 || minor >= 17 ? { command: [bin, 'acp', '--disable-telemetry'] } : { command: [bin] };
+  };
+  if (suites.includes('claude')) {
+    providers.claude = { ...withCmd(args.claude), env: claudeEnv('claude-cfg') };
+    providers['claude-sub'] = { extends: 'claude', label: 'Claude Sub', ...withCmd(args.claude), env: claudeEnv('claude-sub-cfg') };
+  }
+  if (suites.includes('codex')) {
+    await mkdir(codexHome, { recursive: true });
+    await writeFile(join(codexHome, 'config.toml'), `model = "gpt-fake"\nmodel_provider = "fake"\n[model_providers.fake]\nname = "fake"\nbase_url = "${modelUrl}/v1"\nenv_key = "FAKE_KEY"\nwire_api = "responses"\n`);
+    providers.codex = { ...withCmd(args.codex), env: { CODEX_HOME: codexHome, FAKE_KEY: 'e2e-fixture-only', ...proxyEnv } };
+  }
+  if (suites.includes('antigravity')) {
+    await mkdir(join(agyHome, '.gemini', 'antigravity-cli'), { recursive: true });
+    await writeFile(join(agyHome, '.gemini', 'antigravity-cli', 'settings.json'), '{"modelProvider":"gemini"}');
+    providers.antigravity = { ...agyCmd(args.agy), env: { HOME: agyHome, USERPROFILE: agyHome, GEMINI_API_KEY: 'e2e-fixture-only', GOOGLE_GEMINI_BASE_URL: modelUrl, ...proxyEnv } };
+  }
+  if (suites.includes('opencode')) {
+    // OpenCode keeps config/data/state/cache under XDG homes; its opencode-go provider points at the
+    // fake chat-completions API, so the real CLI reports a real free-limit error.
+    const ocHome = join(root, 'opencode-home');
+    for (const dir of ['config/opencode', 'data', 'state', 'cache']) await mkdir(join(ocHome, dir), { recursive: true });
+    await writeFile(join(ocHome, 'config', 'opencode', 'opencode.json'), JSON.stringify({
+      model: args.model || 'opencode-go/deepseek-v4.1-flash',
+      provider: { 'opencode-go': { options: { baseURL: modelUrl, apiKey: 'e2e-fixture-only' } } },
+    }, null, 2));
+    providers.opencode = { ...withCmd(args.opencode), env: { HOME: ocHome, XDG_CONFIG_HOME: join(ocHome, 'config'), XDG_DATA_HOME: join(ocHome, 'data'),
+      XDG_STATE_HOME: join(ocHome, 'state'), XDG_CACHE_HOME: join(ocHome, 'cache'), OPENCODE_DISABLE_AUTOUPDATE: '1', ...proxyEnv } };
+  }
+  const cfg = { version: 1, daemon: { listen: target, relay: { enabled: false }, mcp: { enabled: false } }, pluginsEnabled: true,
+    features: { webUi: { enabled: UI }, dictation: { enabled: false }, voiceMode: { enabled: false } },
+    agents: { providers, resumeOnStartup: false, resumePrompt: RECOVERY_MARK } };
+  await writeFile(join(home, 'config.json'), JSON.stringify(cfg, null, 2));
+
+}
+async function startDaemon() {
+  const fd = openSync(daemonLog, 'a');
+  daemon = spawn(nodeBin, ['--no-maglev', cliBin(cliDir), 'daemon', 'run', '--home', home], {
+    env: { ...baseEnv, PASEO_HOME: home, PASEO_LISTEN: target, PASEO_RELAY_ENABLED: 'false', PASEO_WEB_UI_ENABLED: UI ? 'true' : 'false' },
+    stdio: ['ignore', fd, fd], detached: !isWin, windowsHide: true });
+  closeSync(fd);
+  client = await connectToDaemon(cliDir, paseoVersion, home, target, () => daemon.exitCode === null && daemon.signalCode === null);
+};
 // ---- plugin helpers -----------------------------------------------------------------------
 const rpc = (method, input = {}) => client.invokePluginRpc(PLUGIN, method, input);
-const pluginInfo = async () => { const j = JSON.parse(await paseo('plugin', 'ls', PLUGIN, '--json')); return Array.isArray(j) ? j.find((p) => p.id === PLUGIN) ?? j[0] : j; };
-const pluginDir = async () => { const i = await pluginInfo(); return i.path ?? i.directory ?? i.dir; };
-const pluginRevision = async () => { const i = await pluginInfo(); return i.installation?.currentRevision ?? i.commit ?? i.revision ?? ''; };
-const patchInstalled = async () => {
-  const entry = join(await pluginDir(), 'index.server.ts');
-  await writeFile(entry, patchEntry(await readFile(entry, 'utf8'), usageFile));
-  await client.reloadPlugin(PLUGIN);
-  await waitFor(async () => (await rpc('auto-resume.list').catch(() => null))?.jobs, 'plugin answering after reload', 90000);
-};
+const pluginDir = async () => pluginDirectory(await installedPlugin(paseo));
+const pluginRevision = async () => revisionOf(await installedPlugin(paseo));
+const patchInstalled = () => patchCopy({ paseo, client, patch: source => patchEntry(source, usageFile) });
 const pluginLogLines = async () => (await readFile(daemonLog, 'utf8').catch(() => '')).split(/\r?\n/).filter((l) => l.includes('[usage-auto-resume]'));
 // The installed release's own provider list. A release that predates a provider cannot discover it,
 // so item 1 expects only the suites that release supports; item 2 checks the version under test.
@@ -433,9 +384,11 @@ const stopAtLimit = async (agent, suite, state) => {
 // ==========================================================================================
 const ctx = { step, note, results, rpc, client: () => client, mkAgent, hit, setModel, setUsage, jobOf, editJob, readJobs, readHistory, writeJobs, continues, writeSettings, waitFor, sleep, origin, out, jobsFile, historyFile, root, API, DEFAULT_MARK, timelineText, home };
 try {
-  startAux('fake-models.mjs', [String(modelPort), modelCtl, modelLog]);
-  startAux('blackhole-proxy.mjs', [String(proxyPort), proxyLog]);
-  await sleep(1500);
+  models = await startModels(root);
+  proxy = await startProxy(proxyLog);
+  modelUrl = models.url;
+  proxyEnv = proxy.env;
+  await configureProviders();
   await startDaemon();
   log(`daemon up (Paseo ${paseoVersion}) at ${target}; suites=${suites}; ui=${UI}; min=${MIN}`);
   workspace = (await client.createWorkspace({ source: { kind: 'directory', path: work }, title: 'UAR E2E' })).workspace;
@@ -708,8 +661,8 @@ try {
     const upgraded = await step('upgrade', 'plugin', 'saved reservations survive restarting the daemon on the newer Paseo', async () => {
       const from = paseoVersion;
       await stopDaemon();
-      paseoBin = join(args['upgrade-cli'], 'bin', 'paseo');
-      paseoVersion = JSON.parse(readFileSync(join(args['upgrade-cli'], 'package.json'), 'utf8')).version;
+      cliDir = resolve(args['upgrade-cli']);
+      paseoVersion = JSON.parse(readFileSync(join(cliDir, 'package.json'), 'utf8')).version;
       const current = JSON.parse(await readFile(join(home, 'config.json'), 'utf8'));
       if (current.agents?.providers?.antigravity) Object.assign(current.agents.providers.antigravity, agyCmd(args.agy));
       await writeFile(join(home, 'config.json'), JSON.stringify(current, null, 2));
@@ -940,7 +893,7 @@ try {
 
   // ---- 19. OpenCode limit flow against the fake chat-completions API ----------------------------
   if (!MIN && suites.includes('opencode') && wants(19)) {
-    const ocModel = args.model ?? 'opencode-go/deepseek-v4.1-flash';
+    const ocModel = args.model || 'opencode-go/deepseek-v4.1-flash';
     const mkOpenCode = (title) => client.createAgent({ provider: 'opencode', cwd: work, workspaceId: workspace.id, title, model: ocModel });
     let ocA;
     await step(19, 'opencode', '19a real opencode CLI limit (fake API) -> reservation; record resetAt and its evidence', async () => {
@@ -1022,13 +975,7 @@ try {
   // ---- 14. daemon log -------------------------------------------------------------------
   await step(14, 'log', 'daemon log has no plugin errors apart from intended ones', async () => {
     const lines = (await pluginLogLines()).filter((l) => !/e2e-(probe|outcome)/.test(l));
-    // The daemon records plugin output as JSON; read the message, not the envelope.
-    const messageOf = (line) => {
-      try { const record = JSON.parse(line); return String(record.output ?? record.msg ?? line); }
-      catch { const at = line.indexOf('[usage-auto-resume]'); return at === -1 ? line : line.slice(at); }
-    };
-    const bad = lines.map(messageOf).filter((text) => /(failed|could not|error|unreadable)/i.test(text)).map((text) => text.slice(0, 260));
-    const all = (await readFile(daemonLog, 'utf8')).split(/\r?\n/).filter((l) => /"level":(50|60)/.test(l)).map((l) => { try { const j = JSON.parse(l); return `${j.module ?? ''}: ${String(j.msg ?? '').slice(0, 160)}`; } catch { return l.slice(0, 160); } });
+    const { plugin: bad, daemon: all } = daemonErrors(await readFile(daemonLog, 'utf8'));
     results.push({ item: 14, suite: 'log-detail', ok: null, name: 'plugin log lines / level>=50 lines', ev: JSON.stringify({ pluginLines: lines.length, bad, level50: all.slice(0, 20) }) });
     assert.equal(bad.length, 0, 'plugin error lines: ' + bad.join(' || '));
     return `${lines.length} [usage-auto-resume] lines (excluding probe), 0 error lines; level>=50 daemon lines: ${all.length}`;
@@ -1038,16 +985,18 @@ try {
   log('FATAL', e?.stack ?? e);
   results.push({ item: 'fatal', suite: '-', ok: false, name: 'harness', ev: String(e?.stack ?? e).slice(0, 800) });
 } finally {
-  const reqs = existsSync(modelLog) ? allRequests() : [];
+  await stopAll();
+  await models?.close();
+  await proxy?.close();
+  loopDelay.disable();
+  const reqs = models?.requests() ?? [];
+  const proxyHits = proxy?.hits() ?? [];
   const summary = { label, paseoVersion, platform: process.platform, node: process.version, suites, eventLoopMaxMs: Math.round(loopDelay.max / 1e6), fakeRequestsTotal: reqs.length,
     fakeRequestsCounted: reqs.filter((r) => r.counted).length, byApi: Object.fromEntries(['claude', 'codex', 'agy', 'other'].map((k) => [k, reqs.filter((r) => r.api === k).length])),
-    proxyBlockedConnects: readFileSync(proxyLog, 'utf8').split('\n').filter(Boolean).length,
-    proxyHosts: [...new Set(readFileSync(proxyLog, 'utf8').split('\n').filter(Boolean))].slice(0, 12), results };
-  await writeFile(join(out, 'results.json'), JSON.stringify(summary, null, 2));
-  await writeFile(join(out, 'daemon.log'), await readFile(daemonLog, 'utf8').catch(() => '')).catch(() => {});
-  await writeFile(join(out, 'model.jsonl'), await readFile(modelLog, 'utf8').catch(() => '')).catch(() => {});
+    proxyBlockedConnects: proxyHits.length,
+    proxyHosts: [...new Set(proxyHits)].slice(0, 12), results };
+  await saveReport(out, summary, { 'daemon.log': daemonLog, 'model.jsonl': modelLog, 'proxy.log': proxyLog });
   console.log('SUMMARY ' + JSON.stringify({ label, loopMaxMs: summary.eventLoopMaxMs, fake: summary.fakeRequestsTotal, byApi: summary.byApi, blocked: summary.proxyBlockedConnects, hosts: summary.proxyHosts }));
-  await stopAll();
   console.log('DONE root=' + root);
   if (results.some(r => r.ok === false)) process.exitCode = 1;
 }

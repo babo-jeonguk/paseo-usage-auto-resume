@@ -30,7 +30,7 @@ const HoverView = View as ComponentType<ComponentProps<typeof View> & { onPointe
 function SaveFailureNote({ failure, feedback, saving, colors }: { failure: SaveFailure | null; feedback: SaveFeedback; saving: boolean; colors: Theme["colors"] }) {
   if (!failure) return null;
   return (
-    <View style={{ gap: 8, paddingHorizontal: 4, flexDirection: "row", flexWrap: "wrap", alignItems: "center" }}>
+    <View testID="resume-save-failure" style={{ gap: 8, paddingHorizontal: 4, flexDirection: "row", flexWrap: "wrap", alignItems: "center" }}>
       <Text style={[dangerText(colors), { flex: 1, minWidth: 200 }]}>{failure.message}</Text>
       {failure.reload ? (
         <Pressable
@@ -98,6 +98,7 @@ function ProviderSwitches({ settings, host, theme, feedback }: { settings: Ready
       <SettingsSection title="Background agents">
         <SettingsCard>
           <SettingsSwitch
+            testID="resume-background-switch"
             label="Resume background agents"
             hint="Agents Paseo hides from lists, and agents in background workspaces"
             value={settings.values.resumeBackground}
@@ -125,6 +126,7 @@ function ProviderSwitches({ settings, host, theme, feedback }: { settings: Ready
                 return (
                   <SettingsSwitch
                     key={provider.id}
+                    testID={`resume-provider-${provider.id}`}
                     label={provider.label}
                     hint={providerHint(provider, on ? (pending.get(provider.id) ?? 0) : 0)}
                     value={on}
@@ -258,6 +260,7 @@ function OverloadRetrySetting({ value, disabled, onValueChange, theme }: {
         >
           <Text style={[bodyText(colors), { flexShrink: 1 }]}>{OVERLOAD_RETRY_LABEL}</Text>
           <Pressable
+            testID="resume-labs-info"
             accessibilityRole="button"
             accessibilityLabel={`About ${OVERLOAD_RETRY_LABEL}`}
             accessibilityHint="Shows what this setting does."
@@ -280,6 +283,7 @@ function OverloadRetrySetting({ value, disabled, onValueChange, theme }: {
           </Pressable>
         </HoverView>
         <Toggle
+          testID="resume-labs-toggle"
           theme={theme}
           value={value}
           disabled={disabled}
@@ -289,6 +293,7 @@ function OverloadRetrySetting({ value, disabled, onValueChange, theme }: {
       </View>
       {open ? (
         <HoverView
+          testID="resume-labs-tooltip"
           onPointerEnter={show}
           onPointerLeave={hide}
           accessibilityLiveRegion="polite"

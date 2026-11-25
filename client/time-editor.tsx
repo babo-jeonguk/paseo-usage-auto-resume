@@ -89,7 +89,9 @@ export function TimeEditor(props: {
         return (
           <Pressable
             key={choice.offset}
+            testID={`resume-day-choice-${choice.offset}`}
             accessibilityRole="radio"
+            accessibilityLabel={choice.label}
             accessibilityState={{ checked: active }}
             hitSlop={{ top: 6, bottom: 6 }}
             onPress={() => props.onChange({ ...entry, day: choice.offset })}
