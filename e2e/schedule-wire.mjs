@@ -58,14 +58,16 @@ export function scheduleWire() {
     connect, ready, settled, checkpoint, messagesSince,
     pushed(mark, reservationId) {
       const messages = messagesSince(mark);
-      const list = messages.find(message => message.jobs?.some(job => job.id === reservationId));
-      const event = list && messages.find(message => Number.isSafeInteger(message.revision) && message.sequence < list.request.sequence);
+      const pair = messages.flatMap(list => {
+        if (!list.jobs?.some(job => job.id === reservationId)) return [];
+        const event = messages.find(message => Number.isSafeInteger(message.revision) && message.sequence < list.request.sequence);
+        return event ? [{ list, event }] : [];
+      }).find(({ list }) => list.request.at - mark.screenStartedAt < 120_000);
       const observed = messages.map(message => message.method
         ? { method: message.method, request: message.request.sequence, reservations: message.jobs?.map(job => job.id) }
         : { revision: message.revision, sequence: message.sequence });
-      assert(event, `The UI must request the list containing ${reservationId} after receiving a live schedule event. Observed: ${JSON.stringify(observed)}`);
-      assert(Number.isFinite(mark.screenStartedAt) && list.request.at - mark.screenStartedAt < 120_000,
-        'The live change measurement overlapped the periodic list poll');
+      assert(pair, `The UI must request the list containing ${reservationId} after a live schedule event and before the periodic poll. Observed: ${JSON.stringify(observed)}`);
+      const { list, event } = pair;
       return { revision: event.revision, eventReceivedAt: event.at, listReceivedAt: list.at };
     },
   };

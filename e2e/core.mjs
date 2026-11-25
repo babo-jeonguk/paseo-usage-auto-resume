@@ -200,12 +200,13 @@ export async function installPlugin(paseo, source, ref, env) {
   return plugin;
 }
 
-export async function patchInstalled({ paseo, client, patch }) {
+export async function patchInstalled({ paseo, client, patch, activate }) {
   const entry = join(pluginDirectory(await installedPlugin(paseo)), 'index.server.ts');
   await writeFile(entry, patch(await readFile(entry, 'utf8')));
-  await client.reloadPlugin(PLUGIN);
+  if (activate) client = await activate();
+  else await client.reloadPlugin(PLUGIN);
   await waitFor(async () => (await client.invokePluginRpc(PLUGIN, 'auto-resume.list', {}).catch(() => null))?.jobs,
-    'plugin answering after reload', 90_000);
+    'plugin answering after fixture activation', 90_000);
 }
 
 export function daemonErrors(text) {

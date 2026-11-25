@@ -150,7 +150,7 @@ PW_ROOT=/tmp/uar-tools/node_modules bwrap --unshare-net --bind / / --dev /dev --
   --path "$HOME/.local/bin" --out /tmp/uar-results
 ```
 
-On Windows, copy the staged `source.git` and the other prerequisites into a dedicated Windows VM with its network adapters removed. Use the file URL for the repository's location inside that VM and the revision from the online report.
+On Windows, copy the staged `source.git` and the other prerequisites into a dedicated Windows VM with its network adapters removed. Use the file URL for the repository's location inside that VM and the revision from the online report. The runner launches Electron in a Windows job object so that shutdown can account for the entire process tree.
 
 ```powershell
 $env:PW_ROOT = 'C:\uar-tools\node_modules'

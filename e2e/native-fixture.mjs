@@ -45,9 +45,9 @@ export async function nativeFixture(ctx, args) {
       await client?.close();
       client = await connectToDaemon(cli, version, home, target, alive);
     },
-    async install(patch) {
+    async install(patch, activate) {
       report.revision = revisionOf(await installPlugin(paseo, args.source, args.to, environment));
-      await patchInstalled({ paseo, client, patch });
+      await patchInstalled({ paseo, client, patch, activate });
       workspace = (await client.createWorkspace({ source: { kind: 'directory', path: work }, title: 'Usage Auto Resume E2E' })).workspace;
     },
     agent(title, provider = 'claude', model) {

@@ -316,7 +316,6 @@ await nativeRun('android', args, async ctx => {
     const recovery = await fixture.agent('Android cold reopen');
     const { job } = await fixture.limit(recovery);
     await device.scrollTo(row(job), 'up');
-    const sent = fixture.continues().length;
     const before = (await device.shell('pidof', PACKAGE)).trim();
     assert(before);
     await device.shell('am', 'force-stop', PACKAGE);
@@ -329,7 +328,7 @@ await nativeRun('android', args, async ctx => {
     await device.find(pill);
     assert.notEqual((await device.shell('pidof', PACKAGE)).trim(), before);
     assert.equal((await fixture.job(recovery.id)).id, job.id);
-    assert.equal(fixture.continues().length, sent);
+    assert.equal(fixture.continues().length, 1, 'Cold reopen must leave the total at one manual continue');
     assert.equal(fixture.continues(note).length, 1);
     await device.shot('cold-reopen');
     assert.deepEqual(fixture.proxy.hits(), []);
