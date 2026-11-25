@@ -21,7 +21,7 @@ await nativeRun('android', args, async ctx => {
   const device = await androidDevice(ctx, fixture, args);
   const log = join(root, 'daemon.log');
   artifacts['daemon.log'] = log;
-  const waitJob = (agent, test, what) => waitFor(async () => test(await fixture.job(agent.id)), what, 20_000, 200);
+  const { waitJob } = fixture;
 
   const menuButton = /^(Open|Close) menu$/;
   const autoResumeItem = 'plugin-sidebar-usage-auto-resume-scheduled';
@@ -95,16 +95,23 @@ await nativeRun('android', args, async ctx => {
   const same = await fixture.agent('Android same-day reservation');
   const later = await fixture.agent('Android later-day reservation');
   await check('Compact list, Hermes days and spoken time, bulk and row toggles, delay, and pull-to-refresh', async () => {
-    const sameDay = Date.parse(primaryJob.dueAt) - 122_000;
-    const { job: sameJob } = await fixture.limit(same, Math.max(60, Math.floor((sameDay - Date.now()) / 1000)));
+    const { job: initialSame } = await fixture.limit(same, 60);
     const { job: initialLater } = await fixture.limit(later);
     const laterDue = iso(Date.parse(initialLater.dueAt) + 3 * 86_400_000);
     // Some Claude releases omit the date from distant rate-limit notices. Schedule the later
     // day explicitly after the real limit created its reservation.
-    assert.equal((await fixture.rpc('auto-resume.reschedule', {
-      agentId: later.id, id: initialLater.id, dueAt: initialLater.dueAt, newDueAt: laterDue,
-    })).changed, true);
+    for (const [agent, job, newDueAt] of [[same, initialSame, primaryJob.dueAt], [later, initialLater, laterDue]]) {
+      assert.equal((await fixture.rpc('auto-resume.reschedule', {
+        agentId: agent.id, id: job.id, dueAt: job.dueAt, newDueAt,
+      })).changed, true);
+    }
+    const sameJob = await fixture.job(same.id);
     const laterJob = await fixture.job(later.id);
+    const tracked = [primaryJob.id, sameJob.id, laterJob.id];
+    const allEnabled = async enabled => {
+      const jobs = await fixture.jobs();
+      return tracked.every(id => jobs.some(job => job.id === id && job.enabled === enabled));
+    };
     const findDay = async job => {
       const list = await device.nodes();
       const target = list.find(row(job));
@@ -126,33 +133,34 @@ await nativeRun('android', args, async ctx => {
       /^in \d+ days?(?: \d+ hours?)?$/.test(node.desc ?? ''));
     await device.shot('compact-list');
     await device.tapNode(await device.scrollTo('Turn all off', 'up'));
-    await waitFor(async () => {
-      const jobs = await fixture.jobs();
-      return jobs.length === 3 && jobs.every(job => !job.enabled);
-    }, 'all jobs off');
+    await waitFor(() => allEnabled(false), 'tracked jobs off');
     const compactAllOn = await device.find(node => node.pkg === PACKAGE && node.desc === 'Turn all on');
     assert(compactAllOn.text === 'All on' || (await device.nodes()).some(node => node.text === 'All on'),
       'Compact bulk control must show All on');
     await device.tap('Turn all on');
-    await waitFor(async () => {
-      const jobs = await fixture.jobs();
-      return jobs.length === 3 && jobs.every(job => job.enabled);
-    }, 'all jobs on');
+    await waitFor(() => allEnabled(true), 'tracked jobs on');
     const rowSwitch = node => node.pkg === PACKAGE && (node.desc ?? '').startsWith('Continue ' + primaryTitle + ' automatically');
     await device.tapNode(await device.scrollTo(rowSwitch));
     await waitJob(primary, job => job && !job.enabled, 'native switch off');
     await device.tap(rowSwitch);
     await waitJob(primary, job => job?.enabled, 'native switch on');
-    await device.tap(/^Delay 10 minutes for Android live limit$/);
-    await waitJob(primary, job => job?.dueAt === iso(Date.parse(primaryJob.dueAt) + 600_000), 'row +10m');
+    const updatedAt = performance.now();
+    const delay = /^Delay 10 minutes for Android live limit$/;
+    await device.tap(delay);
+    const bumpedDue = iso(Date.parse(primaryJob.dueAt) + 600_000);
+    await waitJob(primary, job => job?.dueAt === bumpedDue, 'row +10m');
+    await device.find(`Change time for ${primaryTitle}, now ${localClock(Date.parse(bumpedDue))}`);
 
-    // An offline change to the fixture store cannot push. The gesture must fetch the new row state.
+    // The +10m mutation refetches the list. Finish the gesture check within that refetch's
+    // two-minute polling interval. An offline fixture edit cannot push the change.
     await device.scrollTo('Turn all off', 'up');
-    const coords = await device.find(rowSwitch);
+    const coords = await device.find(node => rowSwitch(node) && node.checked);
     await editSavedJobs(fixture, jobs => jobs.map(job => job.id === primaryJob.id ? { ...job, enabled: false } : job));
+    assert((await device.find(rowSwitch)).checked, 'Offline fixture edit must leave the rendered switch on');
     const width = Math.floor((coords.left + coords.right) / 2);
     await device.swipe(width, coords.top, coords.top + 420);
     await device.find(node => rowSwitch(node) && !node.checked);
+    assert(performance.now() - updatedAt < 120_000, 'Refresh check overlapped the periodic list poll');
     assert.equal((await fixture.job(primary.id)).enabled, false);
     await device.tap(rowSwitch);
     await waitJob(primary, job => job?.enabled, 'reservation enabled again');

@@ -3,8 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { access, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
-import { cliBin, freePort, inherited, isWin, iso, killTree, nativeRun, options, pidAlive, readJson,
-  run, running, SOURCE, spawnLogged, startProxy, waitFor } from './core.mjs';
+import { freePort, inherited, isWin, iso, killTree, nativeRun, options, pidAlive, readJson,
+  run, running, SOURCE, spawnLogged, startProxy, waitFor, withDeadline } from './core.mjs';
 import { assertSubscriptionRequests, patchDesktopEntry, prepareLogins } from './desktop-subscription.mjs';
 import { assertDaemonLogs, editSavedJobs, localClock, nativeDefaults, nativeFixture, tomorrowAtNoon } from './native-fixture.mjs';
 
@@ -56,6 +56,7 @@ await nativeRun('desktop', args, async ctx => {
   assert(report.runtime.electron && report.runtime.node, 'Expected Electron bundled runtime');
 
   let app, browser, page, launch = 0;
+  const closeBrowser = () => withDeadline(() => browser?.close(), 'Electron CDP disconnect', 10_000);
   const daemonInstance = () => readJson(join(fixture.home, 'paseo.pid'));
   const shot = name => page?.screenshot({ path: join(out, name + '.png'), timeout: 10_000 });
   ctx.screenshots(async name => {
@@ -132,11 +133,11 @@ await nativeRun('desktop', args, async ctx => {
       }
     }
     const startedAt = Date.now();
-    await page.evaluate(() => window.close());
+    await withDeadline(() => page.evaluate(() => window.close()), 'Electron window close', 15_000);
     await waitFor(async () => !running(app) && !(await processTable()).some(({ pid, group }) =>
       children.has(pid) || groups.has(group)), 'desktop daemon and child processes exit', 60_000);
     shutdowns.push({ startedAt, finishedAt: Date.now() });
-    await browser.close();
+    await closeBrowser();
     browser = page = app = undefined;
   }
   dispose(async () => {
@@ -150,8 +151,8 @@ await nativeRun('desktop', args, async ctx => {
           await waitFor(() => !pidAlive(instance.pid), 'managed daemon cleanup', 20_000);
         }
       } finally {
-        await killTree(app);
-        await browser?.close().catch(() => {});
+        try { await killTree(app); }
+        finally { await closeBrowser(); }
       }
     }
   });
@@ -181,7 +182,7 @@ await nativeRun('desktop', args, async ctx => {
     await button('Send', view).click();
     await page.getByText(toast, { exact: typeof toast === 'string' }).waitFor();
   };
-  const waitJob = (agent, test, what) => waitFor(async () => test(await fixture.job(agent.id)), what, 20_000, 250);
+  const { waitJob } = fixture;
 
   await check('Electron owns the version-matched daemon and loads the installed plugin', async () => {
     await startApp();
@@ -253,7 +254,9 @@ await nativeRun('desktop', args, async ctx => {
     await editSavedJobs(fixture, jobs => [...jobs, seed]);
     await waitFor(() => fixture.job(agent.id), 'seeded Codex reservation');
     await fixture.setUsage('limited', iso(Date.now() + 40 * 60_000));
-    assert.equal((await fixture.rpc('auto-resume.resume-now', { agentId: agent.id, id: seed.id, dueAt })).result, 'used_up');
+    await screen();
+    await button('Open ' + agent.title, page.getByTestId('resume-row-' + seed.id)).click();
+    await resume(await panel(agent), /^Usage is still used up/);
     assert.equal((await fixture.job(agent.id)).id, seed.id);
     const fetches = assertSubscriptionRequests(fetchLog, [
       ['claude', 'limited'], ['claude', 'auth'], ['claude', 'ready'], ['codex', 'limited'],

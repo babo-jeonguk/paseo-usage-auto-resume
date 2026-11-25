@@ -29,6 +29,7 @@ export async function nativeFixture(ctx, args) {
   const rpc = (method, input = {}) => client.invokePluginRpc(PLUGIN, method, input);
   const jobsFile = join(home, 'plugin-data', PLUGIN, 'jobs.json');
   const jobs = async () => (await rpc('auto-resume.list')).jobs;
+  const job = async id => (await jobs()).find(row => row.agentId === id);
   return {
     ...dirs, cli, version, environment, paseo, target, port, models, proxy, usageFile, jobsFile, rpc, jobs,
     get client() { return client; },
@@ -62,7 +63,8 @@ export async function nativeFixture(ctx, args) {
         return { job, observedAt: performance.now() };
       } finally { await models.set('claude', { mode: 'text' }); }
     },
-    job: async id => (await jobs()).find(job => job.agentId === id),
+    job,
+    waitJob: (agent, matches, what) => waitFor(async () => matches(await job(agent.id)), what, 20_000, 250),
     history: async () => (await rpc('auto-resume.history')).entries,
     setUsage: (usage, until) => replace(usageFile, JSON.stringify({ usage, until })),
     continues: (mark = DEFAULT_MARK) =>

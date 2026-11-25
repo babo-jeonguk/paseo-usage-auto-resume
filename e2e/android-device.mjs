@@ -54,8 +54,10 @@ export async function androidDevice(ctx, fixture, args) {
     ANDROID_EMULATOR_HOME: androidHome, ANDROID_ADB_SERVER_PORT: String(adbPort), ADB_LOCAL_TRANSPORT_MAX_PORT: '5683',
   };
   const adbBin = join(sdk, 'platform-tools', 'adb');
+  const adbServer = ['-P', String(adbPort)];
+  const adbDevice = [...adbServer, '-s', serial];
   const adb = async (args, { timeout = 30_000, encoding = 'utf8', direct = false } = {}) =>
-    (await run(adbBin, ['-P', String(adbPort), ...(direct ? [] : ['-s', serial]), ...args],
+    (await run(adbBin, [...(direct ? adbServer : adbDevice), ...args],
       { env, timeout, encoding, maxBuffer: 48 * 1024 * 1024 })).stdout;
   const shell = (...args) => adb(['shell', args.map(quote).join(' ')]);
   const tapNode = node => shell('input', 'tap', Math.floor((node.left + node.right) / 2), Math.floor((node.top + node.bottom) / 2));
@@ -153,7 +155,8 @@ export async function androidDevice(ctx, fixture, args) {
     const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     emulator = spawnLogged(join(sdk, 'emulator', 'emulator'),
       ['-avd', avd, '-port', String(port), '-wipe-data', '-no-window', '-no-audio', '-no-snapshot',
-        '-no-boot-anim', '-gpu', 'swiftshader_indirect', '-cores', '2', '-memory', '2048', '-timezone', timezone],
+        '-no-boot-anim', '-gpu', 'swiftshader_indirect', '-cores', '2', '-memory', '2048', '-timezone', timezone,
+        '-no-metrics', '-network-user-mode-options', 'restrict=on', '-wifi-user-mode-options', 'restrict=on'],
       { env, log });
     dispose(async () => {
       try { if (running(emulator)) await adb(['emu', 'kill'], { timeout: 10_000 }); }
@@ -172,11 +175,24 @@ export async function androidDevice(ctx, fixture, args) {
     });
     const logcat = join(root, 'logcat.txt');
     artifacts['logcat.txt'] = logcat;
+    const logger = spawnLogged(adbBin, [...adbDevice, 'logcat', '-b', 'all', '-v', 'threadtime'], { env, log: logcat });
     dispose(async () => {
-      const records = await adb(['logcat', '-d', '-v', 'threadtime']);
-      await writeFile(logcat, records);
-      report.fatalLogcat = records.split('\n').filter(line =>
-        /\b(?:E|F) ReactNativeJS\b.*(?:Error|Exception|Hermes)|\bF libc\b.*Fatal signal.*sh\.paseo|\bE AndroidRuntime\b.*Process: sh\.paseo\b|\bF DEBUG\b.*sh\.paseo/i.test(line));
+      const marker = `end-${Date.now()}`;
+      let records;
+      try {
+        await shell('log', '-t', 'UAR_E2E', marker);
+        records = await waitFor(async () => {
+          assert(running(logger), 'Android logcat stopped before fixture teardown');
+          const text = await readFile(logcat, 'utf8');
+          return text.includes(marker) ? text : null;
+        }, 'Android logcat final marker', 15_000);
+      } finally { await killTree(logger); }
+      const appPids = new Set([...records.matchAll(/\bActivityManager\s*:\s*Start proc (\d+):sh\.paseo(?:[:/]|\b)/g)].map(match => match[1]));
+      report.fatalLogcat = records.split('\n').filter(line => {
+        if (/\bE AndroidRuntime\s*:\s*Process: sh\.paseo(?:[:,]|$)|\bF (?:DEBUG|libc)\s*:.*>>> sh\.paseo(?:[: ]|$)/.test(line)) return true;
+        const js = line.match(/\s(\d+)\s+\d+\s+([EF]) ReactNativeJS\s*:\s*(.*)/);
+        return js && appPids.has(js[1]) && (js[2] === 'F' || /^(?:Fatal|Unhandled JS Exception)\b/i.test(js[3]));
+      });
       assert.deepEqual(report.fatalLogcat, [], 'Paseo Android logged a fatal error');
     });
   }

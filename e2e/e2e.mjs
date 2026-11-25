@@ -110,14 +110,16 @@ async function stopAll() {
   }
 }
 
+// Paseo 0.17 runs Antigravity as an ACP server and requires the subcommand in a command override.
+function agyCommand(bin, version) {
+  if (!bin) return {};
+  const [major, minor] = version.split('.').map(Number);
+  return { command: major > 0 || minor >= 17 ? [bin, 'acp', '--disable-telemetry'] : [bin] };
+}
+
 async function configureProviders() {
   const providers = {};
   const withCmd = (bin) => bin ? { command: [bin] } : {};
-  // Paseo 0.17 runs Antigravity as an ACP server and requires the subcommand in a command override.
-  const agyCmd = (bin) => {
-    const [major, minor] = paseoVersion.split('.').map(Number);
-    return !bin ? {} : major > 0 || minor >= 17 ? { command: [bin, 'acp', '--disable-telemetry'] } : { command: [bin] };
-  };
   if (suites.includes('claude')) {
     providers.claude = { ...withCmd(args.claude), env: claudeEnv('claude-cfg') };
     providers['claude-sub'] = { extends: 'claude', label: 'Claude Sub', ...withCmd(args.claude), env: claudeEnv('claude-sub-cfg') };
@@ -130,7 +132,7 @@ async function configureProviders() {
   if (suites.includes('antigravity')) {
     await mkdir(join(agyHome, '.gemini', 'antigravity-cli'), { recursive: true });
     await writeFile(join(agyHome, '.gemini', 'antigravity-cli', 'settings.json'), '{"modelProvider":"gemini"}');
-    providers.antigravity = { ...agyCmd(args.agy), env: { HOME: agyHome, USERPROFILE: agyHome, GEMINI_API_KEY: 'e2e-fixture-only', GOOGLE_GEMINI_BASE_URL: modelUrl, ...proxyEnv } };
+    providers.antigravity = { ...agyCommand(args.agy, paseoVersion), env: { HOME: agyHome, USERPROFILE: agyHome, GEMINI_API_KEY: 'e2e-fixture-only', GOOGLE_GEMINI_BASE_URL: modelUrl, ...proxyEnv } };
   }
   if (suites.includes('opencode')) {
     // OpenCode keeps config/data/state/cache under XDG homes; its opencode-go provider points at the
@@ -660,7 +662,9 @@ try {
       cliDir = resolve(args['upgrade-cli']);
       paseoVersion = JSON.parse(readFileSync(join(cliDir, 'package.json'), 'utf8')).version;
       const current = JSON.parse(await readFile(join(home, 'config.json'), 'utf8'));
-      if (current.agents?.providers?.antigravity) Object.assign(current.agents.providers.antigravity, agyCmd(args.agy));
+      if (current.agents?.providers?.antigravity) {
+        Object.assign(current.agents.providers.antigravity, agyCommand(args.agy, paseoVersion));
+      }
       await writeFile(join(home, 'config.json'), JSON.stringify(current, null, 2));
       await startDaemon();
       const listed = (await rpc('auto-resume.list')).jobs;

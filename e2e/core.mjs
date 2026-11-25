@@ -52,6 +52,18 @@ export async function waitFor(fn, what, timeout = 180_000, interval = 500) {
   throw new Error('Timeout: ' + what);
 }
 
+export async function withDeadline(action, what, timeout) {
+  const timer = new AbortController();
+  try {
+    return await Promise.race([
+      action(),
+      sleep(timeout, undefined, { signal: timer.signal }).then(() => { throw new Error('Timeout: ' + what); }),
+    ]);
+  } finally {
+    timer.abort();
+  }
+}
+
 export async function listen(server) {
   const sockets = new Set();
   server.on('connection', socket => {
@@ -275,10 +287,14 @@ export async function nativeRun(platform, args, scenario) {
   try { await scenario(ctx); }
   catch (error) {
     report.errors.push(describeFailure(error));
-    await screenshot?.('failure').catch(error => report.errors.push('Screenshot: ' + error.message));
-  }
-  for (const stop of cleanup) {
-    try { await stop(); } catch (error) { report.errors.push(describeFailure(error)); }
+    if (screenshot) {
+      try { await withDeadline(() => screenshot('failure'), 'failure screenshot', 60_000); }
+      catch (error) { report.errors.push('Screenshot: ' + error.message); }
+    }
+  } finally {
+    for (const stop of cleanup) {
+      try { await stop(); } catch (error) { report.errors.push(describeFailure(error)); }
+    }
   }
   if (!report.errors.length) {
     try {

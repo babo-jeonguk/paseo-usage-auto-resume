@@ -68,10 +68,14 @@ export async function uiPhase(ctx) {
   // The time button of a reservation row, which exists only inside the Auto Resume screen. The
   // agent's title alone also appears in the sidebar, so a text locator would match before a row.
   const screenRow = (title) => page.getByRole('button', { name: new RegExp(`^Change time for ${title}, now `) });
-  const headingOf = async (title) => {
-    const section = page.getByTestId(/^resume-day-/).filter({ has: screenRow(title) });
-    return section.getByRole('heading').innerText();
-  };
+  // The web runner also tests releases that predate day-section identifiers.
+  const headingOf = (title) => screenRow(title).evaluate((el) => {
+    for (let node = el; node; node = node.parentElement) {
+      const previous = node.previousElementSibling;
+      if (previous && previous.children.length === 0 && previous.textContent) return previous.textContent;
+    }
+    return null;
+  });
 
   try {
     // ---- item 4 in the UI: presets and Change time -----------------------------------------
@@ -157,8 +161,8 @@ export async function uiPhase(ctx) {
       await shot('ui-3-settings');
       await writeFile(join(out, 'ui-3-plugin-row.txt'), pluginRowSnapshot).catch(() => {});
       // The Labs switch explains itself from the (i) beside its label.
-      await page.getByTestId('resume-labs-info').hover();
-      await expect(page.getByTestId('resume-labs-tooltip').getByText(/If a turn fails because the provider is busy/)).toBeVisible({ timeout: 15000 });
+      await page.getByRole('button', { name: 'About Retry after a provider overload', exact: true }).hover();
+      await expect(page.getByText(/If a turn fails because the provider is busy/)).toBeVisible({ timeout: 15000 });
       await shot('ui-3-labs-info');
       await page.mouse.move(0, 0);
       const prompt = page.getByRole('textbox', { name: 'Continue prompt' });
