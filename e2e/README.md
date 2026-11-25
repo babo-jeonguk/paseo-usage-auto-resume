@@ -143,7 +143,7 @@ node e2e/desktop-source.mjs --cli /tmp/paseo-0.17.1/node_modules/@getpaseo/cli -
 On Linux, run the whole Desktop scenario in a loopback-only network namespace. This example uses Bubblewrap with unprivileged user namespaces enabled. Set `STAGED_SOURCE` and `STAGED_REVISION` from the passing online report.
 
 ```bash
-PW_ROOT=/tmp/uar-tools/node_modules bwrap --unshare-net --bind / / -- \
+PW_ROOT=/tmp/uar-tools/node_modules bwrap --unshare-net --bind / / --dev /dev -- \
   xvfb-run -a -s '-screen 0 1440x900x24' \
   node e2e/desktop.mjs --cli /tmp/paseo-0.17.1/node_modules/@getpaseo/cli \
   --app /path/to/Paseo-0.17.1-x64 --source "$STAGED_SOURCE" --to "$STAGED_REVISION" \
