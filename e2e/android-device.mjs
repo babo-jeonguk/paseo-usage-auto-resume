@@ -61,8 +61,10 @@ export async function androidDevice(ctx, fixture, args) {
   const adb = async (args, { timeout = 30_000, encoding = 'utf8', direct = false } = {}) =>
     (await run(adbBin, [...(direct ? adbServer : adbDevice), ...args],
       { env, timeout, encoding, maxBuffer: 48 * 1024 * 1024 })).stdout;
-  const shell = (...args) => adb(['shell', args.map(quote).join(' ')]);
-  const tapNode = node => shell('input', 'tap', Math.floor((node.left + node.right) / 2), Math.floor((node.top + node.bottom) / 2));
+  const shellCommand = (args, timeout) => adb(['shell', args.map(quote).join(' ')], { timeout });
+  const shell = (...args) => shellCommand(args);
+  const tapNode = (node, timeout) => shellCommand(['input', 'tap',
+    Math.floor((node.left + node.right) / 2), Math.floor((node.top + node.bottom) / 2)], timeout);
   let emulator;
   report.anrDismissed = 0;
 
@@ -132,7 +134,8 @@ export async function androidDevice(ctx, fixture, args) {
     throw new Error(`Android UI ${label} was not visible after scrolling ${direction}`);
   }
 
-  const shot = async name => writeFile(join(out, name + '.png'), await adb(['exec-out', 'screencap', '-p'], { encoding: 'buffer' }));
+  const screenshotPng = timeout => adb(['exec-out', 'screencap', '-p'], { encoding: 'buffer', timeout });
+  const shot = async name => writeFile(join(out, name + '.png'), await screenshotPng());
   const launch = () => shell('monkey', '-p', PACKAGE, '-c', 'android.intent.category.LAUNCHER', '1');
   const avdName = async () => (await adb(['emu', 'avd', 'name'], { timeout: 3000 })).trim().split(/\r?\n/)[0];
 
@@ -242,5 +245,5 @@ export async function androidDevice(ctx, fixture, args) {
     return { width, height, pixels: raw.subarray(offset) };
   }
 
-  return { boot, connect, nodes, find, tap, tapNode, type, shell, scrollTo, shot, launch, swipe, screenshotRaw };
+  return { boot, connect, nodes, find, tap, tapNode, type, shell, scrollTo, shot, launch, swipe, screenshotPng, screenshotRaw };
 }

@@ -3,7 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import { run } from './core.mjs';
 
 const words = text => text.toLowerCase().match(/[a-z0-9]+/g) ?? [];
-const ocr = (...args) => run('tesseract', args, { env: { ...process.env, OMP_THREAD_LIMIT: '1' }, timeout: 20_000 });
+const ocr = (args, timeout = 20_000) => run('tesseract', args, { env: { ...process.env, OMP_THREAD_LIMIT: '1' }, timeout });
 
 async function writeScreenshotCrop(screenshot, bounds, cropPath) {
   const { left, top, right, bottom } = bounds;
@@ -26,15 +26,20 @@ async function writeScreenshotCrop(screenshot, bounds, cropPath) {
 
 export async function assertScreenshotText(screenshot, bounds, expected, cropPath) {
   await writeScreenshotCrop(screenshot, bounds, cropPath);
-  const { stdout } = await ocr(cropPath, 'stdout', '-l', 'eng', '--psm', '6');
+  const { stdout } = await ocr([cropPath, 'stdout', '-l', 'eng', '--psm', '6']);
   assert.deepEqual(words(stdout), words(expected), 'The screenshot must contain every word in the tooltip paragraph');
   return stdout.trim();
 }
 
-async function screenshotLines(screenshot, cropPath) {
+export async function readScreenshotText(path, timeout) {
+  const { stdout } = await ocr([path, 'stdout', '-l', 'eng', '--psm', '11'], timeout);
+  return stdout.replace(/\s+/g, ' ').trim();
+}
+
+export async function locateScreenshotText(screenshot, expected, cropPath) {
   const padding = await writeScreenshotCrop(screenshot,
     { left: 0, top: 0, right: screenshot.width, bottom: screenshot.height }, cropPath);
-  const { stdout } = await ocr(cropPath, 'stdout', '-l', 'eng', '--psm', '11', '-c', 'tessedit_create_tsv=1', '-c', 'tessedit_create_txt=0');
+  const { stdout } = await ocr([cropPath, 'stdout', '-l', 'eng', '--psm', '11', '-c', 'tessedit_create_tsv=1', '-c', 'tessedit_create_txt=0']);
   const lines = new Map();
   for (const row of stdout.split('\n').slice(1)) {
     const [level, page, block, paragraph, line, , x, y, width, height, , text] = row.split('\t');
@@ -49,15 +54,7 @@ async function screenshotLines(screenshot, cropPath) {
     box.text += ` ${text}`;
     lines.set(key, box);
   }
-  return [...lines.values()];
-}
-
-export async function readScreenshotText(screenshot, cropPath) {
-  return (await screenshotLines(screenshot, cropPath)).map(line => line.text.trim()).join(' ');
-}
-
-export async function locateScreenshotText(screenshot, expected, cropPath) {
-  const matches = (await screenshotLines(screenshot, cropPath)).filter(line => words(line.text).join(' ') === words(expected).join(' '));
+  const matches = [...lines.values()].filter(line => words(line.text).join(' ') === words(expected).join(' '));
   assert.equal(matches.length, 1, `The screenshot must show one ${expected} label`);
   return matches[0];
 }

@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
-import { access } from 'node:fs/promises';
+import { access, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { androidDevice, matchNode, PACKAGE, within } from './android-device.mjs';
 import { assertScreenshotText, readScreenshotText } from './android-visual.mjs';
 import { DEFAULT_CONTINUE_PROMPT } from '../shared/prompt.ts';
-import { cliBin, iso, killTree, nativeRun, options, run, running, SOURCE, spawnLogged, waitFor } from './core.mjs';
+import { cliBin, iso, killTree, nativeRun, options, run, running, sleep, SOURCE, spawnLogged, waitFor } from './core.mjs';
 import { assertDaemonLogs, editSavedJobs, localClock, nativeDefaults, nativeFixture, tomorrowAtNoon } from './native-fixture.mjs';
 import { patchEntry } from './patch-plugin.mjs';
 import { observeAndroidWire, scheduleWire } from './schedule-wire.mjs';
@@ -71,15 +71,52 @@ await nativeRun('android', args, async ctx => {
   const switchFor = agent => node => node.pkg === PACKAGE &&
     (node.desc ?? '').startsWith('Continue ' + agent.title + ' automatically');
   const closeKeyboard = () => device.shell('input', 'keyevent', 'KEYCODE_BACK');
+
+  // Timestamp screen captures separately from the slower accessibility and OCR checks.
+  const captureDuring = async (action, timeout, afterAction) => {
+    const frames = [];
+    let deadline = performance.now() + timeout;
+    const capture = async () => {
+      while (performance.now() < deadline) {
+        const at = performance.now();
+        const png = await device.screenshotPng(Math.max(1, Math.min(3_000, Math.ceil(deadline - at))));
+        frames.push({ png, at: performance.now() });
+        const delay = Math.min(at + 400, deadline) - performance.now();
+        if (delay > 0) await sleep(delay);
+      }
+    };
+    const acted = async () => {
+      try {
+        const value = await action();
+        deadline = Math.min(deadline, performance.now() + afterAction);
+        return value;
+      } catch (error) {
+        deadline = performance.now();
+        throw error;
+      }
+    };
+    const results = await Promise.allSettled([acted(), capture()]);
+    for (const result of results) {
+      if (result.status === 'rejected') throw result.reason;
+    }
+    return { result: results[0].value, frames };
+  };
+  const findFrame = async (frames, label, artifact) => {
+    const screenshot = join(out, artifact + '.png');
+    const recognitionDeadline = performance.now() + 25_000;
+    for (const { png, at } of frames) {
+      await writeFile(screenshot, png);
+      const remaining = Math.ceil(recognitionDeadline - performance.now());
+      assert(remaining > 0, `Timed out reading Android frames for ${label}`);
+      if (label.test(await readScreenshotText(screenshot, remaining))) return at;
+    }
+    assert.fail(`No Android screenshot showed ${label} in ${frames.length} captured frames`);
+  };
   const confirmResume = async (toast, artifact) => {
     await device.tap('Resume now');
     const send = await device.find('Send');
-    // UI Automator waits for an idle window, which can outlast a transient toast.
-    const observe = waitFor(async () => {
-      const text = await readScreenshotText(await device.screenshotRaw(), join(out, artifact + '.pgm'));
-      return toast.test(text);
-    }, `visible Android toast ${toast}`, 15_000, 50);
-    await Promise.all([observe, device.tapNode(send)]);
+    const { frames } = await captureDuring(() => device.tapNode(send, 10_000), 15_000, 8_000);
+    await findFrame(frames, toast, artifact);
   };
 
   const primaryTitle = 'Android live limit';
@@ -105,11 +142,13 @@ await nativeRun('android', args, async ctx => {
     primary = await fixture.agent(primaryTitle);
     const client = await wire.ready(2);
     const mark = wire.checkpoint(client, openedAt);
-    // Start UI Automator before sending the turn. Starting the device-side command only after
-    // the daemon reports the row would count its cold launch against the UI’s push deadline.
-    const visible = device.find('Open ' + primaryTitle, 90_000).then(() => performance.now());
-    const [{ job, observedAt }, visibleAt] = await Promise.all([fixture.limit(primary), visible]);
+    const { result: { job, observedAt }, frames } = await captureDuring(() => fixture.limit(primary), 90_000, 5_000);
     primaryJob = job;
+    const event = wire.messagesSince(mark).find(message => Number.isSafeInteger(message.revision));
+    assert(event, 'Expected a live schedule change on the app connection');
+    const startedAt = Math.min(observedAt, event.at);
+    const inWindow = frames.filter(frame => frame.at >= startedAt && frame.at <= startedAt + 5_000);
+    const visibleAt = await findFrame(inWindow, /\bAndroid live limit\b/i, 'live-push');
     const pushed = wire.pushed(mark, job.id, visibleAt);
     await waitFor(() => wire.messagesSince(mark).some(message => message.method === 'auto-resume.history' &&
       message.request.at >= pushed.eventReceivedAt), 'the open list history response after the schedule event', 15_000);
@@ -117,7 +156,6 @@ await nativeRun('android', args, async ctx => {
     const pushMs = Math.max(0, Math.round(visibleAt - Math.min(observedAt, pushed.eventReceivedAt)));
     assert(pushMs <= 5000, `Native row took ${pushMs} ms after the reservation reached the daemon`);
     await device.find('resume-row-' + job.id);
-    await device.shot('live-push');
     return { pushMs, pushedRevision: pushed.revision, cliVersion: fixture.version, apkVersion: report.apkVersion, revision: report.revision };
   });
 
