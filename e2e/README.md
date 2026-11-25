@@ -163,7 +163,7 @@ The runner checks the Electron-owned daemon's version and executable, real Claud
 
 Only the installed copy's subscription HTTP boundary is replaced. The Claude model turn uses the loopback API, and its auth check uses the login fixture in the isolated home. The Codex app-server probe uses the default model provider and receives a used-up usage window so the pending reservation stays in place without starting a model turn. The fixture disables Paseo’s separate built-in usage polling. Use a Codex build that accepts the synthetic login, such as the version pinned for the repository’s full native CLI integration check.
 
-The Desktop runner requires loopback-only networking and probes direct IPv4 and IPv6 connections before launching Paseo and again at the end. Electron and the provider CLIs have separate refusing proxies that record attempted connections. Refused attempts are included in the report. The runner fails if the network boundary checks fail or updater files appear in the isolated cache.
+The Desktop runner requires loopback-only networking and probes direct IPv4 and IPv6 connections before launching Paseo and again at the end. Paseo Settings reads a local empty registry index. Electron and the provider CLIs have separate refusing proxies that record attempted connections. Refused attempts are included in the report. The runner fails if the network boundary checks fail or updater files appear in the isolated cache.
 
 ### Android on Linux
 

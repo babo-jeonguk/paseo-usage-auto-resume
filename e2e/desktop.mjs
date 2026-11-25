@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { access, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
-import { freePort, inherited, isWin, iso, killTree, nativeRun, options, pidAlive, readJson,
+import { freePort, inherited, isWin, iso, killTree, listen, nativeRun, options, pidAlive, readJson,
   run, running, spawnLogged, startProxy, waitFor, withDeadline } from './core.mjs';
 import { assertDesktopOffline } from './desktop-network.mjs';
 import { assertSubscriptionRequests, patchDesktopEntry, prepareLogins } from './desktop-subscription.mjs';
@@ -39,6 +40,14 @@ await nativeRun('desktop', args, async ctx => {
   const appProxy = await startProxy(appProxyLog);
   dispose(() => appProxy.close());
   artifacts['electron-proxy.log'] = appProxyLog;
+  const registry = await listen(createServer((request, response) => {
+    if (request.method !== 'GET' || request.url !== '/index.json') return response.writeHead(404).end();
+    response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({
+      schemaVersion: 1, registry: { name: 'Desktop E2E', url: `http://${request.headers.host}` },
+      generatedAt: iso(Date.now()), categories: [], plugins: [], featured: [],
+    }));
+  }));
+  dispose(() => registry.close());
   const daemonLog = join(fixture.home, 'daemon.log');
   const fetchLog = join(root, 'subscription.jsonl');
   artifacts['daemon.log'] = daemonLog;
@@ -51,6 +60,7 @@ await nativeRun('desktop', args, async ctx => {
   const display = inherited(['DISPLAY', 'XAUTHORITY', 'WAYLAND_DISPLAY', 'XDG_RUNTIME_DIR']);
   const environment = {
     ...fixture.environment, ...display,
+    PASEO_PLUGIN_REGISTRY: `http://127.0.0.1:${registry.port}`,
     PASEO_ELECTRON_USER_DATA_DIR: join(root, 'electron'),
     PASEO_ELECTRON_FLAGS: `--proxy-server=${appProxy.url} --proxy-bypass-list=localhost;127.0.0.1;[::1] --lang=en-US`,
   };
@@ -260,7 +270,10 @@ await nativeRun('desktop', args, async ctx => {
     const seed = { id: randomUUID(), agentId: agent.id, provider: 'codex', dueAt, resetAt: null,
       baseline: snapshot.agent.lastUserMessageAt ?? null, attempts: 0, state: 'pending', enabled: true };
     await editSavedJobs(fixture, jobs => [...jobs, seed]);
-    await waitFor(() => fixture.job(agent.id), 'seeded Codex reservation');
+    // The file seed sends no subscription update. Reschedule through the daemon to publish the row.
+    assert.equal((await fixture.rpc('auto-resume.reschedule', {
+      agentId: agent.id, id: seed.id, dueAt, newDueAt: iso(Date.parse(dueAt) + 600_000),
+    })).changed, true);
     await fixture.setUsage('limited', iso(Date.now() + 40 * 60_000));
     await screen();
     await button('Open ' + agent.title, page.getByTestId('resume-row-' + seed.id)).click();

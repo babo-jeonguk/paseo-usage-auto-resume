@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -45,7 +46,7 @@ export async function androidDevice(ctx, fixture, args) {
   report.apk = apk;
   const port = Number(args.port);
   assert(Number.isInteger(port) && port >= 5554 && port <= 5682 && port % 2 === 0, 'Use an even emulator console port from 5554 to 5682');
-  const avd = 'usage-auto-resume-e2e', serial = 'emulator-' + port;
+  const avd = `usage-auto-resume-e2e-${randomUUID()}`, serial = 'emulator-' + port;
   const avdHome = join(root, 'avd'), androidHome = join(root, 'android-user');
   await Promise.all([avdHome, androidHome].map(dir => mkdir(dir)));
   const adbPort = await freePort();
@@ -130,6 +131,7 @@ export async function androidDevice(ctx, fixture, args) {
 
   const shot = async name => writeFile(join(out, name + '.png'), await adb(['exec-out', 'screencap', '-p'], { encoding: 'buffer' }));
   const launch = () => shell('monkey', '-p', PACKAGE, '-c', 'android.intent.category.LAUNCHER', '1');
+  const avdName = async () => (await adb(['emu', 'avd', 'name'], { timeout: 3000 })).trim().split(/\r?\n/)[0];
 
   async function boot() {
     await adb(['start-server'], { direct: true });
@@ -159,12 +161,17 @@ export async function androidDevice(ctx, fixture, args) {
         '-no-metrics', '-network-user-mode-options', 'restrict=on', '-wifi-user-mode-options', 'restrict=on'],
       { env, log });
     dispose(async () => {
-      try { if (running(emulator)) await adb(['emu', 'kill'], { timeout: 10_000 }); }
+      try {
+        if (running(emulator) && await avdName() === avd) await adb(['emu', 'kill'], { timeout: 10_000 });
+      }
       catch { /* The process group is the fallback when adb is unavailable. */ }
       finally { await killTree(emulator); }
     });
     await waitFor(async () => {
       assert(running(emulator), 'Emulator exited during boot. See emulator.log.');
+      const name = await avdName().catch(() => '');
+      if (!name) return false;
+      assert.equal(name, avd, 'Android emulator port is owned by another AVD');
       return (await adb(['shell', 'getprop', 'sys.boot_completed'], { timeout: 3000 }).catch(() => '')).trim() === '1';
     }, 'clean emulator boot', 600_000);
     report.android = (await shell('getprop', 'ro.build.version.release')).trim();
@@ -198,6 +205,8 @@ export async function androidDevice(ctx, fixture, args) {
   }
 
   async function connect() {
+    assert(running(emulator), 'Fixture emulator exited before APK installation');
+    assert.equal(await avdName(), avd, 'Refusing to install on a different AVD');
     await adb(['install', apk], { timeout: 1_200_000 });
     // An AVD can expose a hardware keyboard. Keep the native IME available for the sheet.
     await shell('settings', 'put', 'secure', 'show_ime_with_hard_keyboard', '1');

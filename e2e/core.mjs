@@ -155,8 +155,8 @@ export function providerEnvironment(modelUrl, proxyEnv) {
 }
 
 export const cliBin = cli => join(cli, 'bin', 'paseo');
-export const paseoCommand = (bin, home, env) => async (...args) =>
-  (await run(process.execPath, [bin(), ...args, '--home', home], { encoding: 'utf8', env: { ...env, PASEO_HOME: home }, timeout: 240_000, windowsHide: true })).stdout;
+export const paseoCommand = (bin, home, env, { timeout = 240_000 } = {}) => async (...args) =>
+  (await run(process.execPath, [bin(), ...args, '--home', home], { encoding: 'utf8', env: { ...env, PASEO_HOME: home }, timeout, windowsHide: true })).stdout;
 
 export async function connectToDaemon(cli, version, home, target, alive) {
   const tools = createRequire(join(resolve(cli), 'package.json'));

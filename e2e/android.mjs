@@ -3,7 +3,8 @@ import { access } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { androidDevice, matchNode, PACKAGE, within } from './android-device.mjs';
-import { cliBin, DEFAULT_MARK, iso, killTree, nativeRun, options, running, SOURCE, spawnLogged, waitFor } from './core.mjs';
+import { DEFAULT_CONTINUE_PROMPT } from '../shared/prompt.ts';
+import { cliBin, iso, killTree, nativeRun, options, running, SOURCE, spawnLogged, waitFor } from './core.mjs';
 import { assertDaemonLogs, editSavedJobs, localClock, nativeDefaults, nativeFixture, tomorrowAtNoon } from './native-fixture.mjs';
 import { patchEntry } from './patch-plugin.mjs';
 
@@ -52,6 +53,8 @@ await nativeRun('android', args, async ctx => {
   const composer = () => device.find(node => node.pkg === PACKAGE && node.class === 'android.widget.EditText' &&
     node.desc === 'Message agent...', 120_000, 'conversation composer');
   const row = job => matchNode('resume-row-' + job.id);
+  const switchFor = agent => node => node.pkg === PACKAGE &&
+    (node.desc ?? '').startsWith('Continue ' + agent.title + ' automatically');
   const closeKeyboard = () => device.shell('input', 'keyevent', 'KEYCODE_BACK');
   const confirmResume = async toast => {
     await device.tap('Resume now');
@@ -94,7 +97,7 @@ await nativeRun('android', args, async ctx => {
 
   const same = await fixture.agent('Android same-day reservation');
   const later = await fixture.agent('Android later-day reservation');
-  await check('Compact list, Hermes days and spoken time, bulk and row toggles, delay, and pull-to-refresh', async () => {
+  await check('Compact list, Hermes days and spoken time, bulk and row toggles, and delay', async () => {
     const { job: initialSame } = await fixture.limit(same, 60);
     const { job: initialLater } = await fixture.limit(later);
     const laterDue = iso(Date.parse(initialLater.dueAt) + 3 * 86_400_000);
@@ -139,31 +142,17 @@ await nativeRun('android', args, async ctx => {
       'Compact bulk control must show All on');
     await device.tap('Turn all on');
     await waitFor(() => allEnabled(true), 'tracked jobs on');
-    const rowSwitch = node => node.pkg === PACKAGE && (node.desc ?? '').startsWith('Continue ' + primaryTitle + ' automatically');
+    const rowSwitch = switchFor(primary);
     await device.tapNode(await device.scrollTo(rowSwitch));
     await waitJob(primary, job => job && !job.enabled, 'native switch off');
     await device.tap(rowSwitch);
     await waitJob(primary, job => job?.enabled, 'native switch on');
-    const updatedAt = performance.now();
     const delay = /^Delay 10 minutes for Android live limit$/;
     await device.tap(delay);
     const bumpedDue = iso(Date.parse(primaryJob.dueAt) + 600_000);
     await waitJob(primary, job => job?.dueAt === bumpedDue, 'row +10m');
     await device.find(`Change time for ${primaryTitle}, now ${localClock(Date.parse(bumpedDue))}`);
 
-    // The +10m mutation refetches the list. Finish the gesture check within that refetch's
-    // two-minute polling interval. An offline fixture edit cannot push the change.
-    await device.scrollTo('Turn all off', 'up');
-    const coords = await device.find(node => rowSwitch(node) && node.checked);
-    await editSavedJobs(fixture, jobs => jobs.map(job => job.id === primaryJob.id ? { ...job, enabled: false } : job));
-    assert((await device.find(rowSwitch)).checked, 'Offline fixture edit must leave the rendered switch on');
-    const width = Math.floor((coords.left + coords.right) / 2);
-    await device.swipe(width, coords.top, coords.top + 420);
-    await device.find(node => rowSwitch(node) && !node.checked);
-    assert(performance.now() - updatedAt < 120_000, 'Refresh check overlapped the periodic list poll');
-    assert.equal((await fixture.job(primary.id)).enabled, false);
-    await device.tap(rowSwitch);
-    await waitJob(primary, job => job?.enabled, 'reservation enabled again');
     return { dayLabel, visual: spoken.text, spoken: spoken.desc };
   });
 
@@ -230,21 +219,12 @@ await nativeRun('android', args, async ctx => {
     const info = await device.scrollTo('resume-labs-info');
     const before = await device.screenshotRaw();
     await device.tapNode(info);
-    const tooltip = await device.find(/^If a turn fails because the provider is busy/);
+    const body = await device.find(/^If a turn fails because the provider is busy.*minutes later\.$/);
+    const details = await device.find('Claude, Codex and Antigravity only. Usage limits are checked first.');
     const after = await device.screenshotRaw();
     assert.equal(after.width, before.width);
     assert.equal(after.height, before.height);
-    assert(tooltip.left >= 0 && tooltip.top >= 0 && tooltip.right <= after.width && tooltip.bottom <= after.height,
-      'Tooltip body falls outside the visible screen');
-    let changed = 0;
-    for (let y = tooltip.top; y < tooltip.bottom; y += 2) {
-      for (let x = tooltip.left; x < tooltip.right; x += 2) {
-        const at = (y * after.width + x) * 4;
-        if (after.pixels[at] !== before.pixels[at] || after.pixels[at + 1] !== before.pixels[at + 1] ||
-          after.pixels[at + 2] !== before.pixels[at + 2]) changed++;
-      }
-    }
-    assert(changed > 20, 'Tooltip text region did not render on the display');
+    const tooltipInk = [body, details].map(node => visibleTooltipInk(before, after, node));
     await device.shot('labs-tooltip');
     await device.tap('resume-labs-info');
     const labs = matchNode('resume-labs-toggle');
@@ -263,8 +243,8 @@ await nativeRun('android', args, async ctx => {
     await device.scrollTo(prompt(custom), 'up');
     await device.tapNode(await device.scrollTo('Reset to default'));
     await device.scrollTo('Default prompt', 'up');
-    await device.scrollTo(prompt(DEFAULT_MARK), 'up');
-    return { tooltipChangedPixels: changed };
+    await device.scrollTo(prompt(DEFAULT_CONTINUE_PROMPT), 'up');
+    return { tooltipInk };
   });
 
   await check('Recent activity shows native outcome text and Hermes dates', async () => {
@@ -295,9 +275,21 @@ await nativeRun('android', args, async ctx => {
     assert(before);
     await device.shell('am', 'force-stop', PACKAGE);
     assert.equal(await device.shell('pidof', PACKAGE).catch(() => ''), '');
+    const reopenedAt = performance.now();
     await device.launch();
     await menu(autoResumeItem);
     await device.find(row(job));
+    // A cold render means no prior mutation or its refetch can consume this offline file edit.
+    const toggle = switchFor(recovery);
+    const coords = await device.find(node => toggle(node) && node.checked);
+    await editSavedJobs(fixture, jobs => jobs.map(saved => saved.id === job.id ? { ...saved, enabled: false } : saved));
+    assert((await device.find(toggle)).checked, 'Offline file edit must leave the rendered switch on');
+    const x = Math.floor((coords.left + coords.right) / 2);
+    await device.swipe(x, coords.top, coords.top + 420);
+    await device.find(node => toggle(node) && !node.checked);
+    assert(performance.now() - reopenedAt < 120_000, 'Refresh check overlapped the periodic list poll');
+    await device.tap(toggle);
+    await waitJob(recovery, saved => saved?.enabled, 'reservation enabled again');
     await device.tap('Open ' + recovery.title);
     await composer();
     await device.find(pill);
@@ -311,3 +303,27 @@ await nativeRun('android', args, async ctx => {
     return { reservationId: job.id, duplicateContinues: 0, anrDismissed: report.anrDismissed };
   });
 });
+
+function visibleTooltipInk(before, after, { left, top, right, bottom }) {
+  assert(left >= 0 && top >= 0 && right <= after.width && bottom <= after.height, 'Tooltip text is outside the display');
+  const colors = new Map();
+  const pixels = [];
+  for (let y = top; y < bottom; y += 2) {
+    for (let x = left; x < right; x += 2) {
+      const at = (y * after.width + x) * 4;
+      const color = after.pixels[at] * 65536 + after.pixels[at + 1] * 256 + after.pixels[at + 2];
+      colors.set(color, (colors.get(color) ?? 0) + 1);
+      pixels.push({ at, y, color });
+    }
+  }
+  const [background] = [...colors].reduce((best, entry) => entry[1] > best[1] ? entry : best, [0, 0]);
+  const channels = [background >>> 16, (background >>> 8) & 255, background & 255];
+  const bands = [0, 0];
+  for (const { at, y, color } of pixels) {
+    if (color === background || !channels.some((channel, i) => Math.abs(channel - after.pixels[at + i]) >= 40)) continue;
+    if (!channels.some((_, i) => before.pixels[at + i] !== after.pixels[at + i])) continue;
+    bands[y < (top + bottom) / 2 ? 0 : 1]++;
+  }
+  assert(bands.every(count => count > 10), 'Tooltip must show new contrasting text in both halves of each paragraph');
+  return bands;
+}
