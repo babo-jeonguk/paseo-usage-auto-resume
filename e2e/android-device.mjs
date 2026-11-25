@@ -19,7 +19,7 @@ function hierarchy(xml) {
     const [left, top, right, bottom] = (attrs.bounds?.match(/-?\d+/g) ?? []).map(Number);
     const node = {
       text: attrs.text, desc: attrs['content-desc'], id: attrs['resource-id'], class: attrs.class, pkg: attrs.package,
-      enabled: attrs.enabled === 'true', checked: attrs.checked === 'true', scrollable: attrs.scrollable === 'true',
+      enabled: attrs.enabled === 'true', checked: attrs.checked === 'true',
       left, top, right, bottom, parent: stack.at(-1),
     };
     if (!tag.endsWith('/>')) stack.push(node);
@@ -42,6 +42,7 @@ export function within(node, ancestor) {
 export async function androidDevice(ctx, fixture, args) {
   const { report, root, out, dispose, artifacts } = ctx;
   const sdk = resolve(args.sdk), apk = resolve(args.apk);
+  report.apk = apk;
   const port = Number(args.port);
   assert(Number.isInteger(port) && port >= 5554 && port <= 5682 && port % 2 === 0, 'Use an even emulator console port from 5554 to 5682');
   const avd = 'usage-auto-resume-e2e', serial = 'emulator-' + port;
@@ -81,14 +82,17 @@ export async function androidDevice(ctx, fixture, args) {
     return list;
   }
 
-  function find(label, timeout = 40_000) {
+  function find(label, timeout = 40_000, description = String(label)) {
     const start = performance.now();
     return waitFor(async () => {
       const remaining = Math.max(1, timeout - (performance.now() - start));
       return (await nodes(Math.min(12_000, remaining))).find(matchNode(label));
-    }, `Android UI ${label}`, timeout, 100);
+    }, `Android UI ${description}`, timeout, 100);
   }
-  const tap = async label => tapNode(await find(label));
+  const tap = async label => {
+    const matches = matchNode(label);
+    await tapNode(await find(node => node.enabled && matches(node), 40_000, `enabled ${label}`));
+  };
   async function type(label, value) {
     const matches = matchNode(label);
     const field = await find(node => node.pkg === PACKAGE && node.class === 'android.widget.EditText' &&
@@ -155,18 +159,25 @@ export async function androidDevice(ctx, fixture, args) {
     }, 'clean emulator boot', 600_000);
     report.android = (await shell('getprop', 'ro.build.version.release')).trim();
     ctx.screenshots(async name => {
+      await nodes(5000);
       await shot(name);
       await writeFile(join(out, name + '.xml'), lastXml);
     });
     const logcat = join(root, 'logcat.txt');
     artifacts['logcat.txt'] = logcat;
-    async function captureLogcat() { await writeFile(logcat, await adb(['logcat', '-d', '-v', 'threadtime'])); }
-    dispose(captureLogcat);
-    return { captureLogcat, logcat };
+    dispose(async () => {
+      const records = await adb(['logcat', '-d', '-v', 'threadtime']);
+      await writeFile(logcat, records);
+      report.fatalLogcat = records.split('\n').filter(line =>
+        /\b(?:E|F) ReactNativeJS\b.*(?:Error|Exception|Hermes)|\bF libc\b.*Fatal signal.*sh\.paseo|\bE AndroidRuntime\b.*Process: sh\.paseo\b|\bF DEBUG\b.*sh\.paseo/i.test(line));
+      assert.deepEqual(report.fatalLogcat, [], 'Paseo Android logged a fatal error');
+    });
   }
 
   async function connect() {
-    await adb(['install', apk], { timeout: 240_000 });
+    await adb(['install', apk], { timeout: 1_200_000 });
+    // An AVD can expose a hardware keyboard. Keep the native IME available for the sheet.
+    await shell('settings', 'put', 'secure', 'show_ime_with_hard_keyboard', '1');
     report.apkVersion = (await shell('dumpsys', 'package', PACKAGE)).match(/versionName=(\S+)/)?.[1];
     assert.equal(report.apkVersion, fixture.version, 'APK version must match the Paseo CLI');
     if (Number((await shell('getprop', 'ro.build.version.sdk')).trim()) >= 33)

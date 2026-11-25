@@ -9,6 +9,7 @@ export function refusingProxy(log) {
   });
   server.on('connect', (req, socket) => {
     appendFileSync(log, `CONNECT ${req.url}\n`);
+    socket.on('error', () => socket.destroy());
     socket.end('HTTP/1.1 502 Blocked\r\n\r\n');
   });
   return server;

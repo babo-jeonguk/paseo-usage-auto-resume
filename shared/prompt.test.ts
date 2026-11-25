@@ -49,8 +49,8 @@ test("overload ignores customization, appends the note, and neither built-in pro
 });
 
 test("the E2E harness counts continues by a phrase the built-in prompt still contains", () => {
-  const harness = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "e2e", "e2e.mjs"), "utf8");
-  const mark = /^const DEFAULT_MARK = (['"])(.+)\1;$/m.exec(harness)?.[2];
-  assert.ok(mark, "e2e/e2e.mjs no longer declares DEFAULT_MARK as a string literal");
+  const harness = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "e2e", "core.mjs"), "utf8");
+  const mark = /^export const DEFAULT_MARK = (['"])(.+)\1;$/m.exec(harness)?.[2];
+  assert.ok(mark, "e2e/core.mjs no longer declares DEFAULT_MARK as a string literal");
   assert.ok(DEFAULT_CONTINUE_PROMPT.includes(mark), `DEFAULT_MARK "${mark}" is not in the built-in continue prompt`);
 });

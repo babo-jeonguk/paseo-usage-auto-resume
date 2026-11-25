@@ -9,16 +9,15 @@
 //   [--opencode <bin>] [--model <opencode model>] [--path <extra PATH dirs>]
 // --ui 1 reads Playwright from PW_ROOT and the browser from CHROME, else Chromium on Linux and Edge on Windows (see ui-steps.mjs).
 import assert from 'node:assert/strict';
-import { execFileSync, spawn } from 'node:child_process';
-import { closeSync, existsSync, openSync, readFileSync, appendFileSync } from 'node:fs';
+import { existsSync, readFileSync, appendFileSync } from 'node:fs';
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { patchEntry } from './patch-plugin.mjs';
-import { cliBin, connectToDaemon, daemonErrors, DEFAULT_MARK, freePort, installedPlugin, isWin, iso, options,
+import { cliBin, connectToDaemon, daemonErrors, DEFAULT_MARK, freePort, installedPlugin, isWin, iso, killTree, options,
   paseoCommand, patchInstalled as patchCopy, PLUGIN, pluginDirectory, providerEnvironment, replace, revisionOf,
-  run, runHome, saveReport, sleep, SOURCE, startModels, startProxy, waitFor } from './core.mjs';
+  run, runHome, running, saveReport, sleep, SOURCE, spawnLogged, startModels, startProxy, waitFor } from './core.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const args = options(['cli', 'root'], {
@@ -26,16 +25,16 @@ const args = options(['cli', 'root'], {
   from: 'v1.2.2', to: 'main', out: '', path: '', hold: '', overload: '', 'upgrade-cli': '',
   claude: '', codex: '', agy: '', opencode: '', model: '',
 });
-const label = args.label ?? 'run';
-const suites = (args.suites ?? 'claude').split(',');
+const label = args.label;
+const suites = args.suites.split(',');
 const MIN = args.min === '1';
 const UI = args.ui === '1';
 // Only the newer sections (17+) honour this; the existing items always run.
-const ONLY = (args.only ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+const ONLY = args.only.split(',').map((s) => s.trim()).filter(Boolean);
 const wants = (id) => ONLY.length === 0 || ONLY.includes(String(id));
 const GIT_SOURCE = args.source;
 // The release a user updates from and rolls back to, and the version under test.
-const OLD_REF = args.from ?? 'v1.2.2', NEW_REF = args.to ?? 'main';
+const OLD_REF = args.from, NEW_REF = args.to;
 let oldRevision = '';
 // Must stay in sync with DEFAULT_CONTINUE_PROMPT in shared/prompt.ts. The check below fails the
 // run early instead of silently counting nothing.
@@ -105,13 +104,11 @@ let daemon, client, ui;
 async function stopAll() {
   await client?.close().catch(() => {});
   await paseo('daemon', 'stop').catch(() => {});
-  await sleep(1500);
-  if (daemon && daemon.exitCode === null) {
-    if (isWin) { try { execFileSync('taskkill', ['/pid', String(daemon.pid), '/T', '/F'], { stdio: 'ignore' }); } catch {} }
-    else { try { process.kill(-daemon.pid, 'SIGTERM'); } catch {} await sleep(2000); try { process.kill(-daemon.pid, 'SIGKILL'); } catch {} }
+  if (daemon) {
+    try { await waitFor(() => !running(daemon), 'web fixture daemon exit', 15_000); }
+    finally { await killTree(daemon); }
   }
-
-};
+}
 
 async function configureProviders() {
   const providers = {};
@@ -154,13 +151,12 @@ async function configureProviders() {
 
 }
 async function startDaemon() {
-  const fd = openSync(daemonLog, 'a');
-  daemon = spawn(nodeBin, ['--no-maglev', cliBin(cliDir), 'daemon', 'run', '--home', home], {
+  daemon = spawnLogged(nodeBin, ['--no-maglev', cliBin(cliDir), 'daemon', 'run', '--home', home], {
     env: { ...baseEnv, PASEO_HOME: home, PASEO_LISTEN: target, PASEO_RELAY_ENABLED: 'false', PASEO_WEB_UI_ENABLED: UI ? 'true' : 'false' },
-    stdio: ['ignore', fd, fd], detached: !isWin, windowsHide: true });
-  closeSync(fd);
-  client = await connectToDaemon(cliDir, paseoVersion, home, target, () => daemon.exitCode === null && daemon.signalCode === null);
-};
+    log: daemonLog,
+  });
+  client = await connectToDaemon(cliDir, paseoVersion, home, target, () => running(daemon));
+}
 // ---- plugin helpers -----------------------------------------------------------------------
 const rpc = (method, input = {}) => client.invokePluginRpc(PLUGIN, method, input);
 const pluginDir = async () => pluginDirectory(await installedPlugin(paseo));
@@ -985,7 +981,8 @@ try {
   log('FATAL', e?.stack ?? e);
   results.push({ item: 'fatal', suite: '-', ok: false, name: 'harness', ev: String(e?.stack ?? e).slice(0, 800) });
 } finally {
-  await stopAll();
+  try { await stopAll(); }
+  catch (error) { results.push({ item: 'cleanup', suite: '-', ok: false, name: 'daemon cleanup', ev: String(error) }); }
   await models?.close();
   await proxy?.close();
   loopDelay.disable();

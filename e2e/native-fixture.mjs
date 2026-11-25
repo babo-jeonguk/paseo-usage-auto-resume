@@ -35,7 +35,7 @@ export async function nativeFixture(ctx, args) {
     claudeEnv: providerEnvironment(models.url, proxy.env),
     async configure(providers) {
       await writeFile(join(home, 'config.json'), JSON.stringify({
-        version: 1, daemon: { listen: target, relay: { enabled: false }, mcp: { enabled: false } }, pluginsEnabled: true,
+        version: 1, daemon: { listen: target, relay: { enabled: false }, mcp: { enabled: false }, usage: { enabled: false } }, pluginsEnabled: true,
         features: { webUi: { enabled: false }, dictation: { enabled: false }, voiceMode: { enabled: false } },
         agents: { providers, resumeOnStartup: false },
       }));
@@ -45,7 +45,7 @@ export async function nativeFixture(ctx, args) {
       client = await connectToDaemon(cli, version, home, target, alive);
     },
     async install(patch) {
-      report.revision = revisionOf(await installPlugin(paseo, args.source, args.to));
+      report.revision = revisionOf(await installPlugin(paseo, args.source, args.to, environment));
       await patchInstalled({ paseo, client, patch });
       workspace = (await client.createWorkspace({ source: { kind: 'directory', path: work }, title: 'Usage Auto Resume E2E' })).workspace;
     },

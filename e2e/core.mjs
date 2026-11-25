@@ -113,7 +113,7 @@ export async function runHome(root, extraPath = '') {
     APPDATA: join(profile, 'AppData', 'Roaming'), LOCALAPPDATA: cache,
     PATH: [...path, join(sys, 'System32'), sys, join(sys, 'System32', 'WindowsPowerShell', 'v1.0')].join(delimiter),
   } : {
-    HOME: profile, TMPDIR: temp, XDG_CACHE_HOME: cache,
+    ...inherited(['TZ']), HOME: profile, TMPDIR: temp, XDG_CACHE_HOME: cache, LANG: 'C.UTF-8',
     PATH: [...path, '/usr/local/bin', '/usr/bin', '/bin'].join(delimiter),
   };
   return { root, home, profile, work, cache, env };
@@ -170,7 +170,7 @@ export async function installedPlugin(paseo) {
 export const revisionOf = plugin => plugin.installation?.currentRevision ?? plugin.commit ?? plugin.revision ?? '';
 export const pluginDirectory = plugin => plugin.path ?? plugin.directory ?? plugin.dir;
 
-export async function installPlugin(paseo, source, ref) {
+export async function installPlugin(paseo, source, ref, env) {
   await paseo('plugin', 'install', source, '--ref', ref, '--json');
   const plugin = await installedPlugin(paseo);
   assert.equal(plugin.status, 'running', JSON.stringify(plugin));
@@ -178,7 +178,7 @@ export async function installPlugin(paseo, source, ref) {
   assert(revision, 'No installed revision reported');
   if (source.startsWith('git:')) {
     const { stdout } = await run('git', ['ls-remote', `https://github.com/${source.slice(4)}.git`, ref, `${ref}^{}`],
-      { cwd: tmpdir(), timeout: 60_000, windowsHide: true });
+      { cwd: tmpdir(), env, timeout: 60_000, windowsHide: true });
     const rows = stdout.trim().split('\n').map(line => line.split(/\s+/));
     const expected = rows.find(([, name]) => name?.endsWith('^{}')) ?? rows[0];
     if (expected[0]) assert.equal(revision, expected[0]);
@@ -204,7 +204,7 @@ export function daemonErrors(text) {
     const own = record?.pluginId === PLUGIN || line.includes(`[${PLUGIN}]`);
     if (own && !/e2e-(probe|outcome)/.test(message) &&
         (record?.stream === 'stderr' || /failed|could not|error|unreadable/i.test(message))) plugin.push(message);
-    if (record?.level >= 50) daemon.push({ module: record.module, message, error: record.err, pluginId: record.pluginId });
+    if (record?.level >= 50 || ['error', 'fatal'].includes(record?.level)) daemon.push({ time: record.time, module: record.module, message, error: record.err, pluginId: record.pluginId });
   }
   return { plugin, daemon };
 }
@@ -244,12 +244,18 @@ export async function saveReport(out, report, artifacts = {}) {
   await writeFile(join(out, 'results.json'), JSON.stringify(report, null, 2) + '\n');
 }
 
+function describeFailure(error) {
+  const status = error?.signal ? `Process signal: ${error.signal}` : '';
+  return [String(error?.stack ?? error), status, String(error?.stderr ?? '').trim().slice(-2000)]
+    .filter(Boolean).join('\n');
+}
+
 export async function nativeRun(platform, args, scenario) {
   await mkdir(resolve(args.out), { recursive: true });
   const out = await mkdtemp(join(resolve(args.out), `${platform}-`));
   const root = await mkdtemp(join(tmpdir(), `Usage Auto Resume ${platform} 한글 `));
   const report = { platform, os: process.platform, node: process.version, source: args.source, ref: args.to,
-    startedAt: iso(Date.now()), root, checks: [], errors: [] };
+    startedAt: iso(Date.now()), root, result: 'running', checks: [], errors: [] };
   const artifacts = {};
   const cleanup = [];
   let screenshot;
@@ -260,24 +266,26 @@ export async function nativeRun(platform, args, scenario) {
     async check(name, fn) {
       const entry = { name, startedAt: iso(Date.now()) };
       report.checks.push(entry);
+      await saveReport(out, report);
       try { entry.evidence = await fn(); entry.ok = true; console.log('OK', name); }
       catch (error) { entry.ok = false; throw error; }
+      finally { await saveReport(out, report); }
     },
   };
   try { await scenario(ctx); }
   catch (error) {
-    report.errors.push(String(error.stack ?? error));
+    report.errors.push(describeFailure(error));
     await screenshot?.('failure').catch(error => report.errors.push('Screenshot: ' + error.message));
   }
   for (const stop of cleanup) {
-    try { await stop(); } catch (error) { report.errors.push(String(error.stack ?? error)); }
+    try { await stop(); } catch (error) { report.errors.push(describeFailure(error)); }
   }
   if (!report.errors.length) {
     try {
       // Copy evidence before removing the temporary profile.
       await saveReport(out, report, artifacts);
       await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
-    } catch (error) { report.errors.push(String(error.stack ?? error)); }
+    } catch (error) { report.errors.push(describeFailure(error)); }
   }
   report.result = report.errors.length ? 'failed' : 'passed';
   report.finishedAt = iso(Date.now());

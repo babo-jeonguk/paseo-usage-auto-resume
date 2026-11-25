@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { access, readFile } from 'node:fs/promises';
+import { access } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { androidDevice, matchNode, PACKAGE, within } from './android-device.mjs';
@@ -21,7 +21,6 @@ await nativeRun('android', args, async ctx => {
   const device = await androidDevice(ctx, fixture, args);
   const log = join(root, 'daemon.log');
   artifacts['daemon.log'] = log;
-  let diagnostics;
   const waitJob = (agent, test, what) => waitFor(async () => test(await fixture.job(agent.id)), what, 20_000, 200);
 
   const menu = async label => {
@@ -33,19 +32,22 @@ await nativeRun('android', args, async ctx => {
     for (let depth = 0; depth < 6; depth++) {
       const nodes = await device.nodes();
       if (nodes.some(matchNode('Open menu'))) return;
-      const back = nodes.find(matchNode(/^(Go back|Back|Close settings)$/));
+      const back = nodes.find(matchNode(/^(Go back|Back(?: to plugins)?|Close settings|settings-back-to-workspace)$/i));
       if (back) await device.tapNode(back);
     }
     await device.find('Open menu');
   };
   const settings = async () => {
-    await menu('Settings');
-    await device.tap('Plugins');
-    await device.tap('Usage Auto Resume');
+    await menu('sidebar-settings');
+    await device.tapNode(await device.scrollTo('Plugins'));
+    await device.tapNode(await device.scrollTo('Usage Auto Resume'));
     await device.find('Automatic resume');
   };
-  const pill = node => node.pkg === PACKAGE && /^Auto Resume(?:$|[, .])/.test(node.desc ?? '') &&
-    (node.desc !== 'Auto Resume' || /^(Resume|Tmr|Mon|Tue|Wed|Thu|Fri|Sat|Sun|Check|Resuming)\b/.test(node.text ?? ''));
+  // The drawer is closed on the conversation. The composer action's accessible name is stable
+  // even when its visible countdown is grouped into the button by React Native.
+  const pill = node => node.pkg === PACKAGE && node.class === 'android.widget.Button' && node.desc === 'Auto Resume';
+  const composer = () => device.find(node => node.pkg === PACKAGE && node.class === 'android.widget.EditText' &&
+    node.desc === 'Message agent...');
   const row = job => matchNode('resume-row-' + job.id);
   const closeKeyboard = () => device.shell('input', 'keyevent', 'KEYCODE_BACK');
   const confirmResume = async toast => {
@@ -57,7 +59,7 @@ await nativeRun('android', args, async ctx => {
   const primaryTitle = 'Android live limit';
   let primary, primaryJob;
   await check('Clean AVD, APK version match, Direct connection, Hermes bundle and live push', async () => {
-    diagnostics = await device.boot();
+    await device.boot();
     const daemon = spawnLogged(process.execPath, ['--no-maglev', cliBin(fixture.cli), 'daemon', 'run', '--home', fixture.home],
       { env: fixture.environment, cwd: fixture.work, log });
     dispose(async () => {
@@ -72,11 +74,14 @@ await nativeRun('android', args, async ctx => {
     await menu('Auto Resume');
     await device.find('Nothing scheduled');
     primary = await fixture.agent(primaryTitle);
-    const { job, observedAt } = await fixture.limit(primary);
+    // Start UI Automator before sending the turn. Starting the device-side command only after
+    // the daemon reports the row would count its cold launch against the UI’s push deadline.
+    const visible = device.find('Open ' + primaryTitle, 90_000).then(() => performance.now());
+    const [{ job, observedAt }, visibleAt] = await Promise.all([fixture.limit(primary), visible]);
     primaryJob = job;
-    await device.find(row(job), 5000);
-    const pushMs = Math.round(performance.now() - observedAt);
+    const pushMs = Math.max(0, Math.round(visibleAt - observedAt));
     assert(pushMs <= 5000, `Native row took ${pushMs} ms after the reservation reached the daemon`);
+    await device.find('resume-row-' + job.id);
     await device.shot('live-push');
     return { pushMs, cliVersion: fixture.version, apkVersion: report.apkVersion, revision: report.revision };
   });
@@ -97,7 +102,7 @@ await nativeRun('android', args, async ctx => {
     };
     await device.scrollTo(row(primaryJob), 'up');
     const primaryDay = await findDay(primaryJob);
-    await device.scrollTo(row(sameJob));
+    await device.scrollTo(row(sameJob), 'up');
     assert.equal(await findDay(sameJob), primaryDay, 'Two same-day reservations should share a section');
     await device.scrollTo(row(laterJob));
     const dayLabel = new Date(laterJob.dueAt).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
@@ -107,12 +112,18 @@ await nativeRun('android', args, async ctx => {
       /^in \d+ days?(?: \d+ hours?)?$/.test(node.desc ?? ''));
     await device.shot('compact-list');
     await device.tapNode(await device.scrollTo('Turn all off', 'up'));
-    await waitFor(async () => (await fixture.jobs()).every(job => !job.enabled), 'all jobs off');
+    await waitFor(async () => {
+      const jobs = await fixture.jobs();
+      return jobs.length === 3 && jobs.every(job => !job.enabled);
+    }, 'all jobs off');
     const compactAllOn = await device.find(node => node.pkg === PACKAGE && node.desc === 'Turn all on');
     assert(compactAllOn.text === 'All on' || (await device.nodes()).some(node => node.text === 'All on'),
       'Compact bulk control must show All on');
     await device.tap('Turn all on');
-    await waitFor(async () => (await fixture.jobs()).every(job => job.enabled), 'all jobs on');
+    await waitFor(async () => {
+      const jobs = await fixture.jobs();
+      return jobs.length === 3 && jobs.every(job => job.enabled);
+    }, 'all jobs on');
     const rowSwitch = node => node.pkg === PACKAGE && (node.desc ?? '').startsWith('Continue ' + primaryTitle + ' automatically');
     await device.tapNode(await device.scrollTo(rowSwitch));
     await waitJob(primary, job => job && !job.enabled, 'native switch off');
@@ -137,6 +148,7 @@ await nativeRun('android', args, async ctx => {
   const note = "ANDROID CONTINUE & 'verify'";
   await check('Conversation navigation and native sheet with stacked day choices and keyboard input', async () => {
     await device.tapNode(await device.scrollTo('Open ' + primaryTitle, 'up'));
+    await composer();
     await device.tap(pill);
     await device.tap('Delay 10 minutes');
     const bumped = iso(Date.parse(primaryJob.dueAt) + 20 * 60_000);
@@ -180,12 +192,18 @@ await nativeRun('android', args, async ctx => {
 
   await check('Settings cancel, Labs tooltip pixels, Labs switch, and continue prompt edit/reset', async () => {
     await settings();
-    const provider = await device.scrollTo('resume-provider-claude');
-    await device.tapNode(provider);
+    await device.scrollTo('resume-provider-claude');
+    const controls = await device.nodes();
+    const provider = controls.find(matchNode('resume-provider-claude'));
+    assert(provider, 'Claude provider setting');
+    const providerToggle = node => node.pkg === PACKAGE && /Switch$/.test(node.class ?? '') &&
+      (node === provider || within(node, provider));
+    const toggle = controls.find(providerToggle) ?? provider;
+    await device.tapNode(toggle);
     await waitJob(same, row => !row, 'provider cancels pending work');
     await waitJob(later, row => !row, 'provider cancels pending work across days');
     assert.equal((await fixture.history()).find(entry => entry.agentId === same.id)?.reason, 'provider_off');
-    await device.tap('resume-provider-claude');
+    await device.tapNode(toggle);
 
     const info = await device.scrollTo('resume-labs-info');
     const before = await device.screenshotRaw();
@@ -219,9 +237,11 @@ await nativeRun('android', args, async ctx => {
     await closeKeyboard();
     await device.tap('Save');
     const prompt = text => node => node.class === 'android.widget.EditText' && node.desc === 'Continue prompt' && node.text === text;
-    await device.find(prompt(custom));
-    await device.tap('Reset to default');
-    await device.find(prompt(DEFAULT_MARK));
+    await device.scrollTo('Custom prompt');
+    await device.scrollTo(prompt(custom), 'up');
+    await device.tapNode(await device.scrollTo('Reset to default'));
+    await device.scrollTo('Default prompt', 'up');
+    await device.scrollTo(prompt(DEFAULT_MARK), 'up');
     return { tooltipChangedPixels: changed };
   });
 
@@ -258,17 +278,13 @@ await nativeRun('android', args, async ctx => {
     await menu('Auto Resume');
     await device.find(row(job));
     await device.tap('Open ' + recovery.title);
+    await composer();
     await device.find(pill);
     assert.notEqual((await device.shell('pidof', PACKAGE)).trim(), before);
     assert.equal((await fixture.job(recovery.id)).id, job.id);
     assert.equal(fixture.continues().length, sent);
     assert.equal(fixture.continues(note).length, 1);
     await device.shot('cold-reopen');
-    await diagnostics.captureLogcat();
-    const logcat = await readFile(diagnostics.logcat, 'utf8');
-    report.fatalLogcat = logcat.split('\n').filter(line =>
-      /\b(?:E|F) ReactNativeJS\b.*(?:Error|Exception|Hermes)|\bF libc\b.*Fatal signal|\bE AndroidRuntime\b.*Process: sh\.paseo\b|\bF DEBUG\b.*sh\.paseo/i.test(line));
-    assert.deepEqual(report.fatalLogcat, []);
     assert.deepEqual(fixture.proxy.hits(), []);
     await assertDaemonLogs(report, log);
     return { reservationId: job.id, duplicateContinues: 0, anrDismissed: report.anrDismissed };

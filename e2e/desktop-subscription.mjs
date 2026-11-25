@@ -44,10 +44,11 @@ const readFixture = createSubscriptionReader({ fetch: async (input, options) => 
   const url = String(input);
   const token = new Headers(options?.headers).get("authorization");
   const fixture = JSON.parse(readFileSync(${JSON.stringify(control)}, "utf8"));
-  appendFileSync(${JSON.stringify(log)}, JSON.stringify({ url, token, usage: fixture.usage ?? "ready" }) + "\\n");
   const expectedTokens: Record<string, string> = ${JSON.stringify({
     [PROFILE]: `Bearer ${CLAUDE_TOKEN}`, [CLAUDE_USAGE]: `Bearer ${CLAUDE_TOKEN}`, [CODEX_USAGE]: `Bearer ${CODEX_TOKEN}`,
   })};
+  const loggedToken = token === expectedTokens[url] ? token : token && "<unexpected bearer>";
+  appendFileSync(${JSON.stringify(log)}, JSON.stringify({ url, token: loggedToken, usage: fixture.usage ?? "ready" }) + "\\n");
   if (!Object.hasOwn(expectedTokens, url)) throw new Error("Unexpected subscription fetch: " + url);
   if (token !== expectedTokens[url]) return new Response(null, { status: 401 });
   if (url === ${JSON.stringify(PROFILE)}) return Response.json({

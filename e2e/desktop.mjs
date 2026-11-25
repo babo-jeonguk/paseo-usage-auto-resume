@@ -15,6 +15,7 @@ await nativeRun('desktop', args, async ctx => {
   assert.equal(process.platform, args['expect-platform'], 'Use Node on the requested native OS');
   assert(isWin || process.env.DISPLAY || process.env.WAYLAND_DISPLAY, 'Run under xvfb-run on a headless Linux host');
   const appDir = resolve(args.app);
+  report.app = appDir;
   const executable = join(appDir, isWin ? 'Paseo.exe' : 'Paseo');
   const binary = await realpath(join(appDir, isWin ? 'Paseo.exe' : 'Paseo.bin'));
   await access(executable);
@@ -38,6 +39,7 @@ await nativeRun('desktop', args, async ctx => {
   await writeFile(fetchLog, '');
   report.pageErrors = [];
   report.appStartupRetries = [];
+  const shutdowns = [];
 
   const display = inherited(['DISPLAY', 'XAUTHORITY', 'WAYLAND_DISPLAY', 'XDG_RUNTIME_DIR']);
   const environment = {
@@ -107,28 +109,33 @@ await nativeRun('desktop', args, async ctx => {
     return { pid: instance.pid, executable: daemonPath, version: match[1] };
   }
 
-  async function appProcesses() {
+  async function processTable() {
     if (isWin) {
       const { stdout } = await run('powershell.exe', ['-NoProfile', '-Command',
         'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress'],
       { timeout: 15_000, windowsHide: true });
-      const rows = JSON.parse(stdout), pids = new Set([app.pid]);
-      for (let previous; previous !== pids.size;) {
-        previous = pids.size;
-        for (const row of rows) if (pids.has(row.ParentProcessId)) pids.add(row.ProcessId);
-      }
-      return [...pids];
+      return JSON.parse(stdout).map(row => ({ pid: row.ProcessId, parent: row.ParentProcessId }));
     }
-    const { stdout } = await run('ps', ['-eo', 'pid=,pgid=,stat='], { timeout: 10_000 });
+    const { stdout } = await run('ps', ['-eo', 'pid=,ppid=,pgid=,stat='], { timeout: 10_000 });
     return stdout.trim().split('\n').map(row => row.trim().split(/\s+/))
-      .filter(([, group, state]) => Number(group) === app.pid && !state.startsWith('Z')).map(([pid]) => Number(pid));
+      .filter(([, , , state]) => !state.startsWith('Z'))
+      .map(([pid, parent, group]) => ({ pid: Number(pid), parent: Number(parent), group: Number(group) }));
   }
   async function closeApp(daemon) {
-    const pids = await appProcesses();
+    const groups = new Set([app.pid, daemon.pid]);
+    const children = new Set(groups);
+    const processes = await processTable();
+    for (let previous; previous !== children.size;) {
+      previous = children.size;
+      for (const { pid, parent, group } of processes) {
+        if (children.has(parent) || groups.has(group)) children.add(pid);
+      }
+    }
+    const startedAt = Date.now();
     await page.evaluate(() => window.close());
-    await waitFor(() => !pidAlive(daemon.pid) && !running(app), 'desktop window and managed daemon exit', 60_000);
-    if (isWin) await waitFor(() => pids.every(pid => !pidAlive(pid)), 'Electron child processes exit', 15_000);
-    else await waitFor(async () => !(await appProcesses()).length, 'Electron process group exit', 15_000);
+    await waitFor(async () => !running(app) && !(await processTable()).some(({ pid, group }) =>
+      children.has(pid) || groups.has(group)), 'desktop daemon and child processes exit', 60_000);
+    shutdowns.push({ startedAt, finishedAt: Date.now() });
     await browser.close();
     browser = page = app = undefined;
   }
@@ -179,7 +186,9 @@ await nativeRun('desktop', args, async ctx => {
   await check('Electron owns the version-matched daemon and loads the installed plugin', async () => {
     await startApp();
     report.daemon = await assertManaged();
+    report.installStartedAt = Date.now();
     await fixture.install(source => patchDesktopEntry(source, fixture.usageFile, fetchLog));
+    report.installFinishedAt = Date.now();
     await page.reload();
     const skip = page.getByText('Skip setup', { exact: true });
     if (await skip.isVisible()) await skip.click();
@@ -191,9 +200,10 @@ await nativeRun('desktop', args, async ctx => {
     return { daemon: report.daemon, revision: report.revision, accounts: emails };
   });
 
+  const leaveSettings = () => button('Back', page.getByRole('navigation', { name: 'Settings' })).click();
   const primary = await fixture.agent('Desktop live limit');
   await check('Live composer pill, keyboard editing, and guarded Resume now on the real Claude CLI', async () => {
-    await page.reload();
+    await leaveSettings();
     await conversation(primary);
     assert.equal(await pill().count(), 0);
     const { job, observedAt } = await fixture.limit(primary);
@@ -221,7 +231,7 @@ await nativeRun('desktop', args, async ctx => {
     await resume(view, /^Usage is still used up/);
     assert.deepEqual(await fixture.job(primary.id), before);
     await fixture.setUsage('auth');
-    await resume(view, /^Couldn’t verify the account/);
+    await resume(view, /^Couldn’t verify usage/);
     assert.deepEqual(await fixture.job(primary.id), before);
     assert.equal(fixture.continues().length, 0);
     await shot('desktop-popover');
@@ -271,6 +281,8 @@ await nativeRun('desktop', args, async ctx => {
     await waitJob(agent, row => !row, 'provider cancellation');
     assert.equal((await fixture.history()).find(entry => entry.agentId === agent.id)?.reason, 'provider_off');
     await toggle.click();
+    await waitFor(async () => await toggle.getAttribute('aria-checked') === 'true', 'Claude provider switch is on');
+    await leaveSettings();
     return 'Day heading, conversation pill, hover tooltip and provider_off history';
   });
 
@@ -294,9 +306,10 @@ await nativeRun('desktop', args, async ctx => {
       ? { ...row, resetAt: iso(Date.now() - 120_000), dueAt: iso(Date.now() - 60_000) } : row));
     await waitFor(async () => (await fixture.history()).some(entry => entry.agentId === agent.id && entry.outcome === 'continued'),
       'real tick on restarted daemon', 75_000, 500);
-    assert.equal(fixture.continues().length, requests + 1);
     assert.equal(await fixture.job(agent.id), undefined);
     await closeApp(after);
+    assert.equal(fixture.continues().length, requests + 1);
+    assert.equal(fixture.continues('DESKTOP MANUAL CONTINUE').length, 1);
     return { before, after, deliveryMs: Math.round(performance.now() - advancedAt), modelContinues: 1 };
   });
 
@@ -308,9 +321,16 @@ await nativeRun('desktop', args, async ctx => {
     report.updateFiles = cache.filter(entry => entry.isFile() && /updater/i.test(entry.parentPath)).map(entry => entry.name);
     report.appProxyHits = appProxy.hits();
     report.providerProxyHits = fixture.proxy.hits();
+    await assertDaemonLogs(report, daemonLog, entry => {
+      // An in-flight renderer RPC can lose its plugin worker as the isolated app reloads or quits.
+      const message = entry.error?.message;
+      return (message === 'Plugin is not available: usage-auto-resume' &&
+        entry.time >= report.installStartedAt && entry.time <= report.installFinishedAt) ||
+        (message === 'Plugin stopped: usage-auto-resume' &&
+          shutdowns.some(({ startedAt, finishedAt }) => entry.time >= startedAt && entry.time <= finishedAt));
+    });
     assert.deepEqual(report.updateFiles, []);
-    assert.deepEqual(report.providerProxyHits, []);
     assert.deepEqual(report.pageErrors, []);
-    await assertDaemonLogs(report, daemonLog);
+    assert.equal(report.providerProxyHits.length, 0, 'Provider CLIs attempted external connections. See providers-proxy.log.');
   });
 });
