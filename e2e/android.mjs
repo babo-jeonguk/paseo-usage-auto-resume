@@ -3,8 +3,9 @@ import { access } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { androidDevice, matchNode, PACKAGE, within } from './android-device.mjs';
+import { assertScreenshotText } from './android-visual.mjs';
 import { DEFAULT_CONTINUE_PROMPT } from '../shared/prompt.ts';
-import { cliBin, iso, killTree, nativeRun, options, running, SOURCE, spawnLogged, waitFor } from './core.mjs';
+import { cliBin, iso, killTree, nativeRun, options, run, running, SOURCE, spawnLogged, waitFor } from './core.mjs';
 import { assertDaemonLogs, editSavedJobs, localClock, nativeDefaults, nativeFixture, tomorrowAtNoon } from './native-fixture.mjs';
 import { patchEntry } from './patch-plugin.mjs';
 
@@ -14,9 +15,11 @@ const args = options(['cli', 'apk'], { ...nativeDefaults, source: SOURCE, port: 
 });
 
 await nativeRun('android', args, async ctx => {
-  const { root, artifacts, dispose, check, report } = ctx;
+  const { root, out, artifacts, dispose, check, report } = ctx;
   assert.equal(process.platform, 'linux', 'The Android runner uses a Linux SDK and emulator');
   await access(args.apk);
+  const { stdout: languages } = await run('tesseract', ['--list-langs'], { timeout: 10_000 });
+  assert(languages.split(/\r?\n/).includes('eng'), 'Install Tesseract with its English OCR data');
   const fixture = await nativeFixture(ctx, args);
   await fixture.configure({ claude: { env: { ...fixture.claudeEnv, CLAUDE_CODE_OAUTH_TOKEN: 'e2e-fixture-only' } } });
   const device = await androidDevice(ctx, fixture, args);
@@ -27,9 +30,15 @@ await nativeRun('android', args, async ctx => {
   const menuButton = /^(Open|Close) menu$/;
   const autoResumeItem = 'plugin-sidebar-usage-auto-resume-scheduled';
   const menu = async label => {
-    const trigger = await device.find(menuButton, 120_000);
-    if (trigger.desc === 'Open menu') await device.tapNode(trigger);
-    await device.tap(label);
+    const item = await waitFor(async () => {
+      const nodes = await device.nodes();
+      const desired = nodes.find(node => node.enabled && matchNode(label)(node));
+      if (desired) return desired;
+      const closed = nodes.find(matchNode('Open menu'));
+      if (closed) await device.tapNode(closed);
+      return null;
+    }, `Android drawer item ${label}`, 120_000, 250);
+    await device.tapNode(item);
   };
   const backToWorkspace = async () => {
     // Settings is a nested stack. The hardware Back key is reserved for dismissing the IME.
@@ -63,7 +72,7 @@ await nativeRun('android', args, async ctx => {
   };
 
   const primaryTitle = 'Android live limit';
-  let primary, primaryJob;
+  let primary, primaryJob, listOpenedAt;
   await check('Clean AVD, APK version match, Direct connection, Hermes bundle and live push', async () => {
     let daemon;
     // The device registers logcat capture during boot. Capture before stopping the host daemon.
@@ -80,6 +89,7 @@ await nativeRun('android', args, async ctx => {
     await fixture.attach(() => running(daemon));
     await fixture.install(source => patchEntry(source, fixture.usageFile));
     await device.connect();
+    listOpenedAt = performance.now();
     await menu(autoResumeItem);
     await device.find('Nothing scheduled');
     primary = await fixture.agent(primaryTitle);
@@ -93,6 +103,22 @@ await nativeRun('android', args, async ctx => {
     await device.find('resume-row-' + job.id);
     await device.shot('live-push');
     return { pushMs, cliVersion: fixture.version, apkVersion: report.apkVersion, revision: report.revision };
+  });
+
+  await check('Pull-to-refresh reads changes that were not pushed to the open list', async () => {
+    // The open list has already received a real push. There are no pending UI mutations here.
+    // Two independent transitions distinguish the gesture from a stray startup refetch.
+    const toggle = switchFor(primary);
+    for (const enabled of [false, true]) {
+      const node = await device.find(entry => toggle(entry) && entry.checked !== enabled);
+      await editSavedJobs(fixture, jobs => jobs.map(saved => saved.id === primaryJob.id ? { ...saved, enabled } : saved));
+      assert.equal((await device.find(toggle)).checked, !enabled, 'The file edit must not update the open list');
+      const x = Math.floor((node.left + node.right) / 2);
+      await device.swipe(x, node.top, node.top + 420);
+      await device.find(entry => toggle(entry) && entry.checked === enabled);
+    }
+    assert(performance.now() - listOpenedAt < 120_000, 'Refresh check overlapped the periodic list poll');
+    assert.equal((await fixture.job(primary.id)).enabled, true);
   });
 
   const same = await fixture.agent('Android same-day reservation');
@@ -217,14 +243,16 @@ await nativeRun('android', args, async ctx => {
     await device.tapNode(toggle);
 
     const info = await device.scrollTo('resume-labs-info');
-    const before = await device.screenshotRaw();
     await device.tapNode(info);
-    const body = await device.find(/^If a turn fails because the provider is busy.*minutes later\.$/);
-    const details = await device.find('Claude, Codex and Antigravity only. Usage limits are checked first.');
-    const after = await device.screenshotRaw();
-    assert.equal(after.width, before.width);
-    assert.equal(after.height, before.height);
-    const tooltipInk = [body, details].map(node => visibleTooltipInk(before, after, node));
+    const body = 'If a turn fails because the provider is busy, retry the turn up to 3 times — about 3, 10, then 25 minutes later.';
+    const details = 'Claude, Codex and Antigravity only. Usage limits are checked first.';
+    const bodyBounds = await device.find(body);
+    const detailsBounds = await device.find(details);
+    const tooltip = await device.screenshotRaw();
+    const tooltipText = [
+      await assertScreenshotText(tooltip, bodyBounds, body, join(out, 'labs-tooltip-body.pgm')),
+      await assertScreenshotText(tooltip, detailsBounds, details, join(out, 'labs-tooltip-details.pgm')),
+    ];
     await device.shot('labs-tooltip');
     await device.tap('resume-labs-info');
     const labs = matchNode('resume-labs-toggle');
@@ -244,7 +272,7 @@ await nativeRun('android', args, async ctx => {
     await device.tapNode(await device.scrollTo('Reset to default'));
     await device.scrollTo('Default prompt', 'up');
     await device.scrollTo(prompt(DEFAULT_CONTINUE_PROMPT), 'up');
-    return { tooltipInk };
+    return { tooltipText };
   });
 
   await check('Recent activity shows native outcome text and Hermes dates', async () => {
@@ -275,21 +303,9 @@ await nativeRun('android', args, async ctx => {
     assert(before);
     await device.shell('am', 'force-stop', PACKAGE);
     assert.equal(await device.shell('pidof', PACKAGE).catch(() => ''), '');
-    const reopenedAt = performance.now();
     await device.launch();
     await menu(autoResumeItem);
     await device.find(row(job));
-    // A cold render means no prior mutation or its refetch can consume this offline file edit.
-    const toggle = switchFor(recovery);
-    const coords = await device.find(node => toggle(node) && node.checked);
-    await editSavedJobs(fixture, jobs => jobs.map(saved => saved.id === job.id ? { ...saved, enabled: false } : saved));
-    assert((await device.find(toggle)).checked, 'Offline file edit must leave the rendered switch on');
-    const x = Math.floor((coords.left + coords.right) / 2);
-    await device.swipe(x, coords.top, coords.top + 420);
-    await device.find(node => toggle(node) && !node.checked);
-    assert(performance.now() - reopenedAt < 120_000, 'Refresh check overlapped the periodic list poll');
-    await device.tap(toggle);
-    await waitJob(recovery, saved => saved?.enabled, 'reservation enabled again');
     await device.tap('Open ' + recovery.title);
     await composer();
     await device.find(pill);
@@ -303,27 +319,3 @@ await nativeRun('android', args, async ctx => {
     return { reservationId: job.id, duplicateContinues: 0, anrDismissed: report.anrDismissed };
   });
 });
-
-function visibleTooltipInk(before, after, { left, top, right, bottom }) {
-  assert(left >= 0 && top >= 0 && right <= after.width && bottom <= after.height, 'Tooltip text is outside the display');
-  const colors = new Map();
-  const pixels = [];
-  for (let y = top; y < bottom; y += 2) {
-    for (let x = left; x < right; x += 2) {
-      const at = (y * after.width + x) * 4;
-      const color = after.pixels[at] * 65536 + after.pixels[at + 1] * 256 + after.pixels[at + 2];
-      colors.set(color, (colors.get(color) ?? 0) + 1);
-      pixels.push({ at, y, color });
-    }
-  }
-  const [background] = [...colors].reduce((best, entry) => entry[1] > best[1] ? entry : best, [0, 0]);
-  const channels = [background >>> 16, (background >>> 8) & 255, background & 255];
-  const bands = [0, 0];
-  for (const { at, y, color } of pixels) {
-    if (color === background || !channels.some((channel, i) => Math.abs(channel - after.pixels[at + i]) >= 40)) continue;
-    if (!channels.some((_, i) => before.pixels[at + i] !== after.pixels[at + i])) continue;
-    bands[y < (top + bottom) / 2 ? 0 : 1]++;
-  }
-  assert(bands.every(count => count > 10), 'Tooltip must show new contrasting text in both halves of each paragraph');
-  return bands;
-}

@@ -75,8 +75,9 @@ export async function androidDevice(ctx, fixture, args) {
       return [];
     }
     const list = hierarchy(lastXml);
-    const dialog = list.find(node => node.pkg !== PACKAGE && /^(System UI|com\.android\.systemui) isn.t responding/i.test(node.text));
-    const wait = dialog && list.find(node => node.pkg === dialog.pkg && node.text === 'Wait');
+    const dialog = list.find(node => node.pkg === 'android' && node.id === 'android:id/alertTitle' &&
+      /^(?:Process system|System UI|com\.android\.systemui) isn.t responding$/i.test(node.text));
+    const wait = dialog && list.find(node => node.pkg === dialog.pkg && node.id === 'android:id/aerr_wait');
     if (wait) {
       await tapNode(wait);
       report.anrDismissed++;
@@ -158,7 +159,8 @@ export async function androidDevice(ctx, fixture, args) {
     emulator = spawnLogged(join(sdk, 'emulator', 'emulator'),
       ['-avd', avd, '-port', String(port), '-wipe-data', '-no-window', '-no-audio', '-no-snapshot',
         '-no-boot-anim', '-gpu', 'swiftshader_indirect', '-cores', '2', '-memory', '2048', '-timezone', timezone,
-        '-no-metrics', '-network-user-mode-options', 'restrict=on', '-wifi-user-mode-options', 'restrict=on'],
+        '-no-metrics', '-crash-report-mode', 'disabled',
+        '-network-user-mode-options', 'restrict=on', '-wifi-user-mode-options', 'restrict=on'],
       { env, log });
     dispose(async () => {
       try {

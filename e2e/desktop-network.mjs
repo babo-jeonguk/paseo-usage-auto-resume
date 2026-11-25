@@ -3,6 +3,13 @@ import { readFile } from 'node:fs/promises';
 import { connect } from 'node:net';
 import { networkInterfaces } from 'node:os';
 
+export function isOfflineRegistryFailure(entry) {
+  const message = entry.error?.message;
+  return entry.module === 'session' && entry.message === 'Error handling message' &&
+    entry.error?.stack?.includes('at async listRegistryPlugins (') &&
+    /^Could not reach plugin registry https:\/\/plugins\.paseo\.sh\/index\.json\. Retry later\.: fetch failed: getaddrinfo (?:EAI_AGAIN|ENOTFOUND) plugins\.paseo\.sh$/.test(message);
+}
+
 export async function assertDesktopOffline() {
   const external = Object.entries(networkInterfaces()).filter(([, addresses]) => addresses.some(address => !address.internal));
   assert.deepEqual(external.map(([name]) => name), [], 'Desktop E2E requires a loopback-only environment');

@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { access, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
-import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
-import { freePort, inherited, isWin, iso, killTree, listen, nativeRun, options, pidAlive, readJson,
+import { freePort, inherited, isWin, iso, killTree, nativeRun, options, pidAlive, readJson,
   run, running, spawnLogged, startProxy, waitFor, withDeadline } from './core.mjs';
-import { assertDesktopOffline } from './desktop-network.mjs';
+import { assertDesktopOffline, isOfflineRegistryFailure } from './desktop-network.mjs';
 import { assertSubscriptionRequests, patchDesktopEntry, prepareLogins } from './desktop-subscription.mjs';
 import { assertDaemonLogs, editSavedJobs, localClock, nativeDefaults, nativeFixture, tomorrowAtNoon } from './native-fixture.mjs';
 
@@ -40,14 +39,6 @@ await nativeRun('desktop', args, async ctx => {
   const appProxy = await startProxy(appProxyLog);
   dispose(() => appProxy.close());
   artifacts['electron-proxy.log'] = appProxyLog;
-  const registry = await listen(createServer((request, response) => {
-    if (request.method !== 'GET' || request.url !== '/index.json') return response.writeHead(404).end();
-    response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({
-      schemaVersion: 1, registry: { name: 'Desktop E2E', url: `http://${request.headers.host}` },
-      generatedAt: iso(Date.now()), categories: [], plugins: [], featured: [],
-    }));
-  }));
-  dispose(() => registry.close());
   const daemonLog = join(fixture.home, 'daemon.log');
   const fetchLog = join(root, 'subscription.jsonl');
   artifacts['daemon.log'] = daemonLog;
@@ -60,7 +51,6 @@ await nativeRun('desktop', args, async ctx => {
   const display = inherited(['DISPLAY', 'XAUTHORITY', 'WAYLAND_DISPLAY', 'XDG_RUNTIME_DIR']);
   const environment = {
     ...fixture.environment, ...display,
-    PASEO_PLUGIN_REGISTRY: `http://127.0.0.1:${registry.port}`,
     PASEO_ELECTRON_USER_DATA_DIR: join(root, 'electron'),
     PASEO_ELECTRON_FLAGS: `--proxy-server=${appProxy.url} --proxy-bypass-list=localhost;127.0.0.1;[::1] --lang=en-US`,
   };
@@ -338,6 +328,7 @@ await nativeRun('desktop', args, async ctx => {
   });
 
   await check('No direct external connections, self-update files, renderer errors or unexpected daemon errors', async () => {
+    const directTcp = await assertDesktopOffline();
     const cache = await readdir(fixture.cache, { recursive: true, withFileTypes: true }).catch(error => {
       if (error.code === 'ENOENT') return [];
       throw error;
@@ -345,7 +336,13 @@ await nativeRun('desktop', args, async ctx => {
     report.updateFiles = cache.filter(entry => entry.isFile() && /updater/i.test(entry.parentPath)).map(entry => entry.name);
     report.appProxyHits = appProxy.hits();
     report.providerProxyHits = fixture.proxy.hits();
+    report.offlineRegistryFailures = 0;
     await assertDaemonLogs(report, daemonLog, entry => {
+      // Settings reads the directory from the real Desktop-managed daemon, which is offline.
+      if (isOfflineRegistryFailure(entry)) {
+        report.offlineRegistryFailures++;
+        return true;
+      }
       // An in-flight renderer RPC can lose its plugin worker as the isolated app reloads or quits.
       const message = entry.error?.message;
       return (message === 'Plugin is not available: usage-auto-resume' &&
@@ -355,6 +352,6 @@ await nativeRun('desktop', args, async ctx => {
     });
     assert.deepEqual(report.updateFiles, []);
     assert.deepEqual(report.pageErrors, []);
-    return { directTcp: await assertDesktopOffline(), refusedProviderRequests: report.providerProxyHits.length };
+    return { directTcp, refusedProviderRequests: report.providerProxyHits.length, offlineRegistryFailures: report.offlineRegistryFailures };
   });
 });
