@@ -47,7 +47,7 @@ await nativeRun('android', args, async ctx => {
   // even when its visible countdown is grouped into the button by React Native.
   const pill = node => node.pkg === PACKAGE && node.class === 'android.widget.Button' && node.desc === 'Auto Resume';
   const composer = () => device.find(node => node.pkg === PACKAGE && node.class === 'android.widget.EditText' &&
-    node.desc === 'Message agent...');
+    node.desc === 'Message agent...', 120_000, 'conversation composer');
   const row = job => matchNode('resume-row-' + job.id);
   const closeKeyboard = () => device.shell('input', 'keyevent', 'KEYCODE_BACK');
   const confirmResume = async toast => {
@@ -91,12 +91,20 @@ await nativeRun('android', args, async ctx => {
   await check('Compact list, Hermes days and spoken time, bulk and row toggles, delay, and pull-to-refresh', async () => {
     const sameDay = Date.parse(primaryJob.dueAt) - 122_000;
     const { job: sameJob } = await fixture.limit(same, Math.max(60, Math.floor((sameDay - Date.now()) / 1000)));
-    const { job: laterJob } = await fixture.limit(later, 3 * 86400);
+    const { job: initialLater } = await fixture.limit(later);
+    const laterDue = iso(Date.parse(initialLater.dueAt) + 3 * 86_400_000);
+    // Some Claude releases omit the date from distant rate-limit notices. Schedule the later
+    // day explicitly after the real limit created its reservation.
+    assert.equal((await fixture.rpc('auto-resume.reschedule', {
+      agentId: later.id, id: initialLater.id, dueAt: initialLater.dueAt, newDueAt: laterDue,
+    })).changed, true);
+    const laterJob = await fixture.job(later.id);
     const findDay = async job => {
       const list = await device.nodes();
       const target = list.find(row(job));
       assert(target, 'Reservation row is missing from the hierarchy');
-      const day = list.find(node => matchNode(/^resume-day-/)(node) && within(target, node));
+      // The native hierarchy can expose the day heading and its rows as siblings.
+      const day = list.filter(matchNode(/^resume-day-/)).filter(node => node.top <= target.top).at(-1);
       assert(day, 'Reservation has no day section');
       return day.id;
     };
@@ -106,7 +114,7 @@ await nativeRun('android', args, async ctx => {
     assert.equal(await findDay(sameJob), primaryDay, 'Two same-day reservations should share a section');
     await device.scrollTo(row(laterJob));
     const dayLabel = new Date(laterJob.dueAt).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
-    assert.match(await findDay(laterJob), /^(.+:id\/)?resume-day-/);
+    assert.equal((await findDay(laterJob)).split(':id/').at(-1), 'resume-day-' + dayLabel);
     await device.scrollTo(dayLabel, 'up');
     const spoken = await device.scrollTo(node => node.pkg === PACKAGE && /^in \d+d(?: \d+h)?$/.test(node.text ?? '') &&
       /^in \d+ days?(?: \d+ hours?)?$/.test(node.desc ?? ''));

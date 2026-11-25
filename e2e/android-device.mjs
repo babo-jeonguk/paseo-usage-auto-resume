@@ -89,9 +89,9 @@ export async function androidDevice(ctx, fixture, args) {
       return (await nodes(Math.min(12_000, remaining))).find(matchNode(label));
     }, `Android UI ${description}`, timeout, 100);
   }
-  const tap = async label => {
+  const tap = async (label, timeout) => {
     const matches = matchNode(label);
-    await tapNode(await find(node => node.enabled && matches(node), 40_000, `enabled ${label}`));
+    await tapNode(await find(node => node.enabled && matches(node), timeout, `enabled ${label}`));
   };
   async function type(label, value) {
     const matches = matchNode(label);
@@ -184,7 +184,7 @@ export async function androidDevice(ctx, fixture, args) {
       await shell('pm', 'grant', PACKAGE, 'android.permission.POST_NOTIFICATIONS');
     await adb(['reverse', `tcp:${fixture.port}`, `tcp:${fixture.port}`]);
     await launch();
-    await tap('Direct connection');
+    await tap('Direct connection', 120_000);
     await type('Host', '127.0.0.1');
     await type('Port', String(fixture.port));
     await tap('Connect');
