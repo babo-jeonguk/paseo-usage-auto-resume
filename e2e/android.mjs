@@ -62,15 +62,18 @@ await nativeRun('android', args, async ctx => {
   const primaryTitle = 'Android live limit';
   let primary, primaryJob;
   await check('Clean AVD, APK version match, Direct connection, Hermes bundle and live push', async () => {
-    await device.boot();
-    const daemon = spawnLogged(process.execPath, ['--no-maglev', cliBin(fixture.cli), 'daemon', 'run', '--home', fixture.home],
-      { env: fixture.environment, cwd: fixture.work, log });
+    let daemon;
+    // The device registers logcat capture during boot. Capture before stopping the host daemon.
     dispose(async () => {
+      if (!daemon) return;
       try {
         if (running(daemon)) await fixture.paseo('daemon', 'stop');
         await waitFor(() => !running(daemon), 'Android fixture daemon exit', 15_000);
       } finally { await killTree(daemon); }
     });
+    await device.boot();
+    daemon = spawnLogged(process.execPath, ['--no-maglev', cliBin(fixture.cli), 'daemon', 'run', '--home', fixture.home],
+      { env: fixture.environment, cwd: fixture.work, log });
     await fixture.attach(() => running(daemon));
     await fixture.install(source => patchEntry(source, fixture.usageFile));
     await device.connect();
