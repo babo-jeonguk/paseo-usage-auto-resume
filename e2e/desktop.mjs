@@ -9,6 +9,7 @@ import { assertDesktopOffline, isOfflineRegistryFailure } from './desktop-networ
 import { assertSubscriptionRequests, patchDesktopEntry, prepareLogins } from './desktop-subscription.mjs';
 import { assertDaemonLogs, editSavedJobs, localClock, nativeDefaults, nativeFixture, tomorrowAtNoon } from './native-fixture.mjs';
 import { scheduleWire } from './schedule-wire.mjs';
+import { trackWindowsChildren } from './windows-process-tree.mjs';
 
 const args = options(['cli', 'app', 'source', 'to'], {
   out: nativeDefaults.out, path: nativeDefaults.path, 'expect-platform': process.platform,
@@ -65,7 +66,8 @@ await nativeRun('desktop', args, async ctx => {
   assert(report.runtime.electron && report.runtime.node, 'Expected Electron bundled runtime');
 
   let app, browser, page, launch = 0;
-  let windowsShutdown = new Map();
+  const windowsShutdown = new Map();
+  const windowsRoots = new Map();
   const closeBrowser = () => withDeadline(() => browser?.close(), 'Electron CDP disconnect', 10_000);
   const daemonInstance = () => readJson(join(fixture.home, 'paseo.pid'));
   const shot = name => page?.screenshot({ path: join(out, name + '.png'), timeout: 10_000 });
@@ -79,6 +81,11 @@ await nativeRun('desktop', args, async ctx => {
     const appLog = join(root, `electron-${++launch}.log`);
     artifacts[`electron-${launch}.log`] = appLog;
     app = spawnLogged(executable, ['--no-sandbox', `--remote-debugging-port=${port}`], { env: environment, cwd: root, log: appLog });
+    if (isWin) {
+      const identity = (await processTable()).find(row => row.pid === app.pid);
+      assert(running(app) && identity?.started, 'Identify the launched Windows Electron process');
+      windowsRoots.set(identity.pid, identity.started);
+    }
     browser = await waitFor(async () => {
       assert(running(app), 'Electron exited during startup');
       return chromium.connectOverCDP(`http://127.0.0.1:${port}`, { timeout: 2000 }).catch(() => null);
@@ -124,6 +131,11 @@ await nativeRun('desktop', args, async ctx => {
     const status = JSON.parse(await fixture.paseo('daemon', 'status', '--json'));
     const match = JSON.stringify(status).match(/"daemonVersion":"([^"]+)"/);
     assert.equal(match?.[1], fixture.version, 'Electron daemon version must match --cli');
+    if (isWin) {
+      const identity = (await processTable()).find(row => row.pid === instance.pid);
+      assert(identity?.started, 'Identify the Windows desktop-managed daemon');
+      windowsRoots.set(identity.pid, identity.started);
+    }
     return { pid: instance.pid, executable: daemonPath, version: match[1] };
   }
 
@@ -141,10 +153,11 @@ await nativeRun('desktop', args, async ctx => {
   }
   const isWindowsSurvivor = ({ pid, started }) => started && windowsShutdown.get(pid) === started;
   async function stopWindowsSurvivors() {
+    const errors = [];
     for (const { pid, started } of (await processTable()).filter(isWindowsSurvivor)) {
       assert(Number.isSafeInteger(pid) && /^\d{14}\.\d{6}Z$/.test(started), 'Tracked Windows process identity');
       // Open the process handle and verify its creation time in the same command that stops it.
-      await run('powershell.exe', ['-NoProfile', '-Command', `$ErrorActionPreference = 'Stop';
+      try { await run('powershell.exe', ['-NoProfile', '-Command', `$ErrorActionPreference = 'Stop';
         $process = Get-Process -Id ${pid} -ErrorAction SilentlyContinue;
         if ($process) {
           try {
@@ -154,9 +167,12 @@ await nativeRun('desktop', args, async ctx => {
               if (!$process.WaitForExit(10000)) { throw 'Tracked process did not exit' }
             }
           } catch { if (!$process.HasExited) { throw } }
-        }`], { timeout: 15_000, windowsHide: true });
+        }`], { timeout: 15_000, windowsHide: true }); }
+      catch (error) { errors.push(error); }
     }
-    await waitFor(async () => !(await processTable()).some(isWindowsSurvivor), 'tracked Windows children exit', 15_000);
+    try { await waitFor(async () => !(await processTable()).some(isWindowsSurvivor), 'tracked Windows children exit', 15_000); }
+    catch (error) { errors.push(error); }
+    if (errors.length) throw new AggregateError(errors, errors.map(error => error.message).join('\n'));
   }
   async function closeApp(daemon) {
     const groups = new Set([app.pid, daemon.pid]);
@@ -168,34 +184,36 @@ await nativeRun('desktop', args, async ctx => {
         if (children.has(parent) || groups.has(group)) children.add(pid);
       }
     }
-    if (isWin) for (const { pid, started } of processes) {
-      if (children.has(pid) && started && !windowsShutdown.has(pid)) windowsShutdown.set(pid, started);
-    }
+    if (isWin) trackWindowsChildren(windowsShutdown, windowsRoots, processes);
     const startedAt = Date.now();
     await withDeadline(() => page.evaluate(() => window.close()), 'Electron window close', 15_000);
     const owned = isWin ? isWindowsSurvivor : ({ pid, group }) => children.has(pid) || groups.has(group);
     await waitFor(async () => !running(app) && !(await processTable()).some(owned), 'desktop daemon and child processes exit', 60_000);
     windowsShutdown.clear();
+    windowsRoots.clear();
     shutdowns.push({ startedAt, finishedAt: Date.now() });
     await closeBrowser();
     browser = page = app = undefined;
   }
   dispose(async () => {
     const instance = await daemonInstance().catch(() => null);
+    const managedAlive = async () => instance?.desktopManaged && pidAlive(instance.pid) && (!isWin ||
+      (await processTable()).some(row => row.pid === instance.pid && row.started && windowsRoots.get(row.pid) === row.started));
     try {
-      if (page && instance?.desktopManaged && pidAlive(instance.pid)) await closeApp(instance);
+      if (page && await managedAlive()) await closeApp(instance);
     } finally {
       try {
-        if (instance?.desktopManaged && pidAlive(instance.pid)) {
+        if (await managedAlive()) {
           await fixture.paseo('daemon', 'stop');
-          await waitFor(() => !pidAlive(instance.pid), 'managed daemon cleanup', 20_000);
+          await waitFor(async () => !await managedAlive(), 'managed daemon cleanup', 20_000);
         }
       } finally {
-        try { if (!isWin || app && running(app)) await killTree(app); }
-        finally {
-          try { if (windowsShutdown.size) await stopWindowsSurvivors(); }
-          finally { await closeBrowser(); }
-        }
+        try {
+          if (isWin) {
+            trackWindowsChildren(windowsShutdown, windowsRoots, await processTable());
+            if (windowsShutdown.size) await stopWindowsSurvivors();
+          } else await killTree(app);
+        } finally { await closeBrowser(); }
       }
     }
   });
@@ -250,8 +268,12 @@ await nativeRun('desktop', args, async ctx => {
   await check('Live composer pill, keyboard editing, and guarded Resume now on the real Claude CLI', async () => {
     await leaveSettings();
     await conversation(primary);
+    // Start before this renderer installs its composer poll. No reload occurs during the measurement.
+    const screenStartedAt = performance.now();
+    await page.reload();
+    await conversation(primary);
     assert.equal(await pill().count(), 0);
-    const mark = wire.checkpoint(await wire.ready(1));
+    const mark = wire.checkpoint(await wire.ready(1), screenStartedAt);
     const visible = pill().waitFor({ timeout: 90_000 }).then(() => performance.now());
     const [{ job, observedAt }, visibleAt] = await Promise.all([fixture.limit(primary), visible]);
     const pushed = wire.pushed(mark, job.id);
@@ -287,6 +309,7 @@ await nativeRun('desktop', args, async ctx => {
     await pill().waitFor({ state: 'hidden' });
     await waitFor(() => fixture.continues(note).length, 'manual continue at the model');
     assert.equal(fixture.continues(note).length, 1);
+    assert.equal(fixture.continues().length, 1, 'Send exactly one manual continue');
     assert.equal((await fixture.history()).find(entry => entry.agentId === primary.id)?.trigger, 'manual');
     return { pushMs, note, modelContinues: 1 };
   });

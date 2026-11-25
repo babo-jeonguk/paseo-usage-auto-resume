@@ -45,10 +45,9 @@ export function scheduleWire() {
     !state.pending.size && state.messages.some(message => message.method === 'auto-resume.list')),
   `live schedule subscriptions (${minimum}) and completed initial list`, 60_000, 100);
   const settled = state => waitFor(() => connections.has(state) && !state.pending.size, 'in-flight schedule reads to finish', 15_000, 100);
-  const checkpoint = state => {
+  const checkpoint = (state, screenStartedAt) => {
     assert(connections.has(state) && !state.pending.size, 'Checkpoint requires a connected, settled schedule observer');
-    const listAt = state.messages.findLast(message => message.method === 'auto-resume.list').at;
-    return { state, since: state.messages.length, subscriptions: new Set(state.subscriptions), listAt };
+    return { state, since: state.messages.length, subscriptions: new Set(state.subscriptions), screenStartedAt };
   };
   function messagesSince({ state, since, subscriptions }) {
     assert(connections.has(state), 'Paseo UI reconnected during the measurement');
@@ -61,8 +60,12 @@ export function scheduleWire() {
       const messages = messagesSince(mark);
       const list = messages.find(message => message.jobs?.some(job => job.id === reservationId));
       const event = list && messages.find(message => Number.isSafeInteger(message.revision) && message.sequence < list.request.sequence);
-      assert(event, 'The UI must request the list containing the new reservation after receiving a live schedule event');
-      assert(list.request.at - mark.listAt < 120_000, 'The live change measurement overlapped the periodic list poll');
+      const observed = messages.map(message => message.method
+        ? { method: message.method, request: message.request.sequence, reservations: message.jobs?.map(job => job.id) }
+        : { revision: message.revision, sequence: message.sequence });
+      assert(event, `The UI must request the list containing ${reservationId} after receiving a live schedule event. Observed: ${JSON.stringify(observed)}`);
+      assert(Number.isFinite(mark.screenStartedAt) && list.request.at - mark.screenStartedAt < 120_000,
+        'The live change measurement overlapped the periodic list poll');
       return { revision: event.revision, eventReceivedAt: event.at, listReceivedAt: list.at };
     },
   };

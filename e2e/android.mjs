@@ -42,7 +42,9 @@ await nativeRun('android', args, async ctx => {
       if (closed) await device.tapNode(closed);
       return null;
     }, `Android drawer item ${label}`, 120_000, 250);
+    const openedAt = performance.now();
     await device.tapNode(item);
+    return openedAt;
   };
   const backToWorkspace = async () => {
     // Settings is a nested stack. The hardware Back key is reserved for dismissing the IME.
@@ -93,17 +95,19 @@ await nativeRun('android', args, async ctx => {
     await fixture.attach(() => running(daemon));
     await fixture.install(source => patchEntry(source, fixture.usageFile));
     await device.connect(observer.port);
-    await menu(autoResumeItem);
+    const openedAt = await menu(autoResumeItem);
     await device.find('Nothing scheduled');
     primary = await fixture.agent(primaryTitle);
     const client = await wire.ready(2);
-    const mark = wire.checkpoint(client);
+    const mark = wire.checkpoint(client, openedAt);
     // Start UI Automator before sending the turn. Starting the device-side command only after
     // the daemon reports the row would count its cold launch against the UI’s push deadline.
     const visible = device.find('Open ' + primaryTitle, 90_000).then(() => performance.now());
     const [{ job, observedAt }, visibleAt] = await Promise.all([fixture.limit(primary), visible]);
     primaryJob = job;
     const pushed = wire.pushed(mark, job.id);
+    await waitFor(() => wire.messagesSince(mark).some(message => message.method === 'auto-resume.history' &&
+      message.request.at >= pushed.eventReceivedAt), 'the open list history response after the schedule event', 15_000);
     liveList = { client, at: pushed.listReceivedAt };
     const pushMs = Math.max(0, Math.round(visibleAt - Math.min(observedAt, pushed.eventReceivedAt)));
     assert(pushMs <= 5000, `Native row took ${pushMs} ms after the reservation reached the daemon`);
@@ -237,6 +241,7 @@ await nativeRun('android', args, async ctx => {
     assert(!lists.some(matchNode('Resume now')), 'Native sheet must close');
     await waitFor(() => fixture.continues(note).length, 'continue at the fake model');
     assert.equal(fixture.continues(note).length, 1);
+    assert.equal(fixture.continues().length, 1, 'Send exactly one manual continue');
     return { modelContinues: 1 };
   });
 
