@@ -78,10 +78,12 @@ await nativeRun('android', args, async ctx => {
     let deadline = performance.now() + timeout;
     const capture = async () => {
       while (performance.now() < deadline) {
+        const startedAt = performance.now();
+        // Finish the in-flight adb call within its own timeout when the sampling window closes.
+        const png = await device.screenshotPng(3_000);
         const at = performance.now();
-        const png = await device.screenshotPng(Math.max(1, Math.min(3_000, Math.ceil(deadline - at))));
-        frames.push({ png, at: performance.now() });
-        const delay = Math.min(at + 400, deadline) - performance.now();
+        if (at <= deadline) frames.push({ png, at });
+        const delay = Math.min(startedAt + 400, deadline) - at;
         if (delay > 0) await sleep(delay);
       }
     };
@@ -95,11 +97,11 @@ await nativeRun('android', args, async ctx => {
         throw error;
       }
     };
-    const results = await Promise.allSettled([acted(), capture()]);
+    const results = await Promise.allSettled([capture(), acted()]);
     for (const result of results) {
       if (result.status === 'rejected') throw result.reason;
     }
-    return { result: results[0].value, frames };
+    return { result: results[1].value, frames };
   };
   const findFrame = async (frames, label, artifact) => {
     const screenshot = join(out, artifact + '.png');
