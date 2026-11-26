@@ -113,4 +113,8 @@ test('Android toast timing preserves uncertain frames when the guest clock probe
   assert.equal(visual.hasToastFrameCoverage(times, window), true);
   assert.equal(times.filter(time => toast(time) && visual.toastFrameTime(time, window) === 'after').length, 0);
   assert.equal(times.filter(time => toast(time) && visual.toastFrameTime(time, window) === 'uncertain').length, 22);
+  const ordered = visual.toastFrameOrder(times, window);
+  assert.equal(ordered[0].time, 13_100);
+  assert.equal(ordered.at(-1).time, 13_000);
+  assert(ordered.findIndex(frame => frame.timing === 'uncertain') > ordered.findIndex(frame => frame.time === 14_000));
 });

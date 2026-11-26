@@ -52,6 +52,17 @@ export function toastFrameTime(time, window) {
   return time < window.latest ? 'uncertain' : 'after';
 }
 
+export function toastFrameOrder(times, window) {
+  const postResponse = [];
+  const uncertain = [];
+  for (const [index, time] of times.entries()) {
+    const timing = toastFrameTime(time, window);
+    if (timing === 'after') postResponse.push({ index, time, timing });
+    if (timing === 'uncertain') uncertain.push({ index, time, timing });
+  }
+  return [...postResponse, ...uncertain];
+}
+
 export function hasToastFrameCoverage(times, window) {
   const gaps = [window.earliest, ...times.filter(time => time > window.earliest && time < window.end), window.end];
   return gaps.slice(1).every((time, index) => time - gaps[index] <= 1000);
@@ -85,9 +96,7 @@ export async function assertRecordedToast({ video, frames, text, screenshot, cap
   const recognized = new Map();
   let matchInUncertainWindow = false;
   const deadline = performance.now() + 90_000;
-  for (const [index, time] of times.entries()) {
-    const timing = toastFrameTime(time, window);
-    if (timing === 'outside') continue;
+  for (const { index, time, timing } of toastFrameOrder(times, window)) {
     const frame = join(frames, files[index]);
     const hash = createHash('sha256').update(await readFile(frame)).digest('hex');
     if (!recognized.has(hash)) {
