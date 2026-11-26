@@ -155,15 +155,17 @@ await nativeRun('android', args, async ctx => {
   const same = await fixture.agent('Android same-day reservation');
   const later = await fixture.agent('Android later-day reservation');
   await check('Compact list, Hermes days and spoken time, bulk and row toggles, and delay', async () => {
-    const { job: initialSame } = await fixture.limit(same);
+    // Give the second reservation an earlier reset so moving it to the primary time is allowed.
+    const { job: initialSame } = await fixture.limit(same, 30 * 60);
     const { job: initialLater } = await fixture.limit(later);
     const laterDue = iso(Date.parse(initialLater.dueAt) + 3 * 86_400_000);
     // Some Claude releases omit the date from distant rate-limit notices. Schedule the later
     // day explicitly after the real limit created its reservation.
     for (const [agent, job, newDueAt] of [[same, initialSame, primaryJob.dueAt], [later, initialLater, laterDue]]) {
-      assert.equal((await fixture.rpc('auto-resume.reschedule', {
+      const result = await fixture.rpc('auto-resume.reschedule', {
         agentId: agent.id, id: job.id, dueAt: job.dueAt, newDueAt,
-      })).changed, true);
+      });
+      assert(result.changed, `Could not move ${agent.title} to ${newDueAt}: ${result.reason}`);
     }
     const sameJob = await fixture.job(same.id);
     const laterJob = await fixture.job(later.id);
