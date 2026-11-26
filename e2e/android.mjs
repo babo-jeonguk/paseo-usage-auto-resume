@@ -90,7 +90,7 @@ await nativeRun('android', args, async ctx => {
         12_000, 100);
     }, tailMs);
     const evidence = { reservationId: reservation.id, result: capture.result, video,
-      responseAfterMs: Math.round(capture.at - capture.startedAt) };
+      responseAt: capture.at, clockSamples: capture.clocks };
     (report.resumeNow ??= []).push(evidence);
     assert.equal(capture.result, expectedResult, 'Android Resume now returned an unexpected result');
     const { elapsedMs } = await assertRecordedToast({

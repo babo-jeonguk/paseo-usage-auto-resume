@@ -87,3 +87,19 @@ test('only the exact Resume now invocation is evidence for the reservation', asy
   resume('expected', pin, 'sent');
   assert.equal(wire.resumeResult(mark, pin).result, 'sent');
 });
+
+test('Android toast frames are judged on the guest clock, independently of recorder start', async () => {
+  const visual = await import('./android-visual.mjs');
+  const response = 2000;
+  const samples = [
+    { before: 1990, after: 2000, elapsedMs: 11_990 },
+    { before: 2010, after: 2020, elapsedMs: 12_010 },
+  ];
+  const window = visual.androidToastWindow(response, samples, 3000);
+  assert.deepEqual(window, { earliest: 11_990, latest: 12_010, end: 15_010 });
+  const frames = Array.from({ length: 35 }, (_, n) => 11_650 + n * 100);
+  assert.equal(visual.hasToastFrameCoverage(frames, window), true);
+  assert.equal(visual.isToastFrame(11_850, window), false);
+  assert.equal(visual.isToastFrame(12_030, window), true);
+  assert.equal(visual.hasToastFrameCoverage([11_650, 12_030, 14_950], window), false);
+});

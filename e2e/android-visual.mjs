@@ -38,22 +38,53 @@ async function readScreenshotText(path, timeout) {
   return stdout.replace(/\s+/g, ' ').trim();
 }
 
+export function androidToastWindow(responseAt, samples, tailMs) {
+  // The guest reads CLOCK_BOOTTIME between the two host timestamps. /proc/uptime
+  // truncates to hundredths of a second, so each sample bounds the clock offset.
+  const earliest = responseAt + Math.max(...samples.map(sample => sample.elapsedMs - sample.after));
+  const latest = responseAt + Math.min(...samples.map(sample => sample.elapsedMs + 10 - sample.before));
+  assert(earliest <= latest, 'Android clock samples disagree across Resume now');
+  return { earliest, latest, end: latest + tailMs };
+}
+
+export function isToastFrame(time, window) {
+  return time >= window.latest && time <= window.end;
+}
+
+export function hasToastFrameCoverage(times, window) {
+  const gaps = [window.earliest, ...times.filter(time => time > window.earliest && time < window.end), window.end];
+  return gaps.slice(1).every((time, index) => time - gaps[index] <= 1000);
+}
+
+export function androidRecordingTimes(metadata) {
+  // Android screenrecord's second data track is the version 2 Winscope
+  // metadata. Its samples use elapsed realtime (CLOCK_BOOTTIME), as does uptime.
+  const headerBytes = 32;
+  assert(metadata.length >= headerBytes && metadata.subarray(0, 16).toString() === '#VV1NSC0PET1ME2#' &&
+    metadata.readUInt32LE(16) === 2, 'Expected version 2 Winscope screen recording metadata');
+  const count = metadata.readUInt32LE(28);
+  assert(count > 0 && metadata.length === headerBytes + count * 8, 'Incomplete Android screen recording metadata');
+  return Array.from({ length: count }, (_, index) => Number(metadata.readBigUInt64LE(headerBytes + index * 8)) / 1e6);
+}
+
 export async function assertRecordedToast({ video, frames, text, screenshot, capture, tailMs }) {
   await mkdir(frames);
-  const { stderr } = await run('ffmpeg', ['-hide_banner', '-nostdin', '-threads', '2', '-i', video, '-map', '0:v:0',
-    '-vf', 'showinfo', '-vsync', '0', '-threads', '2', '-start_number', '0', join(frames, '%04d.png')],
+  const metadataPath = join(frames, 'winscope.bin');
+  const { stderr } = await run('ffmpeg', ['-hide_banner', '-nostdin', '-threads', '2', '-i', video,
+    '-map', '0:d:1', '-c', 'copy', '-f', 'data', metadataPath,
+    '-map', '0:v:0', '-vf', 'showinfo', '-vsync', '0', '-threads', '2', '-start_number', '0', join(frames, '%04d.png')],
   { timeout: 45_000, maxBuffer: 16 * 1024 * 1024 });
-  const files = (await readdir(frames)).sort();
-  const timestamps = [...stderr.matchAll(/\bpts_time:\s*([\d.e+-]+)/g)].map(match => Number(match[1]) * 1000);
-  assert(files.length && files.length === timestamps.length && timestamps.every(Number.isFinite),
-    `Invalid Android screen recording frame timestamps. See ${video}.`);
-  const offsets = timestamps.map(timestamp => timestamp - timestamps[0]);
-  const earliestResponse = capture.at - capture.readyAt;
-  const latestResponse = capture.at - capture.startedAt;
+  const times = androidRecordingTimes(await readFile(metadataPath)).sort((a, b) => a - b);
+  const files = (await readdir(frames)).filter(file => file.endsWith('.png')).sort();
+  const pts = [...stderr.matchAll(/\bpts_time:\s*([\d.e+-]+)/g)].map(match => Number(match[1]) * 1000);
+  assert(files.length === times.length && times.length === pts.length && pts.every((time, index) =>
+    Math.abs((time - pts[0]) - (times[index] - times[0])) < 1),
+  `Decoded Android frames do not match their Winscope timestamps. See ${video}.`);
+  const window = androidToastWindow(capture.at, capture.clocks, tailMs);
   const seen = new Set();
   const deadline = performance.now() + 90_000;
-  for (const [index, offset] of offsets.entries()) {
-    if (offset < earliestResponse) continue;
+  for (const [index, time] of times.entries()) {
+    if (!isToastFrame(time, window)) continue;
     const frame = join(frames, files[index]);
     const hash = createHash('sha256').update(await readFile(frame)).digest('hex');
     if (seen.has(hash)) continue;
@@ -62,15 +93,13 @@ export async function assertRecordedToast({ video, frames, text, screenshot, cap
     assert(remaining > 0, `Timed out reading Android toast frames for ${text}`);
     if (text.test(await readScreenshotText(frame, remaining))) {
       await copyFile(frame, screenshot);
-      return { elapsedMs: Math.round(offset) };
+      return { elapsedMs: Math.round(time - times[0]) };
     }
   }
-  const gaps = offsets.slice(1).flatMap((end, index) =>
-    end >= earliestResponse && offsets[index] <= latestResponse + tailMs ? [end - offsets[index]] : []);
-  const details = `${offsets.length} frames, last frame ${Math.round(offsets.at(-1))} ms, latest response ${Math.round(latestResponse)} ms. See ${video}.`;
+  const details = `${times.length} frames; ${seen.size} distinct post-response frames; last frame ${Math.round(times.at(-1))} ms, response window ${Math.round(window.earliest)}–${Math.round(window.end)} ms since boot. See ${video}.`;
   // The encoder can omit static frames. Only report missing UI feedback when the source recording
   // actually sampled the whole response window without a gap that could hide a short toast.
-  assert(offsets.at(-1) >= latestResponse + tailMs && gaps.every(gap => gap <= 1000),
+  assert(hasToastFrameCoverage(times, window),
     `Android toast capture is inconclusive: insufficient encoded frame coverage (${details})`);
   assert.fail(`No decoded Android frame showed ${text} in ${seen.size} distinct frames (${details})`);
 }

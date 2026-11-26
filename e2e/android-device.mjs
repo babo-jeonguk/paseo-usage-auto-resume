@@ -136,11 +136,18 @@ export async function androidDevice(ctx, fixture, args) {
 
   const screenshotPng = timeout => adb(['exec-out', 'screencap', '-p'], { encoding: 'buffer', timeout });
   const shot = async name => writeFile(join(out, name + '.png'), await screenshotPng());
+  async function sampleGuestClock() {
+    const before = performance.now();
+    const uptime = await shellCommand(['cat', '/proc/uptime'], 5_000);
+    const after = performance.now();
+    const elapsedMs = Number(uptime.trim().split(/\s+/)[0]) * 1000;
+    assert(Number.isFinite(elapsedMs) && elapsedMs > 0, 'Expected the Android guest uptime');
+    return { before, after, elapsedMs };
+  }
   async function recordScreen(video, action, tailMs) {
     const remote = '/data/local/tmp/uar-' + randomUUID() + '.mp4';
     const pidFile = remote + '.pid';
     // Android encodes changes directly from the display while adb is busy with input or RPCs.
-    const startedAt = performance.now();
     let ended = false;
     const script = `screenrecord --time-limit 60 "${remote}" & pid=$!; echo "$pid" > "${pidFile}"; wait "$pid"`;
     const recording = Promise.allSettled([shellCommand(['sh', '-c', script], 70_000)
@@ -152,11 +159,12 @@ export async function androidDevice(ctx, fixture, args) {
         return await shellCommand(['stat', '-c', '%s', remote], 2_000).then(size => Number(size) > 1024, () => false);
       }, 'first encoded Android screen frame', 8_000, 100);
       assert(!ended, 'Android screen recording stopped before the action');
-      const readyAt = performance.now();
+      const before = await sampleGuestClock();
       const response = await action();
+      const after = await sampleGuestClock();
       await sleep(Math.max(0, response.at + tailMs - performance.now()));
       assert(!ended, 'Android screen recording stopped before the post-response capture window ended');
-      return { ...response, startedAt, readyAt };
+      return { ...response, clocks: [before, after] };
     };
     const stop = async () => {
       if (ended) return;
