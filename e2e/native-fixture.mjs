@@ -12,6 +12,11 @@ export function assertStagedSource({ source, to }) {
   assert.match(to, /^[a-f0-9]{40}$/, 'Use the full verified commit from desktop-source.mjs');
 }
 
+export function modelContinueRequests(requests, limitPrompts) {
+  return requests.filter(request => request.counted &&
+    !(request.api === 'claude' && [...limitPrompts].some(prompt => request.last.trimEnd().endsWith(prompt))));
+}
+
 export async function nativeFixture(ctx, args) {
   const { root, artifacts, report, dispose } = ctx;
   const dirs = await runHome(root, args.path);
@@ -36,6 +41,7 @@ export async function nativeFixture(ctx, args) {
   const jobsFile = join(home, 'plugin-data', PLUGIN, 'jobs.json');
   const jobs = async () => (await rpc('auto-resume.list')).jobs;
   const job = async id => (await jobs()).find(row => row.agentId === id);
+  const limitPrompts = new Set();
   return {
     ...dirs, cli, version, environment, paseo, target, port, models, proxy, usageFile, jobsFile, rpc, jobs,
     get client() { return client; },
@@ -61,11 +67,14 @@ export async function nativeFixture(ctx, args) {
       return client.createAgent({ title, provider, model, cwd: work, workspaceId: workspace.id });
     },
     async limit(agent, resetInSec = 5400) {
+      const prompt = `Work on ${agent.title}. E2E limit fixture: ${agent.id}`;
+      limitPrompts.add(prompt);
       await models.set('claude', { mode: 'limit', resetInSec });
       try {
-        await client.sendAgentMessage(agent.id, `Work on ${agent.title}.`);
+        await client.sendAgentMessage(agent.id, prompt);
         const job = await waitFor(async () => (await jobs()).find(row => row.agentId === agent.id), `reservation for ${agent.title}`, 90_000, 100);
-        assert(models.requests().some(request => request.api === 'claude' && request.mode === 'limit' && request.last.includes(agent.title)),
+        assert(models.requests().some(request => request.counted && request.api === 'claude' &&
+          request.mode === 'limit' && request.last.trimEnd().endsWith(prompt)),
           'No fake model limit reached the Claude turn');
         return { job, observedAt: performance.now() };
       } finally { await models.set('claude', { mode: 'text' }); }
@@ -74,7 +83,7 @@ export async function nativeFixture(ctx, args) {
     waitJob: (agent, matches, what) => waitFor(async () => matches(await job(agent.id)), what, 20_000, 250),
     history: async () => (await rpc('auto-resume.history')).entries,
     setUsage: (usage, until) => replace(usageFile, JSON.stringify({ usage, until })),
-    continueRequests: () => models.requests().filter(request => request.counted && request.mode !== 'limit'),
+    continueRequests: () => modelContinueRequests(models.requests(), limitPrompts),
   };
 }
 

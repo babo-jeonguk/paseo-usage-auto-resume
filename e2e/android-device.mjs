@@ -136,6 +136,33 @@ export async function androidDevice(ctx, fixture, args) {
 
   const screenshotPng = timeout => adb(['exec-out', 'screencap', '-p'], { encoding: 'buffer', timeout });
   const shot = async name => writeFile(join(out, name + '.png'), await screenshotPng());
+  async function recordScreen(video, action) {
+    const remote = '/data/local/tmp/uar-' + randomUUID() + '.mp4';
+    // Android encodes changes directly from the display while adb is busy with input or RPCs.
+    const durationSeconds = 25;
+    let ended = false;
+    const recording = shellCommand(['screenrecord', '--time-limit', durationSeconds, remote], 40_000)
+      .finally(() => { ended = true; });
+    const interact = async () => {
+      await waitFor(async () => {
+        assert(!ended, 'Android screen recording stopped before the action');
+        return await shellCommand(['stat', '-c', '%s', remote], 2_000).then(size => Number(size) > 0, () => false);
+      }, 'first encoded Android screen frame', 8_000, 100);
+      assert(!ended, 'Android screen recording stopped before the action');
+      const result = await action();
+      assert(!ended, 'Android screen recording stopped before the response');
+      return result;
+    };
+    try {
+      const [capture, response] = await Promise.allSettled([recording, interact()]);
+      if (capture.status === 'rejected') throw capture.reason;
+      await adb(['pull', remote, video], { timeout: 30_000 });
+      if (response.status === 'rejected') throw response.reason;
+      return response.value;
+    } finally {
+      await shellCommand(['rm', '-f', remote], 5_000);
+    }
+  }
   const launch = () => shell('monkey', '-p', PACKAGE, '-c', 'android.intent.category.LAUNCHER', '1');
   const avdName = async () => (await adb(['emu', 'avd', 'name'], { timeout: 3000 })).trim().split(/\r?\n/)[0];
 
@@ -245,5 +272,5 @@ export async function androidDevice(ctx, fixture, args) {
     return { width, height, pixels: raw.subarray(offset) };
   }
 
-  return { boot, connect, nodes, find, tap, tapNode, type, shell, scrollTo, shot, launch, swipe, screenshotPng, screenshotRaw };
+  return { boot, connect, nodes, find, tap, tapNode, type, shell, scrollTo, shot, launch, swipe, recordScreen, screenshotRaw };
 }

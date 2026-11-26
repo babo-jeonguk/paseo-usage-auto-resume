@@ -169,7 +169,7 @@ The Desktop runner requires loopback-only networking and probes direct IPv4 and 
 
 ### Android on Linux
 
-Use a Linux Android SDK with `platform-tools`, `emulator`, `cmdline-tools/latest`, Java, KVM acceleration, and a matching released `paseo-v<version>-android.apk`. Install Tesseract with English text recognition (`tesseract-ocr` and `tesseract-ocr-eng` on Debian-based hosts) for the tooltip and toast screenshot checks. The default image is `system-images;android-34;google_apis;x86_64`. Install the image before running. Use `--sdk` to override `ANDROID_HOME` or `~/Android/Sdk` and `--system-image` to select an installed replacement. `--port` selects the unused even emulator console port (default 5584).
+Use a Linux Android SDK with `platform-tools`, `emulator`, `cmdline-tools/latest`, Java, KVM acceleration, and a matching released `paseo-v<version>-android.apk`. Install FFmpeg and Tesseract with English text recognition (`ffmpeg`, `tesseract-ocr` and `tesseract-ocr-eng` on Debian-based hosts). The runner records Resume now feedback on the emulator, then saves the MP4 and the frame that proves the toast. It checks Labs clipping with a screenshot. The default image is `system-images;android-34;google_apis;x86_64`. Install the image before running. Use `--sdk` to override `ANDROID_HOME` or `~/Android/Sdk` and `--system-image` to select an installed replacement. `--port` selects the unused even emulator console port (default 5584).
 
 ```bash
 bwrap --unshare-net --bind / / --dev /dev --dev-bind /dev/kvm /dev/kvm -- \

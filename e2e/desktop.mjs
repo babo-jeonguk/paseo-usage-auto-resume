@@ -237,24 +237,50 @@ await nativeRun('desktop', args, async ctx => {
     await conversation(primary);
     // Playwright can discard pre-navigation socket records without a close event.
     const wire = scheduleWire();
-    page.on('websocket', socket => {
+    const detachSockets = [];
+    const onSocket = socket => {
       if (new URL(socket.url()).pathname !== '/ws') return;
-      const observer = wire.connect();
-      socket.on('framesent', ({ payload }) => observer.frame('sent', payload));
-      socket.on('framereceived', ({ payload }) => observer.frame('received', payload));
+      const observer = wire.connect({ replace: true });
+      const sent = ({ payload }) => observer.frame('sent', payload);
+      const received = ({ payload }) => observer.frame('received', payload);
+      socket.on('framesent', sent);
+      socket.on('framereceived', received);
       socket.once('close', observer.close);
-    });
-    // Start before this renderer installs its composer poll. No reload occurs during the measurement.
-    const screenStartedAt = performance.now();
-    await page.reload();
-    await conversation(primary);
-    assert.equal(await pill().count(), 0);
-    const mark = wire.checkpoint(await wire.ready(1), screenStartedAt);
-    const { job, observedAt } = await fixture.limit(primary);
-    await pill().waitFor({ timeout: 90_000 });
-    const visibleAt = performance.now();
-    const pushed = wire.pushed(mark, job.id, visibleAt);
-    const pushMs = Math.max(0, Math.round(visibleAt - Math.min(observedAt, pushed.eventReceivedAt)));
+      detachSockets.push(() => {
+        socket.off('framesent', sent);
+        socket.off('framereceived', received);
+        socket.off('close', observer.close);
+      });
+    };
+    const onNavigation = frame => {
+      if (frame === page.mainFrame()) wire.invalidate();
+    };
+    let job, pushMs;
+    page.on('websocket', onSocket);
+    try {
+      // Start before this renderer installs its composer poll. No reload occurs during measurement.
+      const screenStartedAt = performance.now();
+      await page.reload();
+      await conversation(primary);
+      assert.equal(await pill().count(), 0);
+      page.on('framenavigated', onNavigation);
+      const mark = wire.checkpoint(await wire.ready(1), screenStartedAt);
+      const results = await Promise.allSettled([
+        pill().waitFor({ timeout: 90_000 }).then(() => wire.visibility(mark)),
+        fixture.limit(primary),
+      ]);
+      for (const result of results) {
+        if (result.status === 'rejected') throw result.reason;
+      }
+      const [{ value: visible }, { value: limit }] = results;
+      job = limit.job;
+      const pushed = wire.pushed(visible, job.id);
+      pushMs = Math.max(0, Math.round(visible.at - Math.min(limit.observedAt, pushed.eventReceivedAt)));
+    } finally {
+      page.off('framenavigated', onNavigation);
+      page.off('websocket', onSocket);
+      for (const detach of detachSockets) detach();
+    }
     const view = await panel(primary);
     await button('Delay 10 minutes', view).click();
     await waitJob(primary, row => row?.dueAt === iso(Date.parse(job.dueAt) + 600_000), '+10m');

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { PLUGIN } from './core.mjs';
-import * as fixture from './native-fixture.mjs';
+import { modelContinueRequests } from './native-fixture.mjs';
 import { scheduleWire } from './schedule-wire.mjs';
 
 const send = (observer, fields) => observe(observer, 'sent', { pluginId: PLUGIN, ...fields });
@@ -35,7 +35,7 @@ test('the list and event on the measured socket cannot prove display after socke
   revision(observer, 1);
   list(observer, 'new-list', ['job']);
   wire.connect({ replace: true });
-  assert.throws(() => wire.pushed(mark, 'job', performance.now()), /reconnected/);
+  assert.throws(() => wire.visibility(mark), /reconnected/);
 });
 
 test('an unrelated later revision does not erase an observed push', async () => {
@@ -43,7 +43,16 @@ test('an unrelated later revision does not erase an observed push', async () => 
   revision(observer, 1);
   list(observer, 'new-list', ['job']);
   revision(observer, 2);
-  assert.equal(wire.pushed(mark, 'job', performance.now()).revision, 1);
+  assert.equal(wire.pushed(wire.visibility(mark), 'job').revision, 1);
+});
+
+test('a reconnect after visibility cannot invalidate evidence already captured', async () => {
+  const { wire, observer, mark } = await open();
+  revision(observer, 1);
+  list(observer, 'new-list', ['job']);
+  const visible = wire.visibility(mark);
+  wire.connect({ replace: true });
+  assert.equal(wire.pushed(visible, 'job').revision, 1);
 });
 
 test('a list requested before a schedule event cannot prove push even if a later request repeats it', async () => {
@@ -52,7 +61,7 @@ test('a list requested before a schedule event cannot prove push even if a later
   revision(observer, 1);
   receive(observer, 'plugin.rpc.invoke.response', { requestId: 'in-flight', output: { jobs: [{ id: 'job' }] } });
   list(observer, 'later', ['job']);
-  assert.throws(() => wire.pushed(mark, 'job', performance.now()), /after a live schedule event/);
+  assert.throws(() => wire.pushed(wire.visibility(mark), 'job'), /after a live schedule event/);
 });
 
 test('count the extra continue even when it hits the fixture limit window', () => {
@@ -60,6 +69,6 @@ test('count the extra continue even when it hits the fixture limit window', () =
   const initial = { api: 'claude', counted: true, mode: 'text', last: 'Continue.' };
   const duplicate = { ...initial, mode: 'limit' };
   const countTokens = { ...initial, counted: false };
-  assert.deepEqual(fixture.modelContinueRequests([seed, initial, duplicate, countTokens], new Set(['Work on seed.'])),
+  assert.deepEqual(modelContinueRequests([seed, initial, duplicate, countTokens], new Set(['Work on seed.'])),
     [initial, duplicate]);
 });

@@ -3,7 +3,7 @@ import { access } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { androidDevice, matchNode, PACKAGE, within } from './android-device.mjs';
-import { assertScreenshotText, observeToast } from './android-visual.mjs';
+import { assertRecordedToast, assertScreenshotText } from './android-visual.mjs';
 import { DEFAULT_CONTINUE_PROMPT } from '../shared/prompt.ts';
 import { cliBin, DEFAULT_MARK, iso, killTree, nativeRun, options, run, running, spawnLogged, waitFor } from './core.mjs';
 import { assertDaemonLogs, assertStagedSource, editSavedJobs, localClock, nativeDefaults, nativeFixture, tomorrowAtNoon } from './native-fixture.mjs';
@@ -24,6 +24,7 @@ await nativeRun('android', args, async ctx => {
   await access(args.apk);
   const { stdout: languages } = await run('tesseract', ['--list-langs'], { timeout: 10_000 });
   assert(languages.split(/\r?\n/).includes('eng'), 'Install Tesseract with its English OCR data');
+  await run('ffmpeg', ['-version'], { timeout: 10_000 });
   const fixture = await nativeFixture(ctx, args);
   await fixture.configure({ claude: { env: { ...fixture.claudeEnv, CLAUDE_CODE_OAUTH_TOKEN: 'e2e-fixture-only' } } });
   const device = await androidDevice(ctx, fixture, args);
@@ -75,15 +76,21 @@ await nativeRun('android', args, async ctx => {
     (node.desc ?? '').startsWith('Continue ' + agent.title + ' automatically');
   const closeKeyboard = () => device.shell('input', 'keyevent', 'KEYCODE_BACK');
 
-  const confirmResume = async (toast, artifact) => {
+  const confirmResume = async (expectedResult, toast, artifact) => {
     await device.tap('Resume now');
     const send = await device.find('Send');
-    await observeToast({
-      capturePng: device.screenshotPng,
-      action: () => device.tapNode(send, 10_000),
-      text: toast,
-      screenshot: join(out, artifact + '.png'),
+    const mark = wire.checkpoint(await wire.ready(1));
+    const video = join(out, artifact + '.mp4');
+    const result = await device.recordScreen(video, async () => {
+      await device.tapNode(send, 10_000);
+      return waitFor(() => wire.resumeResult(mark), 'Android Resume now response', 12_000, 100);
     });
+    (report.resumeNow ??= []).push({ result, video });
+    assert.equal(result, expectedResult, 'Android Resume now returned an unexpected result');
+    const { elapsedMs } = await assertRecordedToast({
+      video, frames: join(root, artifact + '-frames'), text: toast, screenshot: join(out, artifact + '.png'),
+    });
+    report.resumeNow.at(-1).toastAtMs = elapsedMs;
   };
 
   const primaryTitle = 'Android live limit';
@@ -118,10 +125,7 @@ await nativeRun('android', args, async ctx => {
     };
     await device.find(row(job), remaining(), 'new reservation on the open Auto Resume screen');
     const visibleAt = performance.now();
-    const pushed = wire.pushed(mark, job.id, visibleAt);
-    await waitFor(() => wire.messagesSince(mark).some(message => message.method === 'auto-resume.history' &&
-      message.request.at >= pushed.eventReceivedAt && message.at < openedAt + FALLBACK_REFRESH_MS),
-      'the open list history response after the schedule event', remaining());
+    const pushed = wire.pushed(wire.visibility(mark, visibleAt), job.id);
     liveList = { client, at: pushed.listReceivedAt };
     const pushMs = Math.max(0, Math.round(visibleAt - Math.min(observedAt, pushed.eventReceivedAt)));
     return { pushMs, pushedRevision: pushed.revision, cliVersion: fixture.version, apkVersion: report.apkVersion, revision: report.revision };
@@ -251,11 +255,11 @@ await nativeRun('android', args, async ctx => {
   await check('Resume now shows blocked and successful toasts and sends exactly one continue', async () => {
     const before = await fixture.job(primary.id);
     await fixture.setUsage('limited', iso(Date.now() + 40 * 60_000));
-    await confirmResume(/\bUsage is still used up\b/i, 'resume-blocked');
+    await confirmResume('used_up', /\bUsage is still used up\b/i, 'resume-blocked');
     assert.deepEqual(await fixture.job(primary.id), before);
     assert.equal(fixture.continueRequests().length, 0);
     await fixture.setUsage('ready');
-    await confirmResume(/\bContinue sent\b/i, 'resume-sent');
+    await confirmResume('sent', /\bContinue sent\b/i, 'resume-sent');
     await waitJob(primary, row => !row, 'continued row clears');
     const lists = await device.nodes();
     assert(lists.some(node => node.pkg === PACKAGE), 'Paseo must still be in the foreground');

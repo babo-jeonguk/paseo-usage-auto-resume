@@ -7,11 +7,14 @@ import { listen, PLUGIN, waitFor } from './core.mjs';
 // Both surfaces use a two-minute fallback refresh. A later observation cannot prove push delivery.
 export const FALLBACK_REFRESH_MS = 120_000;
 const scheduleReads = new Set(['auto-resume.list', 'auto-resume.history']);
+const resumeMethod = 'auto-resume.resume-now';
 
-// Observe the public Paseo session messages. Keep only schedule calls and their replies.
+// Observe the public Paseo session messages. Keep only the fields needed for scenario evidence.
 export function scheduleWire() {
   const connections = new Set();
-  function connect() {
+  const invalidate = () => connections.clear();
+  function connect({ replace = false } = {}) {
+    if (replace) invalidate();
     const state = { pending: new Map(), subscriptions: new Set(), messages: [], sequence: 0 };
     connections.add(state);
     function frame(direction, data) {
@@ -24,7 +27,7 @@ export function scheduleWire() {
         if (type === 'subscription.release.request') state.subscriptions.delete(message.subscriptionId);
         if (message.pluginId !== PLUGIN) return;
         if (type === 'plugin.rpc.subscribe.request' && message.method === 'auto-resume.changes' ||
-          type === 'plugin.rpc.invoke.request' && scheduleReads.has(message.method)) {
+          type === 'plugin.rpc.invoke.request' && (scheduleReads.has(message.method) || message.method === resumeMethod)) {
           state.pending.set(message.requestId, { method: message.method, sequence: ++state.sequence, at: performance.now() });
         }
         return;
@@ -39,7 +42,7 @@ export function scheduleWire() {
       state.pending.delete(payload.requestId);
       if (type === 'plugin.rpc.subscribe.response') state.subscriptions.add(payload.subscriptionId);
       if (type === 'plugin.rpc.invoke.response') state.messages.push({ method: request.method, request,
-        jobs: payload.output?.jobs, at: performance.now() });
+        jobs: payload.output?.jobs, result: payload.output?.result, at: performance.now() });
     }
     return { frame, close: () => connections.delete(state) };
   }
@@ -57,25 +60,27 @@ export function scheduleWire() {
     assert.deepEqual(state.subscriptions, subscriptions, 'Schedule subscriptions changed during the measurement');
     return state.messages.slice(since);
   }
+  function visibility(mark, at = performance.now()) {
+    return { at, messages: messagesSince(mark), fallbackAt: mark.screenStartedAt + FALLBACK_REFRESH_MS };
+  }
   return {
-    connect, ready, settled, checkpoint, messagesSince,
-    pushed(mark, reservationId, visibleAt) {
-      const messages = messagesSince(mark);
-      const fallbackAt = mark.screenStartedAt + FALLBACK_REFRESH_MS;
-      assert(visibleAt < fallbackAt, 'Visibility was observed in the fallback refresh window');
-      const events = messages.filter(message => Number.isSafeInteger(message.revision) && message.at <= visibleAt);
-      assert.equal(new Set(events.map(event => event.revision)).size, 1,
-        'Expected exactly one schedule revision between the settled surface and visibility');
-      const pair = messages.flatMap(list => {
-        if (!list.jobs?.some(job => job.id === reservationId)) return [];
-        const event = events.find(message => message.sequence < list.request.sequence);
-        return event ? [{ list, event }] : [];
-      }).find(({ list }) => list.at <= visibleAt);
+    connect, invalidate, ready, settled, checkpoint, messagesSince, visibility,
+    resumeResult(mark) {
+      assert(connections.has(mark.state), 'Paseo UI reconnected during Resume now');
+      return mark.state.messages.slice(mark.since).find(message => message.method === resumeMethod)?.result;
+    },
+    pushed({ at, messages, fallbackAt }, reservationId) {
+      assert(at < fallbackAt, 'Visibility was observed in the fallback refresh window');
+      // Find the first reply that could have rendered this reservation. A later reply cannot
+      // prove push if the first matching request was already in flight before the event.
+      const list = messages.find(message => message.at <= at &&
+        message.jobs?.some(job => job.id === reservationId));
+      const event = list && messages.findLast(message =>
+        Number.isSafeInteger(message.revision) && message.sequence < list.request.sequence);
       const observed = messages.map(message => message.method
         ? { method: message.method, request: message.request.sequence, reservations: message.jobs?.map(job => job.id) }
         : { revision: message.revision, sequence: message.sequence });
-      assert(pair, `The UI must request the list containing ${reservationId} after a live schedule event and receive it before rendering and before the periodic poll. Observed: ${JSON.stringify(observed)}`);
-      const { list, event } = pair;
+      assert(list && event, `The UI must request the list containing ${reservationId} after a live schedule event and receive it before rendering and before the periodic poll. Observed: ${JSON.stringify(observed)}`);
       return { revision: event.revision, eventReceivedAt: event.at, listReceivedAt: list.at };
     },
   };
