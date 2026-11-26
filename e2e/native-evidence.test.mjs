@@ -69,6 +69,21 @@ test('count the extra continue even when it hits the fixture limit window', () =
   const initial = { api: 'claude', counted: true, mode: 'text', last: 'Continue.' };
   const duplicate = { ...initial, mode: 'limit' };
   const countTokens = { ...initial, counted: false };
-  assert.deepEqual(modelContinueRequests([seed, initial, duplicate, countTokens], new Set(['Work on seed.'])),
-    [initial, duplicate]);
+  const windows = [{ prompt: 'Work on seed.', from: 0, to: 1 }];
+  assert.deepEqual(modelContinueRequests([seed, initial, duplicate, countTokens, seed], windows),
+    [initial, duplicate, seed]);
+});
+
+test('only the exact Resume now invocation is evidence for the reservation', async () => {
+  const { wire, observer, mark } = await open();
+  const pin = { agentId: 'agent', id: 'reservation', dueAt: '2026-11-27T09:00:00.000Z' };
+  const resume = (requestId, input, result) => {
+    send(observer, { type: 'plugin.rpc.invoke.request', requestId, method: 'auto-resume.resume-now', input });
+    receive(observer, 'plugin.rpc.invoke.response', { requestId, output: { result } });
+  };
+  resume('unrelated', { ...pin, id: 'another' }, 'used_up');
+  resume('stale', { ...pin, dueAt: '2026-11-27T10:00:00.000Z' }, 'changed');
+  assert.equal(wire.resumeResult(mark, pin), undefined);
+  resume('expected', pin, 'sent');
+  assert.equal(wire.resumeResult(mark, pin).result, 'sent');
 });

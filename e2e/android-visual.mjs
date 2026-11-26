@@ -38,17 +38,23 @@ async function readScreenshotText(path, timeout) {
   return stdout.replace(/\s+/g, ' ').trim();
 }
 
-export async function assertRecordedToast({ video, frames, text, screenshot }) {
+export async function assertRecordedToast({ video, frames, text, screenshot, capture, tailMs }) {
   await mkdir(frames);
-  const fps = 5;
-  await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-nostdin', '-threads', '2', '-i', video,
-    '-map', '0:v:0', '-vf', `fps=${fps}`, '-threads', '2', '-start_number', '0', join(frames, '%04d.png')],
-  { timeout: 30_000 });
+  const { stderr } = await run('ffmpeg', ['-hide_banner', '-nostdin', '-threads', '2', '-i', video, '-map', '0:v:0',
+    '-vf', 'showinfo', '-vsync', '0', '-threads', '2', '-start_number', '0', join(frames, '%04d.png')],
+  { timeout: 45_000, maxBuffer: 16 * 1024 * 1024 });
   const files = (await readdir(frames)).sort();
+  const timestamps = [...stderr.matchAll(/\bpts_time:\s*([\d.e+-]+)/g)].map(match => Number(match[1]) * 1000);
+  assert(files.length && files.length === timestamps.length && timestamps.every(Number.isFinite),
+    `Invalid Android screen recording frame timestamps. See ${video}.`);
+  const offsets = timestamps.map(timestamp => timestamp - timestamps[0]);
+  const earliestResponse = capture.at - capture.readyAt;
+  const latestResponse = capture.at - capture.startedAt;
   const seen = new Set();
   const deadline = performance.now() + 90_000;
-  for (const file of files) {
-    const frame = join(frames, file);
+  for (const [index, offset] of offsets.entries()) {
+    if (offset < earliestResponse) continue;
+    const frame = join(frames, files[index]);
     const hash = createHash('sha256').update(await readFile(frame)).digest('hex');
     if (seen.has(hash)) continue;
     seen.add(hash);
@@ -56,10 +62,17 @@ export async function assertRecordedToast({ video, frames, text, screenshot }) {
     assert(remaining > 0, `Timed out reading Android toast frames for ${text}`);
     if (text.test(await readScreenshotText(frame, remaining))) {
       await copyFile(frame, screenshot);
-      return { elapsedMs: Number.parseInt(file, 10) * 1000 / fps };
+      return { elapsedMs: Math.round(offset) };
     }
   }
-  assert.fail(`No decoded Android frame showed ${text} in ${seen.size} distinct frames. See ${video}.`);
+  const gaps = offsets.slice(1).flatMap((end, index) =>
+    end >= earliestResponse && offsets[index] <= latestResponse + tailMs ? [end - offsets[index]] : []);
+  const details = `${offsets.length} frames, last frame ${Math.round(offsets.at(-1))} ms, latest response ${Math.round(latestResponse)} ms. See ${video}.`;
+  // The encoder can omit static frames. Only report missing UI feedback when the source recording
+  // actually sampled the whole response window without a gap that could hide a short toast.
+  assert(offsets.at(-1) >= latestResponse + tailMs && gaps.every(gap => gap <= 1000),
+    `Android toast capture is inconclusive: insufficient encoded frame coverage (${details})`);
+  assert.fail(`No decoded Android frame showed ${text} in ${seen.size} distinct frames (${details})`);
 }
 
 export async function locateScreenshotText(screenshot, expected, cropPath) {

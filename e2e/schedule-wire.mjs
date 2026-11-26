@@ -28,7 +28,8 @@ export function scheduleWire() {
         if (message.pluginId !== PLUGIN) return;
         if (type === 'plugin.rpc.subscribe.request' && message.method === 'auto-resume.changes' ||
           type === 'plugin.rpc.invoke.request' && (scheduleReads.has(message.method) || message.method === resumeMethod)) {
-          state.pending.set(message.requestId, { method: message.method, sequence: ++state.sequence, at: performance.now() });
+          const pin = message.method === resumeMethod ? message.input : undefined;
+          state.pending.set(message.requestId, { method: message.method, pin, sequence: ++state.sequence, at: performance.now() });
         }
         return;
       }
@@ -41,8 +42,11 @@ export function scheduleWire() {
       if (!request) return;
       state.pending.delete(payload.requestId);
       if (type === 'plugin.rpc.subscribe.response') state.subscriptions.add(payload.subscriptionId);
-      if (type === 'plugin.rpc.invoke.response') state.messages.push({ method: request.method, request,
-        jobs: payload.output?.jobs, result: payload.output?.result, at: performance.now() });
+      if (type === 'plugin.rpc.invoke.response' || request.method === resumeMethod) {
+        state.messages.push({ method: request.method, request, jobs: payload.output?.jobs,
+          result: payload.output?.result, error: typeof payload.error === 'string' ? payload.error : undefined,
+          at: performance.now() });
+      }
     }
     return { frame, close: () => connections.delete(state) };
   }
@@ -65,9 +69,13 @@ export function scheduleWire() {
   }
   return {
     connect, invalidate, ready, settled, checkpoint, messagesSince, visibility,
-    resumeResult(mark) {
+    resumeResult(mark, pin) {
       assert(connections.has(mark.state), 'Paseo UI reconnected during Resume now');
-      return mark.state.messages.slice(mark.since).find(message => message.method === resumeMethod)?.result;
+      const reply = mark.state.messages.slice(mark.since).find(({ method, request }) => method === resumeMethod &&
+        request.pin?.agentId === pin.agentId && request.pin?.id === pin.id && request.pin?.dueAt === pin.dueAt);
+      if (!reply) return undefined;
+      assert(reply.result, reply.error ?? 'Android Resume now returned no result');
+      return { result: reply.result, at: reply.at };
     },
     pushed({ at, messages, fallbackAt }, reservationId) {
       assert(at < fallbackAt, 'Visibility was observed in the fallback refresh window');

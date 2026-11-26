@@ -76,21 +76,28 @@ await nativeRun('android', args, async ctx => {
     (node.desc ?? '').startsWith('Continue ' + agent.title + ' automatically');
   const closeKeyboard = () => device.shell('input', 'keyevent', 'KEYCODE_BACK');
 
-  const confirmResume = async (expectedResult, toast, artifact) => {
+  const confirmResume = async (reservation, expectedResult, toast, artifact) => {
     await device.tap('Resume now');
     const send = await device.find('Send');
-    const mark = wire.checkpoint(await wire.ready(1));
+    const client = await wire.ready(1);
     const video = join(out, artifact + '.mp4');
-    const result = await device.recordScreen(video, async () => {
+    // Keep sampling beyond the response so the renderer can show its transient feedback.
+    const tailMs = 3000;
+    const capture = await device.recordScreen(video, async () => {
+      const mark = wire.checkpoint(await wire.settled(client));
       await device.tapNode(send, 10_000);
-      return waitFor(() => wire.resumeResult(mark), 'Android Resume now response', 12_000, 100);
-    });
-    (report.resumeNow ??= []).push({ result, video });
-    assert.equal(result, expectedResult, 'Android Resume now returned an unexpected result');
+      return waitFor(() => wire.resumeResult(mark, reservation), 'Android Resume now response for the tested reservation',
+        12_000, 100);
+    }, tailMs);
+    const evidence = { reservationId: reservation.id, result: capture.result, video,
+      responseAfterMs: Math.round(capture.at - capture.startedAt) };
+    (report.resumeNow ??= []).push(evidence);
+    assert.equal(capture.result, expectedResult, 'Android Resume now returned an unexpected result');
     const { elapsedMs } = await assertRecordedToast({
-      video, frames: join(root, artifact + '-frames'), text: toast, screenshot: join(out, artifact + '.png'),
+      video, frames: join(root, artifact + '-frames'), text, capture, tailMs,
+      screenshot: join(out, artifact + '.png'),
     });
-    report.resumeNow.at(-1).toastAtMs = elapsedMs;
+    evidence.toastAtMs = elapsedMs;
   };
 
   const primaryTitle = 'Android live limit';
@@ -255,11 +262,11 @@ await nativeRun('android', args, async ctx => {
   await check('Resume now shows blocked and successful toasts and sends exactly one continue', async () => {
     const before = await fixture.job(primary.id);
     await fixture.setUsage('limited', iso(Date.now() + 40 * 60_000));
-    await confirmResume('used_up', /\bUsage is still used up\b/i, 'resume-blocked');
+    await confirmResume(before, 'used_up', /\bUsage is still used up\b/i, 'resume-blocked');
     assert.deepEqual(await fixture.job(primary.id), before);
     assert.equal(fixture.continueRequests().length, 0);
     await fixture.setUsage('ready');
-    await confirmResume('sent', /\bContinue sent\b/i, 'resume-sent');
+    await confirmResume(before, 'sent', /\bContinue sent\b/i, 'resume-sent');
     await waitJob(primary, row => !row, 'continued row clears');
     const lists = await device.nodes();
     assert(lists.some(node => node.pkg === PACKAGE), 'Paseo must still be in the foreground');
