@@ -47,8 +47,9 @@ export function androidToastWindow(responseAt, samples, tailMs) {
   return { earliest, latest, end: latest + tailMs };
 }
 
-export function isToastFrame(time, window) {
-  return time >= window.latest && time <= window.end;
+export function toastFrameTime(time, window) {
+  if (time < window.earliest || time > window.end) return 'outside';
+  return time < window.latest ? 'uncertain' : 'after';
 }
 
 export function hasToastFrameCoverage(times, window) {
@@ -81,27 +82,34 @@ export async function assertRecordedToast({ video, frames, text, screenshot, cap
     Math.abs((time - pts[0]) - (times[index] - times[0])) < 1),
   `Decoded Android frames do not match their Winscope timestamps. See ${video}.`);
   const window = androidToastWindow(capture.at, capture.clocks, tailMs);
-  const seen = new Set();
+  const recognized = new Map();
+  let matchInUncertainWindow = false;
   const deadline = performance.now() + 90_000;
   for (const [index, time] of times.entries()) {
-    if (!isToastFrame(time, window)) continue;
+    const timing = toastFrameTime(time, window);
+    if (timing === 'outside') continue;
     const frame = join(frames, files[index]);
     const hash = createHash('sha256').update(await readFile(frame)).digest('hex');
-    if (seen.has(hash)) continue;
-    seen.add(hash);
-    const remaining = Math.ceil(deadline - performance.now());
-    assert(remaining > 0, `Timed out reading Android toast frames for ${text}`);
-    if (text.test(await readScreenshotText(frame, remaining))) {
-      await copyFile(frame, screenshot);
-      return { elapsedMs: Math.round(time - times[0]) };
+    if (!recognized.has(hash)) {
+      const remaining = Math.ceil(deadline - performance.now());
+      assert(remaining > 0, `Timed out reading Android toast frames for ${text}`);
+      recognized.set(hash, text.test(await readScreenshotText(frame, remaining)));
     }
+    if (!recognized.get(hash)) continue;
+    if (timing === 'uncertain') {
+      matchInUncertainWindow = true;
+      continue;
+    }
+    await copyFile(frame, screenshot);
+    return { elapsedMs: Math.round(time - times[0]) };
   }
-  const details = `${times.length} frames; ${seen.size} distinct post-response frames; last frame ${Math.round(times.at(-1))} ms, response window ${Math.round(window.earliest)}–${Math.round(window.end)} ms since boot. See ${video}.`;
+  const details = `${times.length} frames; ${recognized.size} distinct frames examined; last frame ${Math.round(times.at(-1))} ms, response window ${Math.round(window.earliest)}–${Math.round(window.end)} ms since boot. See ${video}.`;
+  assert(!matchInUncertainWindow, `Android toast capture is inconclusive: text matched only while response timing was uncertain (${details})`);
   // The encoder can omit static frames. Only report missing UI feedback when the source recording
   // actually sampled the whole response window without a gap that could hide a short toast.
   assert(hasToastFrameCoverage(times, window),
     `Android toast capture is inconclusive: insufficient encoded frame coverage (${details})`);
-  assert.fail(`No decoded Android frame showed ${text} in ${seen.size} distinct frames (${details})`);
+  assert.fail(`No decoded Android frame showed ${text} (${details})`);
 }
 
 export async function locateScreenshotText(screenshot, expected, cropPath) {
