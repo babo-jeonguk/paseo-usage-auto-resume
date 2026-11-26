@@ -5,10 +5,10 @@ import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { freePort, inherited, isWin, iso, killTree, nativeRun, options, pidAlive, readJson,
-  run, running, spawnLogged, startProxy, waitFor, withDeadline } from './core.mjs';
-import { assertDesktopOffline, isOfflineRegistryFailure } from './desktop-network.mjs';
+  DEFAULT_MARK, run, running, spawnLogged, startProxy, waitFor, withDeadline } from './core.mjs';
+import { assertNativeOffline, isOfflineRegistryFailure } from './native-network.mjs';
 import { assertSubscriptionRequests, patchDesktopEntry, prepareLogins } from './desktop-subscription.mjs';
-import { assertDaemonLogs, editSavedJobs, localClock, nativeDefaults, nativeFixture, tomorrowAtNoon } from './native-fixture.mjs';
+import { assertDaemonLogs, assertStagedSource, editSavedJobs, localClock, nativeDefaults, nativeFixture, tomorrowAtNoon } from './native-fixture.mjs';
 import { scheduleWire } from './schedule-wire.mjs';
 
 const args = options(['cli', 'app', 'source', 'to'], {
@@ -18,10 +18,8 @@ await nativeRun('desktop', args, async ctx => {
   const { root, out, report, artifacts, dispose, check } = ctx;
   assert(['linux', 'win32'].includes(process.platform), 'Desktop E2E requires Linux or Windows');
   assert.equal(process.platform, args['expect-platform'], 'Use Node on the requested native OS');
-  const source = new URL(args.source);
-  assert(source.protocol === 'file:' && !source.hostname, 'Use the local file URL produced by desktop-source.mjs');
-  assert.match(args.to, /^[a-f0-9]{40}$/, 'Use the full verified commit from desktop-source.mjs');
-  await check('The operating system rejects direct external TCP connections', assertDesktopOffline);
+  assertStagedSource(args);
+  await check('The operating system rejects direct external TCP connections', assertNativeOffline);
   assert(isWin || process.env.DISPLAY || process.env.WAYLAND_DISPLAY, 'Run under xvfb-run on a headless Linux host');
   const appDir = resolve(args.app);
   report.app = appDir;
@@ -148,7 +146,7 @@ await nativeRun('desktop', args, async ctx => {
     const startedAt = Date.now();
     await withDeadline(() => page.evaluate(() => window.close()), 'Electron window close', 15_000);
     await waitFor(noChildren, 'desktop daemon and child processes exit', 60_000);
-    if (isWin) assert.equal(app.exitCode, 0, 'Windows job launcher must observe a graceful exit');
+    assert.equal(app.exitCode, 0, 'The app launcher must observe a graceful exit');
     shutdowns.push({ startedAt, finishedAt: Date.now() });
     await closeBrowser();
     browser = page = app = undefined;
@@ -221,7 +219,6 @@ await nativeRun('desktop', args, async ctx => {
       report.daemon = await assertManaged();
       return fixture.client;
     });
-    assert.equal(report.revision, args.to, 'Desktop must load the same commit verified in the online stage');
     report.installFinishedAt = Date.now();
     const skip = page.getByText('Skip setup', { exact: true });
     if (await skip.isVisible()) await skip.click();
@@ -253,11 +250,11 @@ await nativeRun('desktop', args, async ctx => {
     await conversation(primary);
     assert.equal(await pill().count(), 0);
     const mark = wire.checkpoint(await wire.ready(1), screenStartedAt);
-    const visible = pill().waitFor({ timeout: 90_000 }).then(() => performance.now());
-    const [{ job, observedAt }, visibleAt] = await Promise.all([fixture.limit(primary), visible]);
+    const { job, observedAt } = await fixture.limit(primary);
+    await pill().waitFor({ timeout: 90_000 });
+    const visibleAt = performance.now();
     const pushed = wire.pushed(mark, job.id, visibleAt);
     const pushMs = Math.max(0, Math.round(visibleAt - Math.min(observedAt, pushed.eventReceivedAt)));
-    assert(pushMs <= 5000, `Pill took ${pushMs} ms after the reservation reached the daemon`);
     const view = await panel(primary);
     await button('Delay 10 minutes', view).click();
     await waitJob(primary, row => row?.dueAt === iso(Date.parse(job.dueAt) + 600_000), '+10m');
@@ -281,14 +278,15 @@ await nativeRun('desktop', args, async ctx => {
     await fixture.setUsage('auth');
     await resume(view, /^Couldn’t verify usage/);
     assert.deepEqual(await fixture.job(primary.id), before);
-    assert.equal(fixture.continues().length, 0);
+    assert.equal(fixture.continueRequests().length, 0);
     await shot('desktop-popover');
     await fixture.setUsage('ready');
     await resume(view, 'Continue sent');
     await pill().waitFor({ state: 'hidden' });
-    await waitFor(() => fixture.continues(note).length, 'manual continue at the model');
-    assert.equal(fixture.continues(note).length, 1);
-    assert.equal(fixture.continues().length, 1, 'Send exactly one manual continue');
+    await waitFor(() => fixture.continueRequests().length, 'manual continue at the model');
+    const requests = fixture.continueRequests();
+    assert.equal(requests.length, 1, 'Send exactly one manual continue');
+    assert(requests[0].last.includes(DEFAULT_MARK) && requests[0].last.includes(note), 'Send the default prompt and note together');
     assert.equal((await fixture.history()).find(entry => entry.agentId === primary.id)?.trigger, 'manual');
     return { pushMs, note, modelContinues: 1 };
   });
@@ -344,14 +342,14 @@ await nativeRun('desktop', args, async ctx => {
     const agent = await fixture.agent('Desktop closed-agent recovery');
     const { job } = await fixture.limit(agent);
     const before = await assertManaged();
-    assert.equal(fixture.continues().length, 1, 'No delayed duplicate from the manual continue');
+    assert.equal(fixture.continueRequests().length, 1, 'No delayed duplicate from the manual continue');
     await closeApp(before);
     await startApp();
     const after = await assertManaged();
     assert.notEqual(after.pid, before.pid);
     assert.equal((await fixture.client.fetchAgent(agent.id)).agent.status, 'closed');
     assert.equal((await fixture.job(agent.id)).id, job.id);
-    assert.equal(fixture.continues().length, 1, 'Relaunch must not send a continue before the reservation is due');
+    assert.equal(fixture.continueRequests().length, 1, 'Relaunch must not send a continue before the reservation is due');
     await screen();
     await page.getByTestId('resume-row-' + job.id).waitFor();
     await shot('restored');
@@ -362,13 +360,15 @@ await nativeRun('desktop', args, async ctx => {
       'real tick on restarted daemon', 75_000, 500);
     assert.equal(await fixture.job(agent.id), undefined);
     await closeApp(after);
-    assert.equal(fixture.continues().length, 2, 'One manual continue and one tick continue');
-    assert.equal(fixture.continues('DESKTOP MANUAL CONTINUE').length, 1);
+    const requests = fixture.continueRequests();
+    assert.equal(requests.length, 2, 'One manual continue and one tick continue');
+    assert(requests[1].last.includes(DEFAULT_MARK) && !requests[1].last.includes('DESKTOP MANUAL CONTINUE'),
+      'The reopened reservation sends its own default continue');
     return { before, after, deliveryMs: Math.round(performance.now() - advancedAt), modelContinues: 1 };
   });
 
   await check('No direct external connections, self-update files, renderer errors or unexpected daemon errors', async () => {
-    const directTcp = await assertDesktopOffline();
+    const directTcp = await assertNativeOffline();
     const cache = await readdir(fixture.cache, { recursive: true, withFileTypes: true }).catch(error => {
       if (error.code === 'ENOENT') return [];
       throw error;

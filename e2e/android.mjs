@@ -1,16 +1,17 @@
 import assert from 'node:assert/strict';
-import { access, writeFile } from 'node:fs/promises';
+import { access } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { androidDevice, matchNode, PACKAGE, within } from './android-device.mjs';
-import { assertScreenshotText, readScreenshotText } from './android-visual.mjs';
+import { assertScreenshotText, observeToast } from './android-visual.mjs';
 import { DEFAULT_CONTINUE_PROMPT } from '../shared/prompt.ts';
-import { cliBin, iso, killTree, nativeRun, options, run, running, sleep, SOURCE, spawnLogged, waitFor } from './core.mjs';
-import { assertDaemonLogs, editSavedJobs, localClock, nativeDefaults, nativeFixture, tomorrowAtNoon } from './native-fixture.mjs';
+import { cliBin, DEFAULT_MARK, iso, killTree, nativeRun, options, run, running, spawnLogged, waitFor } from './core.mjs';
+import { assertDaemonLogs, assertStagedSource, editSavedJobs, localClock, nativeDefaults, nativeFixture, tomorrowAtNoon } from './native-fixture.mjs';
 import { patchEntry } from './patch-plugin.mjs';
-import { observeAndroidWire, scheduleWire } from './schedule-wire.mjs';
+import { assertNativeOffline, isOfflineRegistryFailure } from './native-network.mjs';
+import { FALLBACK_REFRESH_MS, observeAndroidWire, scheduleWire } from './schedule-wire.mjs';
 
-const args = options(['cli', 'apk'], { ...nativeDefaults, source: SOURCE, port: '5584',
+const args = options(['cli', 'apk', 'source', 'to'], { out: nativeDefaults.out, path: nativeDefaults.path, port: '5584',
   sdk: process.env.ANDROID_HOME ?? join(homedir(), 'Android', 'Sdk'),
   'system-image': 'system-images;android-34;google_apis;x86_64',
 });
@@ -18,6 +19,8 @@ const args = options(['cli', 'apk'], { ...nativeDefaults, source: SOURCE, port: 
 await nativeRun('android', args, async ctx => {
   const { root, out, artifacts, dispose, check, report } = ctx;
   assert.equal(process.platform, 'linux', 'The Android runner uses a Linux SDK and emulator');
+  assertStagedSource(args);
+  await check('The operating system rejects direct external TCP connections', assertNativeOffline);
   await access(args.apk);
   const { stdout: languages } = await run('tesseract', ['--list-langs'], { timeout: 10_000 });
   assert(languages.split(/\r?\n/).includes('eng'), 'Install Tesseract with its English OCR data');
@@ -72,53 +75,15 @@ await nativeRun('android', args, async ctx => {
     (node.desc ?? '').startsWith('Continue ' + agent.title + ' automatically');
   const closeKeyboard = () => device.shell('input', 'keyevent', 'KEYCODE_BACK');
 
-  // Timestamp screen captures separately from the slower accessibility and OCR checks.
-  const captureDuring = async (action, timeout, afterAction) => {
-    const frames = [];
-    let deadline = performance.now() + timeout;
-    const capture = async () => {
-      while (performance.now() < deadline) {
-        const startedAt = performance.now();
-        // Finish the in-flight adb call within its own timeout when the sampling window closes.
-        const png = await device.screenshotPng(3_000);
-        const at = performance.now();
-        if (at <= deadline) frames.push({ png, at });
-        const delay = Math.min(startedAt + 400, deadline) - at;
-        if (delay > 0) await sleep(delay);
-      }
-    };
-    const acted = async () => {
-      try {
-        const value = await action();
-        deadline = Math.min(deadline, performance.now() + afterAction);
-        return value;
-      } catch (error) {
-        deadline = performance.now();
-        throw error;
-      }
-    };
-    const results = await Promise.allSettled([capture(), acted()]);
-    for (const result of results) {
-      if (result.status === 'rejected') throw result.reason;
-    }
-    return { result: results[1].value, frames };
-  };
-  const findFrame = async (frames, label, artifact) => {
-    const screenshot = join(out, artifact + '.png');
-    const recognitionDeadline = performance.now() + 25_000;
-    for (const { png, at } of frames) {
-      await writeFile(screenshot, png);
-      const remaining = Math.ceil(recognitionDeadline - performance.now());
-      assert(remaining > 0, `Timed out reading Android frames for ${label}`);
-      if (label.test(await readScreenshotText(screenshot, remaining))) return at;
-    }
-    assert.fail(`No Android screenshot showed ${label} in ${frames.length} captured frames`);
-  };
   const confirmResume = async (toast, artifact) => {
     await device.tap('Resume now');
     const send = await device.find('Send');
-    const { frames } = await captureDuring(() => device.tapNode(send, 10_000), 15_000, 8_000);
-    await findFrame(frames, toast, artifact);
+    await observeToast({
+      capturePng: device.screenshotPng,
+      action: () => device.tapNode(send, 10_000),
+      text: toast,
+      screenshot: join(out, artifact + '.png'),
+    });
   };
 
   const primaryTitle = 'Android live limit';
@@ -139,25 +104,26 @@ await nativeRun('android', args, async ctx => {
     await fixture.attach(() => running(daemon));
     await fixture.install(source => patchEntry(source, fixture.usageFile));
     await device.connect(observer.port);
+    primary = await fixture.agent(primaryTitle);
     const openedAt = await menu(autoResumeItem);
     await device.find('Nothing scheduled');
-    primary = await fixture.agent(primaryTitle);
-    const client = await wire.ready(2);
+    const client = await wire.ready(2, ['auto-resume.list', 'auto-resume.history']);
     const mark = wire.checkpoint(client, openedAt);
-    const { result: { job, observedAt }, frames } = await captureDuring(() => fixture.limit(primary), 90_000, 5_000);
+    const { job, observedAt } = await fixture.limit(primary);
     primaryJob = job;
-    const event = wire.messagesSince(mark).find(message => Number.isSafeInteger(message.revision));
-    assert(event, 'Expected a live schedule change on the app connection');
-    const startedAt = Math.min(observedAt, event.at);
-    const inWindow = frames.filter(frame => frame.at >= startedAt && frame.at <= startedAt + 5_000);
-    const visibleAt = await findFrame(inWindow, /\bAndroid live limit\b/i, 'live-push');
+    const remaining = () => {
+      const milliseconds = openedAt + FALLBACK_REFRESH_MS - performance.now();
+      assert(milliseconds > 0, 'Android live-update evidence reached the fallback refresh window');
+      return milliseconds;
+    };
+    await device.find(row(job), remaining(), 'new reservation on the open Auto Resume screen');
+    const visibleAt = performance.now();
     const pushed = wire.pushed(mark, job.id, visibleAt);
     await waitFor(() => wire.messagesSince(mark).some(message => message.method === 'auto-resume.history' &&
-      message.request.at >= pushed.eventReceivedAt), 'the open list history response after the schedule event', 15_000);
+      message.request.at >= pushed.eventReceivedAt && message.at < openedAt + FALLBACK_REFRESH_MS),
+      'the open list history response after the schedule event', remaining());
     liveList = { client, at: pushed.listReceivedAt };
     const pushMs = Math.max(0, Math.round(visibleAt - Math.min(observedAt, pushed.eventReceivedAt)));
-    assert(pushMs <= 5000, `Native row took ${pushMs} ms after the reservation reached the daemon`);
-    await device.find('resume-row-' + job.id);
     return { pushMs, pushedRevision: pushed.revision, cliVersion: fixture.version, apkVersion: report.apkVersion, revision: report.revision };
   });
 
@@ -177,16 +143,19 @@ await nativeRun('android', args, async ctx => {
       assert(!messages.some(message => message.subscriptionId), 'The swipe must not overlap an unrelated schedule push');
       assert(messages.some(message => message.jobs?.some(job => job.id === primaryJob.id && job.enabled === enabled)),
         'The swipe must fetch the edited reservation');
-      await waitFor(() => wire.messagesSince(mark).some(message => message.method === 'auto-resume.history'), 'history refetch from pull-to-refresh', 5_000);
+      const fallbackAt = liveList.at + FALLBACK_REFRESH_MS;
+      const remaining = fallbackAt - performance.now();
+      assert(remaining > 0, 'Refresh check overlapped the periodic list poll');
+      await waitFor(() => wire.messagesSince(mark).some(message =>
+        message.method === 'auto-resume.history' && message.at < fallbackAt), 'history refetch from pull-to-refresh', remaining);
     }
-    assert(performance.now() - liveList.at < 120_000, 'Refresh check overlapped the periodic list poll');
     assert.equal((await fixture.job(primary.id)).enabled, true);
   });
 
   const same = await fixture.agent('Android same-day reservation');
   const later = await fixture.agent('Android later-day reservation');
   await check('Compact list, Hermes days and spoken time, bulk and row toggles, and delay', async () => {
-    const { job: initialSame } = await fixture.limit(same, 60);
+    const { job: initialSame } = await fixture.limit(same);
     const { job: initialLater } = await fixture.limit(later);
     const laterDue = iso(Date.parse(initialLater.dueAt) + 3 * 86_400_000);
     // Some Claude releases omit the date from distant rate-limit notices. Schedule the later
@@ -282,7 +251,7 @@ await nativeRun('android', args, async ctx => {
     await fixture.setUsage('limited', iso(Date.now() + 40 * 60_000));
     await confirmResume(/\bUsage is still used up\b/i, 'resume-blocked');
     assert.deepEqual(await fixture.job(primary.id), before);
-    assert.equal(fixture.continues().length, 0);
+    assert.equal(fixture.continueRequests().length, 0);
     await fixture.setUsage('ready');
     await confirmResume(/\bContinue sent\b/i, 'resume-sent');
     await waitJob(primary, row => !row, 'continued row clears');
@@ -290,9 +259,10 @@ await nativeRun('android', args, async ctx => {
     assert(lists.some(node => node.pkg === PACKAGE), 'Paseo must still be in the foreground');
     assert(!lists.some(pill), 'Composer pill must be gone');
     assert(!lists.some(matchNode('Resume now')), 'Native sheet must close');
-    await waitFor(() => fixture.continues(note).length, 'continue at the fake model');
-    assert.equal(fixture.continues(note).length, 1);
-    assert.equal(fixture.continues().length, 1, 'Send exactly one manual continue');
+    await waitFor(() => fixture.continueRequests().length, 'continue at the fake model');
+    const requests = fixture.continueRequests();
+    assert.equal(requests.length, 1, 'Send exactly one manual continue');
+    assert(requests[0].last.includes(DEFAULT_MARK) && requests[0].last.includes(note), 'Send the default prompt and note together');
     return { modelContinues: 1 };
   });
 
@@ -379,11 +349,16 @@ await nativeRun('android', args, async ctx => {
     await device.find(pill);
     assert.notEqual((await device.shell('pidof', PACKAGE)).trim(), before);
     assert.equal((await fixture.job(recovery.id)).id, job.id);
-    assert.equal(fixture.continues().length, 1, 'Cold reopen must leave the total at one manual continue');
-    assert.equal(fixture.continues(note).length, 1);
+    assert.equal(fixture.continueRequests().length, 1, 'Cold reopen must leave the total at one manual continue');
     await device.shot('cold-reopen');
-    assert.deepEqual(fixture.proxy.hits(), []);
-    await assertDaemonLogs(report, log);
+    report.providerProxyHits = fixture.proxy.hits();
+    report.offlineRegistryFailures = 0;
+    await assertDaemonLogs(report, log, entry => {
+      if (!isOfflineRegistryFailure(entry)) return false;
+      report.offlineRegistryFailures++;
+      return true;
+    });
+    report.directTcpAfter = await assertNativeOffline();
     return { reservationId: job.id, duplicateContinues: 0, anrDismissed: report.anrDismissed };
   });
 });

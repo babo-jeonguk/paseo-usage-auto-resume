@@ -1,10 +1,16 @@
 import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { cliBin, connectToDaemon, daemonErrors, DEFAULT_MARK, freePort, installPlugin, patchInstalled,
+import { cliBin, connectToDaemon, daemonErrors, freePort, installPlugin, patchInstalled,
   paseoCommand, PLUGIN, providerEnvironment, readJson, replace, revisionOf, runHome, startModels, startProxy, waitFor } from './core.mjs';
 
 export const nativeDefaults = { to: 'main', out: 'e2e/out-native', path: '' };
+
+export function assertStagedSource({ source, to }) {
+  const url = new URL(source);
+  assert(url.protocol === 'file:' && !url.hostname, 'Use the local file URL produced by desktop-source.mjs');
+  assert.match(to, /^[a-f0-9]{40}$/, 'Use the full verified commit from desktop-source.mjs');
+}
 
 export async function nativeFixture(ctx, args) {
   const { root, artifacts, report, dispose } = ctx;
@@ -47,6 +53,7 @@ export async function nativeFixture(ctx, args) {
     },
     async install(patch, activate) {
       report.revision = revisionOf(await installPlugin(paseo, args.source, args.to, environment));
+      assert.equal(report.revision, args.to, 'Run the exact staged plugin revision');
       await patchInstalled({ paseo, client, patch, activate });
       workspace = (await client.createWorkspace({ source: { kind: 'directory', path: work }, title: 'Usage Auto Resume E2E' })).workspace;
     },
@@ -67,8 +74,7 @@ export async function nativeFixture(ctx, args) {
     waitJob: (agent, matches, what) => waitFor(async () => matches(await job(agent.id)), what, 20_000, 250),
     history: async () => (await rpc('auto-resume.history')).entries,
     setUsage: (usage, until) => replace(usageFile, JSON.stringify({ usage, until })),
-    continues: (mark = DEFAULT_MARK) =>
-      models.requests().filter(request => request.api === 'claude' && request.counted && request.last.includes(mark)),
+    continueRequests: () => models.requests().filter(request => request.counted && request.mode !== 'limit'),
   };
 }
 

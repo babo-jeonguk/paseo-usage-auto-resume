@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
-import { run } from './core.mjs';
+import { run, sleep } from './core.mjs';
 
 const words = text => text.toLowerCase().match(/[a-z0-9]+/g) ?? [];
 const ocr = (args, timeout = 20_000) => run('tesseract', args, { env: { ...process.env, OMP_THREAD_LIMIT: '1' }, timeout });
@@ -31,9 +31,43 @@ export async function assertScreenshotText(screenshot, bounds, expected, cropPat
   return stdout.trim();
 }
 
-export async function readScreenshotText(path, timeout) {
+async function readScreenshotText(path, timeout) {
   const { stdout } = await ocr([path, 'stdout', '-l', 'eng', '--psm', '11'], timeout);
   return stdout.replace(/\s+/g, ' ').trim();
+}
+
+export async function observeToast({ capturePng, action, text, screenshot }) {
+  const frames = [];
+  let until = Infinity;
+  const capture = async () => {
+    while (performance.now() < until) {
+      const next = performance.now() + 400;
+      frames.push(await capturePng(10_000));
+      const pause = Math.min(next, until) - performance.now();
+      if (pause > 0) await sleep(pause);
+    }
+  };
+  const send = async () => {
+    try {
+      await action();
+      until = performance.now() + 8_000;
+    } catch (error) {
+      until = performance.now();
+      throw error;
+    }
+  };
+  const results = await Promise.allSettled([capture(), send()]);
+  for (const result of results) {
+    if (result.status === 'rejected') throw result.reason;
+  }
+  const deadline = performance.now() + 25_000;
+  for (const frame of frames) {
+    const remaining = Math.ceil(deadline - performance.now());
+    assert(remaining > 0, `Timed out reading Android toast frames for ${text}`);
+    await writeFile(screenshot, frame);
+    if (text.test(await readScreenshotText(screenshot, remaining))) return;
+  }
+  assert.fail(`No Android screenshot showed ${text} in ${frames.length} captured frames`);
 }
 
 export async function locateScreenshotText(screenshot, expected, cropPath) {

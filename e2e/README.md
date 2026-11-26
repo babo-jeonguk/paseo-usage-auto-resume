@@ -126,7 +126,15 @@ For Paseo 0.16 to 0.17, Codex needs CLI 0.121.0 or later to reopen a conversatio
 
 Run these manual checks alongside the CLI/web simulation before releasing the plugin or upgrading Paseo. Use Node 24, Git, an isolated installation of `@getpaseo/cli`, and released app artifacts of the same Paseo version. Put the real provider binaries on the isolated run's `PATH` with `--path` (use the OS path separator for several directories). On Windows, include the directory containing Git and any provider command shims.
 
-Each runner makes a separate temporary Paseo home and provider profile with a space and Korean characters in the path. It uses a loopback fake model server and a refusing provider proxy. Pass `--source git:owner/repo` to override the default GitHub source and `--to <branch, tag or SHA>` to select its revision. To exercise a local commit first, pass `--source "file://$PWD" --to "$(git rev-parse HEAD)"` from the plugin checkout. The native checks require a revision that includes the accessibility identifiers in this change.
+Each runner makes a separate temporary Paseo home and provider profile with a space and Korean characters in the path. The app runs use a loopback fake model server, refusing proxies and OS-level network isolation. Both apps take the local Git source and full SHA from the staging report. For an unpublished commit, pass `--source "file://$PWD" --to "$(git rev-parse HEAD)"` from the plugin checkout.
+
+With network access, stage the GitHub revision. This starts a CLI-launched Paseo daemon with a separate home, installs the requested plugin revision, and writes a local repository pinned to that commit. Pass `--source git:owner/repo` to override the default GitHub repository. Set `STAGED_SOURCE` and `STAGED_REVISION` from `localSource` and `revision` in the passing report.
+
+```bash
+node e2e/desktop-source.mjs --cli /tmp/paseo-0.17.1/node_modules/@getpaseo/cli --to main --out /tmp/uar-results
+```
+
+Both live-update checks start with an open app surface and verify a schedule event, a subsequent list response containing the new reservation, and its display before the fallback poll. The reports record observation time for diagnosis.
 
 Use `--out <directory>` to choose the report location. The default is `e2e/out-native`. Each run writes a new subdirectory with `results.json`, daemon and model logs, proxy logs, app or emulator diagnostics, and screenshots. Failed runs keep the temporary home and include its path in the report. Successful runs remove it after copying the evidence.
 
@@ -134,13 +142,7 @@ Use `--out <directory>` to choose the report location. The default is `e2e/out-n
 
 Extract the matching desktop release archive and point `--app` at the directory containing `Paseo` and `Paseo.bin` on Linux, or `Paseo.exe` on Windows. Install `playwright-core` in a separate prefix and set `PW_ROOT` to its `node_modules` directory. CDP connects to the released app, so a Playwright browser download is unnecessary. Linux needs an X display. Windows needs native Node and an interactive desktop session.
 
-With network access, run the GitHub install check. It starts a CLI-launched Paseo daemon with a separate home, installs the requested plugin revision, and writes a local Git repository pinned to the installed commit. Take `localSource` and `revision` from the passing `results.json` into the Desktop run. For an unpublished commit, use the file URL and full SHA of your local checkout to exercise the Desktop stage independently.
-
-```bash
-node e2e/desktop-source.mjs --cli /tmp/paseo-0.17.1/node_modules/@getpaseo/cli --to main --out /tmp/uar-results
-```
-
-On Linux, run the whole Desktop scenario in a loopback-only network namespace. This example uses Bubblewrap with unprivileged user namespaces enabled. Set `STAGED_SOURCE` and `STAGED_REVISION` from the passing online report.
+On Linux, run the whole Desktop scenario in a loopback-only network namespace. This example uses Bubblewrap with unprivileged user namespaces enabled.
 
 ```bash
 PW_ROOT=/tmp/uar-tools/node_modules bwrap --unshare-net --bind / / --dev /dev -- \
@@ -159,7 +161,7 @@ node e2e/desktop.mjs --expect-platform win32 --cli C:\tools\node_modules\@getpas
   --path 'C:\provider-bin;C:\MinGit\cmd' --out C:\uar-results
 ```
 
-The runner checks the Electron-owned daemon's version and executable, real Claude and Codex subscription CLI launches, Settings account discovery, live composer updates within five seconds, the keyboard time editor, extra instructions, blocked and successful Resume now, day sections, Labs hover and provider-off cancellation. It closes the window and checks that its daemon and child processes exit. A new app instance must restore the reservation and let the real 30-second tick send one continue to the closed conversation. The report includes bundled Node and SQLite availability and any startup retries.
+The runner checks the Electron-owned daemon's version and executable, real Claude and Codex subscription CLI launches, Settings account discovery, live composer updates, the keyboard time editor, extra instructions, blocked and successful Resume now, day sections, Labs hover and provider-off cancellation. It closes the window and checks that its daemon and child processes exit. A new app instance must restore the reservation and let the real 30-second tick send one continue to the closed conversation. The report includes bundled Node and SQLite availability and any startup retries.
 
 Only the installed copy's subscription HTTP boundary is replaced. The Claude model turn uses the loopback API, and its auth check uses the login fixture in the isolated home. The Codex app-server probe uses the default model provider and receives a used-up usage window so the pending reservation stays in place without starting a model turn. The fixture disables Paseo’s separate built-in usage polling. Use a Codex build that accepts the synthetic login, such as the version pinned for the repository’s full native CLI integration check.
 
@@ -170,8 +172,10 @@ The Desktop runner requires loopback-only networking and probes direct IPv4 and 
 Use a Linux Android SDK with `platform-tools`, `emulator`, `cmdline-tools/latest`, Java, KVM acceleration, and a matching released `paseo-v<version>-android.apk`. Install Tesseract with English text recognition (`tesseract-ocr` and `tesseract-ocr-eng` on Debian-based hosts) for the tooltip and toast screenshot checks. The default image is `system-images;android-34;google_apis;x86_64`. Install the image before running. Use `--sdk` to override `ANDROID_HOME` or `~/Android/Sdk` and `--system-image` to select an installed replacement. `--port` selects the unused even emulator console port (default 5584).
 
 ```bash
-node e2e/android.mjs --cli /tmp/paseo-0.17.1/node_modules/@getpaseo/cli \
-  --apk /path/to/paseo-v0.17.1-android.apk --path "$HOME/.local/bin" --out /tmp/uar-results
+bwrap --unshare-net --bind / / --dev /dev --dev-bind /dev/kvm /dev/kvm -- \
+  node e2e/android.mjs --cli /tmp/paseo-0.17.1/node_modules/@getpaseo/cli \
+  --apk /path/to/paseo-v0.17.1-android.apk --source "$STAGED_SOURCE" --to "$STAGED_REVISION" \
+  --path "$HOME/.local/bin" --out /tmp/uar-results
 ```
 
-The runner uses its own AVD and adb server. It boots with wiped data, two cores, 2 GB RAM and software rendering. Use an emulator build with `-network-user-mode-options` and `-wifi-user-mode-options` support. Both guest networks run in restricted mode. The app connects over `adb reverse` from device loopback to the isolated host daemon. UI Automator drives the compact list and pull-to-refresh, checks Hermes date formatting and spoken time, opens the native composer sheet, types times and notes, and checks both Resume now toasts and the exact model-request count. It also checks provider-off cancellation, the full Labs tooltip text in a screenshot, prompt edit and reset, recent activity, and reservation recovery after Android force-stops the app. The report counts dismissed system ANR dialogs and includes a continuous `logcat` capture for React Native and Hermes failures.
+Run the Android host daemon and emulator in the same loopback-only namespace. The runner verifies IPv4 and IPv6 isolation and records refused provider attempts and offline registry lookups. It uses its own AVD and adb server. It boots with wiped data, two cores, 2 GB RAM and software rendering. Use an emulator build with `-network-user-mode-options` and `-wifi-user-mode-options` support. Both guest networks run in restricted mode. The app connects over `adb reverse` from device loopback to the isolated host daemon. UI Automator drives the compact list and pull-to-refresh, checks Hermes date formatting and spoken time, opens the native composer sheet, types times and notes, and checks both Resume now toasts and the exact model-request count. It also checks provider-off cancellation, the full Labs tooltip text in a screenshot, prompt edit and reset, recent activity, and reservation recovery after Android force-stops the app. The report counts dismissed system ANR dialogs and includes a continuous `logcat` capture for React Native and Hermes failures.

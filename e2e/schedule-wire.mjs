@@ -4,6 +4,8 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { listen, PLUGIN, waitFor } from './core.mjs';
 
+// Both surfaces use a two-minute fallback refresh. A later observation cannot prove push delivery.
+export const FALLBACK_REFRESH_MS = 120_000;
 const scheduleReads = new Set(['auto-resume.list', 'auto-resume.history']);
 
 // Observe the public Paseo session messages. Keep only schedule calls and their replies.
@@ -41,8 +43,9 @@ export function scheduleWire() {
     }
     return { frame, close: () => connections.delete(state) };
   }
-  const ready = minimum => waitFor(() => [...connections].find(state => state.subscriptions.size >= minimum &&
-    !state.pending.size && state.messages.some(message => message.method === 'auto-resume.list')),
+  const ready = (minimum, reads = ['auto-resume.list']) => waitFor(() => [...connections].find(state =>
+    state.subscriptions.size >= minimum && !state.pending.size &&
+    reads.every(method => state.messages.some(message => message.method === method))),
   `live schedule subscriptions (${minimum}) and completed initial list`, 60_000, 100);
   const settled = state => waitFor(() => connections.has(state) && !state.pending.size, 'in-flight schedule reads to finish', 15_000, 100);
   const checkpoint = (state, screenStartedAt) => {
@@ -58,11 +61,16 @@ export function scheduleWire() {
     connect, ready, settled, checkpoint, messagesSince,
     pushed(mark, reservationId, visibleAt) {
       const messages = messagesSince(mark);
+      const fallbackAt = mark.screenStartedAt + FALLBACK_REFRESH_MS;
+      assert(visibleAt < fallbackAt, 'Visibility was observed in the fallback refresh window');
+      const events = messages.filter(message => Number.isSafeInteger(message.revision) && message.at <= visibleAt);
+      assert.equal(new Set(events.map(event => event.revision)).size, 1,
+        'Expected exactly one schedule revision between the settled surface and visibility');
       const pair = messages.flatMap(list => {
         if (!list.jobs?.some(job => job.id === reservationId)) return [];
-        const event = messages.find(message => Number.isSafeInteger(message.revision) && message.sequence < list.request.sequence);
+        const event = events.find(message => message.sequence < list.request.sequence);
         return event ? [{ list, event }] : [];
-      }).find(({ list }) => list.request.at - mark.screenStartedAt < 120_000 && list.at <= visibleAt);
+      }).find(({ list }) => list.at <= visibleAt);
       const observed = messages.map(message => message.method
         ? { method: message.method, request: message.request.sequence, reservations: message.jobs?.map(job => job.id) }
         : { revision: message.revision, sequence: message.sequence });
