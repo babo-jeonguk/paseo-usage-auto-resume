@@ -8,7 +8,7 @@ Usage Auto Resume detects short provider limit notices and explicit limit error 
 
 Plugin-owned timeline rows are ignored when finding that closing message for limit and overload detection. They can follow a notice or appear between chunks of the same message without hiding it. Later provider activity still determines whether the notice is the closing output.
 
-At the end of a turn that was not canceled, the plugin reads the agent's latest 20 timeline items and checks those after the latest user message; a timeline carried by the turn event is never used. When they cannot be read for their own reason, the failure is logged and only the error the turn failed with is checked.
+At the end of a turn that was not canceled (except a Paseo subagent turn with no pre-existing `pending` or `sent` reservation, which returns immediately), the plugin reads the agent's latest 20 timeline items and checks those after the latest user message; a timeline carried by the turn event is never used. When they cannot be read for their own reason, the failure is logged and only the error the turn failed with is checked.
 
 Each daemon runs its own copy of the plugin, and a turn's end reaches only the daemon that runs the agent. An agent that Paseo's connected hosts run on another machine is resumed only when the plugin is installed and turned on in that machine's daemon.
 
@@ -64,7 +64,7 @@ A stop at a limit or provider overload makes no reservation for a Paseo subagent
 8. The reservation is turned off: skip it.
 9. The account uses API billing, or changed: cancel.
 10. Confirmed used-up usage converts an overload reservation to a limit reservation, clearing its overload stage even if no reset is known. Unverified usage keeps its kind and stage. Usage is used up or cannot be verified, or the reset stated in the notice is still ahead: move the reservation to when it renews or can be checked again. A time the user chose no longer counts as theirs.
-11. The usage lookup takes a few seconds, so repeat the Labs check and checks 1 to 8 (except the CLI check) before claiming, reading the settings and live agent again.
+11. The usage lookup takes a few seconds, so read the live agent again, then repeat the Labs check and checks 1 to 8 (except the CLI check) against the current settings and that snapshot before claiming.
 12. Claim the reservation and send the continue, steering it into a turn that started in between, where the provider supports that. The extra instructions are then removed.
 
 **Resume now** runs the same checks, with four differences. It ignores the reset stated in the notice. It sends a reservation that is turned off. In a turn, it answers that the agent is still working, and when usage holds it, it answers with the reason; both leave the reservation as it was. A check that cancels cancels it as it would at the due time.
