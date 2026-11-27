@@ -64,7 +64,7 @@ A stop at a limit or provider overload makes no reservation for a Paseo subagent
 8. The reservation is turned off: skip it.
 9. The account uses API billing, or changed: cancel.
 10. Confirmed used-up usage converts an overload reservation to a limit reservation, clearing its overload stage even if no reset is known. Unverified usage keeps its kind and stage. Usage is used up or cannot be verified, or the reset stated in the notice is still ahead: move the reservation to when it renews or can be checked again. A time the user chose no longer counts as theirs.
-11. The usage lookup takes a few seconds, so read the live agent again, then repeat the Labs check and checks 1 to 8 (except the CLI check) against the current settings and that snapshot before claiming.
+11. The usage lookup takes a few seconds, so read the live agent again, then read the provider settings again (unreadable waits, and a provider turned off cancels) and repeat the subagent, background and agent checks (steps 2 to 8, except the CLI check) on that snapshot. For an overload reservation, read Labs again before claiming: unreadable waits, and off cancels.
 12. Claim the reservation and send the continue, steering it into a turn that started in between, where the provider supports that. The extra instructions are then removed.
 
 **Resume now** runs the same checks, with four differences. It ignores the reset stated in the notice. It sends a reservation that is turned off. In a turn, it answers that the agent is still working, and when usage holds it, it answers with the reason; both leave the reservation as it was. A check that cancels cancels it as it would at the due time.
