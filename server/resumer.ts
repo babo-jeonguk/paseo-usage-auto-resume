@@ -2,7 +2,7 @@ import type { AgentTimelineItem, PaseoAgent, PaseoApi } from "./paseo-types";
 import type { PluginHookEvents, PluginSessionOpenRequest } from "@getpaseo/plugin/server";
 import { randomUUID } from "node:crypto";
 import { ACCOUNT_CHANGED, agentGate, API_ROUTE, canceled, turnAction, turnEventOf, type Cancellation, type Gate, type Outcome, type TurnEvent } from "./decisions";
-import { claimed, isSameJob, noted, pinned, postponed, replan, replanOverload, rescheduled, sent, switched, type Pin, type Plan } from "./reservation";
+import { claimed, isSameJob, noted, pinned, postponed, replan, replanOverload, rescheduled, sent, switched, verified, type Pin, type Plan } from "./reservation";
 import { detectOverloadStop } from "./overload";
 import { detectLimitStop } from "./limit";
 import type { HistoryRow, RescheduleResult, ResumeNowResult, ScheduledJob, SetNoteResult, Waiting } from "../shared/rpc";
@@ -549,12 +549,9 @@ export function createResumer(options: {
       const hold = usageHold(check, at);
       if (hold.kind !== "ready") {
         // Blocked, it keeps its time and switch, but the account and the session that verified it are still saved.
-        const identity = job.identity ? undefined : check.identity;
-        const launch = verifiedLaunch(check, session.launch);
-        if (identity || launch) {
-          await store.update(job.agentId, (current) => current && same(current)
-            ? { ...current, ...(identity ? { identity } : {}), ...(launch ? { launch } : {}) }
-            : undefined);
+        const update = { identity: check.identity, launch: verifiedLaunch(check, session.launch) };
+        if (verified(job, update)) {
+          await store.update(job.agentId, (current) => current && same(current) ? verified(current, update) : undefined);
         }
       }
       if (hold.kind === "used_up") return { result: "used_up", until: hold.renews?.toISOString() ?? null };
@@ -570,8 +567,8 @@ export function createResumer(options: {
     const latestTitle = (latestAgent && titleOf(latestAgent)) ?? title;
     const currentSettings = await checkProvider(latestTitle);
     if ("result" in currentSettings) return currentSettings;
-    const verified = await checkAgent(latestAgent, currentSettings, source, latestTitle);
-    if ("result" in verified) return verified;
+    const rechecked = await checkAgent(latestAgent, currentSettings, source, latestTitle);
+    if ("result" in rechecked) return rechecked;
     const latestLabs = await labsGate(latestTitle);
     if (latestLabs) return latestLabs;
     // Claim before sending so a crash mid-send, or a tick and Resume now at once, never delivers

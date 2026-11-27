@@ -129,7 +129,7 @@ test("a sent continue keeps its id and drops what the user set for it", () => {
 
 test("verification metadata on a held check binds an unset identity and updates launch without touching schedule fields", () => {
   const base = job({ enabled: false, note: "keep", userChosenTime: true, waiting: "usage", retries: 2 });
-  const launch = { env: { XDG_DATA_HOME: "/tmp/oc" } };
+  const launch = { env: { XDG_DATA_HOME: "/tmp/oc" }, authEnv: {} };
   const bound = verified(base, { identity: "account-a", launch });
   assert.ok(bound);
   assert.deepEqual(bound, { ...base, identity: "account-a", launch });
