@@ -175,10 +175,14 @@ test("an uncaptured session is checked as the daemon and provider configuration 
   }
 });
 
-test("Antigravity preserves its fallback when agy is unavailable, and its API routes stay excluded", async () => {
-  const read = createSubscriptionReader({ run: async () => { throw new Error("agy unavailable"); } });
-  assert.deepEqual(await read(api(), agent("antigravity", "gemini-pro"), "antigravity", at, captureLaunch({ env: {} })), { auth: "subscription", status: "ready" });
+test("Antigravity never probes agy and returns subscription ready unless an API route env is set", async () => {
+  let spawns = 0;
+  const read = createSubscriptionReader({ run: async () => { spawns++; throw new Error("must not spawn agy"); } });
+  const configured = { config: { get: async () => ({ config: { providers: { antigravity: { command: ["/opt/agy", "acp"] } } } }) } } as unknown as Parameters<typeof read>[0];
+  assert.deepEqual(await read(configured, agent("antigravity", "gemini-pro"), "antigravity", at, captureLaunch({ env: {} }), "identity"), { auth: "subscription", status: "ready" });
+  assert.deepEqual(await read(configured, agent("antigravity", "gemini-pro"), "antigravity", at, captureLaunch({ env: {} }), "usage"), { auth: "subscription", status: "ready" });
   assert.equal((await read(api(), agent("antigravity", "gemini-pro"), "antigravity", at, captureLaunch({ env: { GEMINI_API_KEY: "key" } }))).auth, "api");
+  assert.equal(spawns, 0, "Antigravity never runs agy -p /usage");
 });
 
 test("Codex's login is read from the home it reports, before the inferred one", async () => {

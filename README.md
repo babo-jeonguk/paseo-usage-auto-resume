@@ -19,13 +19,13 @@ Actual Paseo web interface with sample reservations. Each row shows what is sche
 - **Paseo daemon and app 0.16.0 or later**, with plugins enabled in **Settings → Plugins**.
 - The provider CLI already signed in on the daemon host, and the host kept awake.
 - **OpenCode 2.2.2 or later** for OpenCode agents.
-- On Paseo 0.17, a custom Antigravity command must include `acp`, as Paseo requires; with other flags than those [behavior](docs/behavior.md#data-access-and-storage) lists, quota cannot be checked. Codex agents started under Paseo 0.16 need Codex CLI 0.121.0 or later to be reopened by Paseo 0.17.
+- On Paseo 0.17+, a custom Antigravity command must include `acp`, as Paseo requires. Codex agents started under Paseo 0.16 need Codex CLI 0.121.0 or later to be reopened by Paseo 0.17+.
 
 | Provider | Before sending |
 | --- | --- |
 | Codex | Checks that your ChatGPT subscription has usage left, also for a workspace access token (`CODEX_ACCESS_TOKEN`). |
 | Claude | Checks that your claude.ai subscription has usage left. With a setup token (`CLAUDE_CODE_OAUTH_TOKEN`), which cannot read usage, follows the limit message. |
-| Antigravity | Checks the model's quota when available; otherwise follows the limit message. |
+| Antigravity | Follows the limit message (no quota check). |
 | OpenCode | Go: checks the Go usage windows. Free models: waits for the reset time OpenCode recorded with the free-usage limit. |
 
 Agents billed through an API key or another billing route, and subagents created by another agent, are not resumed (their parent agent manages them).
@@ -85,8 +85,8 @@ This also deletes the plugin's settings. Reservations and recent activity stay i
 
 ## Your data
 
-- The plugin reads your agents' state, their recent limit messages, your provider CLI sign-ins and OpenCode's local database on the daemon host.
-- Codex, Claude and OpenCode Go usage checks contact the provider's account service and don't use any model turns. Sign-in tokens and OpenCode's Go key are never saved or logged.
+- The plugin reads your agents' state, their recent limit messages, your provider CLI sign-ins and OpenCode's local database and auth file on the daemon host.
+- Codex, Claude and OpenCode Go usage checks contact the provider's account service and don't use any model turns. Sign-in tokens and OpenCode's Console or Go keys are never saved or logged.
 - Free OpenCode models use the limit time OpenCode recorded in its local database.
 - Reservations, extra instructions and a changed continue prompt are stored on the daemon host. Extra instructions are deleted once sent.
 - The continue message goes through Paseo to your existing agent, like a message you send yourself.

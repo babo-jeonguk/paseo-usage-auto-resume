@@ -1,4 +1,4 @@
-import { useToast } from "@getpaseo/plugin/client/react-native";
+import { useToast } from "@getpaseo/plugin/client/ui";
 import { useEffect, useRef, useState } from "react";
 import { saveFailure, type SaveFailure, type SaveTarget } from "./save-failure";
 

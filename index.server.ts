@@ -56,24 +56,24 @@ export default function contribute(server: PluginServerContext) {
 
   // Hooks return at once: detection reads the agent and usage, which must not hold up the daemon.
   const stops = [
-    server.before("agent.session_open", ({ request }) => resumer.rememberSession(request)),
+    server.addHook("agent.open.before", async ({ request }) => resumer.rememberSession(request)),
     settings.subscribe(onProviderSettings),
     promptSettings.subscribe(() => void resumer.reconcileOverload().catch(report)),
-    server.on("agent.turn_started", (event, { paseo }) => {
+    server.addHook("agent.turn.before", async (event, { paseo }) => {
       void resumer.attach(paseo);
       void resumer.onTurnStarted(event.agent.id, paseo).catch(report);
     }),
-    server.on("agent.turn_ended", (event, { paseo }) => {
+    server.addHook("agent.turn.after", async (event, { paseo }) => {
       void resumer.attach(paseo);
       void resumer.onTurnEnded(event, paseo).catch(report);
     }),
-    server.on("agent.archived", (event, { paseo }) => {
+    server.addHook("agent.archive.after", async (event, { paseo }) => {
       void resumer.attach(paseo);
       void resumer.forget(event.agent.id).catch(report);
     }),
-    server.on("agent.permission_requested", (_event, { paseo }) => void resumer.attach(paseo)),
-    server.on("agent.created", (_event, { paseo }) => void resumer.attach(paseo)),
-    server.on("agent.closed", (_event, { paseo }) => void resumer.attach(paseo)),
+    server.addHook("agent.permission.before", async (_event, { paseo }) => void resumer.attach(paseo)),
+    server.addHook("agent.create.after", async (_event, { paseo }) => void resumer.attach(paseo)),
+    server.addHook("agent.close.after", async (_event, { paseo }) => void resumer.attach(paseo)),
   ];
   // Live updates: a subscription is told the revision after a store write, then refetches.
   server.handle(changesSubscription, (_input, { paseo, push, signal }) => {

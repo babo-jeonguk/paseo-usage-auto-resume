@@ -1,6 +1,6 @@
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { useRpc } from "@getpaseo/plugin/client";
-import { Icon, ScrollView, useToast } from "@getpaseo/plugin/client/react-native";
+import { Icon, ScrollView, useToast } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, RefreshControl, Text, View } from "react-native";

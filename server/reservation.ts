@@ -149,6 +149,17 @@ export function postponed(current: ResumeJob, hold: { renewsAt: Date | null; wai
   };
 }
 
+/**
+ * A held check's confirmation: the account and the session that verified it, only when one is new.
+ * The reservation's time, switch and every other field stay as they are.
+ */
+export function verified(current: ResumeJob, update: { identity?: string; launch?: ResumeJob["launch"] }): ResumeJob | undefined {
+  const identity = current.identity ?? update.identity;
+  const launch = update.launch ?? current.launch;
+  if (identity === current.identity && launch === current.launch) return undefined;
+  return { ...current, identity, launch };
+}
+
 /** The user's own time, which turns the reservation on and survives a new plan while it is later. */
 export const rescheduled = (current: ResumeJob, dueAt: string): ResumeJob => ({ ...current, dueAt, enabled: true, userChosenTime: true });
 

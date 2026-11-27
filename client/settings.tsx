@@ -1,6 +1,5 @@
 import { useRpc, useSettings, type PluginSurfaceProps, type SettingsState } from "@getpaseo/plugin/client";
-import { SettingsAction, SettingsCard, SettingsSection, SettingsSwitch } from "@getpaseo/plugin/client/ui";
-import { Icon, ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
+import { Icon, ScrollView, SettingsAction, SettingsCard, SettingsSection, SettingsSwitch, TextInput, useToast } from "@getpaseo/plugin/client/ui";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState, type ComponentProps, type ComponentType } from "react";
 import { ActivityIndicator, Pressable, Text, useWindowDimensions, View } from "react-native";

@@ -1,8 +1,8 @@
 import type { AgentTimelineItem, PaseoAgent, PaseoApi } from "./paseo-types";
-import type { PluginLifecycleEvents, PluginSessionOpenRequest } from "@getpaseo/plugin/server";
+import type { PluginHookEvents, PluginSessionOpenRequest } from "@getpaseo/plugin/server";
 import { randomUUID } from "node:crypto";
 import { ACCOUNT_CHANGED, agentGate, API_ROUTE, canceled, turnAction, turnEventOf, type Cancellation, type Gate, type Outcome, type TurnEvent } from "./decisions";
-import { claimed, isSameJob, noted, pinned, postponed, replan, replanOverload, rescheduled, sent, switched, type Pin, type Plan } from "./reservation";
+import { claimed, isSameJob, noted, pinned, postponed, replan, replanOverload, rescheduled, sent, switched, verified, type Pin, type Plan } from "./reservation";
 import { detectOverloadStop } from "./overload";
 import { detectLimitStop } from "./limit";
 import type { HistoryRow, RescheduleResult, ResumeNowResult, ScheduledJob, SetNoteResult, Waiting } from "../shared/rpc";
@@ -26,7 +26,7 @@ const SCAN_WINDOW_MS = 12 * 3_600_000;
 const TAIL_TIMELINE_ITEMS = 20;
 
 export type ResumerApi = Pick<PaseoApi, "agents" | "config" | "providers" | "workspaces">;
-type TurnEnded = PluginLifecycleEvents["agent.turn_ended"];
+type TurnEnded = PluginHookEvents["agent.turn.after"];
 
 function log(message: string): void {
   console.log(`[usage-auto-resume] ${message}`);
@@ -548,9 +548,11 @@ export function createResumer(options: {
       // Only the account's own usage holds a continue the user asked for; the notice may be outdated.
       const hold = usageHold(check, at);
       if (hold.kind !== "ready") {
-        // Blocked, it keeps its time and switch, but the session that verified it is still saved.
-        const launch = verifiedLaunch(check, session.launch);
-        if (launch) await store.update(job.agentId, (current) => current && same(current) ? { ...current, launch } : undefined);
+        // Blocked, it keeps its time and switch, but the account and the session that verified it are still saved.
+        const update = { identity: check.identity, launch: verifiedLaunch(check, session.launch) };
+        if (verified(job, update)) {
+          await store.update(job.agentId, (current) => current && same(current) ? verified(current, update) : undefined);
+        }
       }
       if (hold.kind === "used_up") return { result: "used_up", until: hold.renews?.toISOString() ?? null };
       if (hold.kind === "unverified") return { result: "unverified", waiting: hold.waiting };
@@ -565,8 +567,8 @@ export function createResumer(options: {
     const latestTitle = (latestAgent && titleOf(latestAgent)) ?? title;
     const currentSettings = await checkProvider(latestTitle);
     if ("result" in currentSettings) return currentSettings;
-    const verified = await checkAgent(latestAgent, currentSettings, source, latestTitle);
-    if ("result" in verified) return verified;
+    const rechecked = await checkAgent(latestAgent, currentSettings, source, latestTitle);
+    if ("result" in rechecked) return rechecked;
     const latestLabs = await labsGate(latestTitle);
     if (latestLabs) return latestLabs;
     // Claim before sending so a crash mid-send, or a tick and Resume now at once, never delivers

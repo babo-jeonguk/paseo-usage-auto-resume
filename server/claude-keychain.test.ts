@@ -9,7 +9,7 @@ import { captureLaunch, createSubscriptionReader } from "./subscription";
 import { createClaudeCredentialReader } from "./claude-credentials";
 import { createResumer, CONTINUE_PROMPT, type ResumerApi } from "./resumer";
 import { createJobStore } from "./store";
-import type { PluginLifecycleEvents } from "@getpaseo/plugin/server";
+import type { PluginHookEvents } from "@getpaseo/plugin/server";
 
 const NOW = new Date("2026-10-20T00:00:00Z");
 const authEnv = Object.fromEntries(["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN",
@@ -92,7 +92,7 @@ for (const plan of ["pro", "max", "team"]) for (const window of ["five", "week"]
     const make = () => createResumer({ store: createJobStore(join(home, "jobs.json")), now: () => new Date(clock), readSubscription: read });
     const resumer = make();
     const event = { agent: { id: agent.id, provider: "claude", workspaceId: null, parentAgentId: null, cwd: "/tmp", title: null, metadata: {}, background: false }, turnId: "fixture-turn",
-      outcome: { kind: "completed" } } as PluginLifecycleEvents["agent.turn_ended"];
+      outcome: { kind: "completed" } } as PluginHookEvents["agent.turn.after"];
     await resumer.onTurnEnded(event, host);
     assert.equal(reads, 0);
     assert.equal((await store.list())[0]?.dueAt, new Date(due).toISOString());

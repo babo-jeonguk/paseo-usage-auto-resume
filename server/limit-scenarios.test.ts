@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
-import type { PluginLifecycleEvents } from "@getpaseo/plugin/server";
+import type { PluginHookEvents } from "@getpaseo/plugin/server";
 import type { PaseoAgent } from "./paseo-types";
 import { CONTINUE_PROMPT, createResumer, type ResumerApi } from "./resumer";
 import { createSubscriptionReader } from "./subscription";
@@ -159,7 +159,7 @@ async function scenario(t: TestContext, profile: Profile, limit: "five" | "week"
   const store = createJobStore(storePath);
   const make = () => createResumer({ store: createJobStore(storePath), now: () => new Date(clock), readSettings: async () => settings, readSubscription });
   const resumer = make();
-  const event = (message: string): PluginLifecycleEvents["agent.turn_ended"] => ({
+  const event = (message: string): PluginHookEvents["agent.turn.after"] => ({
     agent: { id: agent.id, provider, cwd: dir, title: agent.title, workspaceId: null, parentAgentId: null, metadata: {}, background: false },
     turnId: "fixture-turn", outcome: source === "claude" ? { kind: "completed" }
       : { kind: "failed", error: { message, ...(source === "antigravity" ? { code: "RESOURCE_EXHAUSTED" } : {}) } },

@@ -1,5 +1,5 @@
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
-import { Icon, TextInput } from "@getpaseo/plugin/client/react-native";
+import { Icon, TextInput } from "@getpaseo/plugin/client/ui";
 import { Pressable, Text, View } from "react-native";
 import type { ScheduledJob } from "../shared/rpc";
 import { dayChoices, relativeLabel, relativeSpoken, timeEdit, type TimeEditorStart, type TimeEntry } from "./format";

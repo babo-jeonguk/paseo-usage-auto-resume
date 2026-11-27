@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, mock, test } from "node:test";
 import type { PaseoAgent } from "@getpaseo/client";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
-import type { PluginLifecycleEvents, PluginTurnOutcome } from "@getpaseo/plugin/server";
+import type { PluginHookEvents, PluginTurnOutcome } from "@getpaseo/plugin/server";
 import { CONTINUE_PROMPT, createResumer, type ResumerApi } from "./resumer";
 import { createJobStore, type JobStore } from "./store";
 import { pinOf } from "./test-pins";
@@ -13,7 +13,6 @@ import { createHistoryStore, type HistoryStore } from "./history";
 import { DEFAULT_PROVIDER_SETTINGS, DEFAULT_RESUME_SETTINGS, type ProviderSettings, type ResumeSettings } from "../shared/settings";
 import { continuePrompt } from "../shared/prompt";
 import { accountEmail } from "./usage";
-import { agyFallback, agyUsage } from "./agy-usage";
 import { createSubscriptionReader, unknownCheck, type SubscriptionCheck, type SubscriptionReader } from "./subscription";
 
 const START = new Date("2026-10-06T03:00:00.000Z");
@@ -216,8 +215,8 @@ function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOption
     },
   } as unknown as ResumerApi;
   const readSubscription: SubscriptionReader = options.readSubscription ?? (async (_api, agent, source, _at, _launch, mode) => {
-    // agy gives no account identity; without a quota read this is what its checks return.
-    if (source === "antigravity") return agyFallback();
+    // Antigravity has no account or quota probe; non-API routes follow the limit notice.
+    if (source === "antigravity") return { auth: "subscription", status: "ready" };
     const email = await accountEmail((await api.config.get()).config, agent.provider, source);
     if (!email) return unknownCheck();
     const identity = `${source}:${email}`;
@@ -239,7 +238,7 @@ function turnEnded(
   outcome: PluginTurnOutcome,
   timeline: AgentTimelineItem[] = [{ type: "user_message", text: "Implement the feature" }],
   parentAgentId: string | null = null,
-): PluginLifecycleEvents["agent.turn_ended"] {
+): PluginHookEvents["agent.turn.after"] {
   turnTimelines.set(agentId, timeline);
   return {
     agent: { id: agentId, workspaceId: "wks", parentAgentId, provider, cwd: "/repo", title: null, metadata: {}, background: false },
@@ -1816,8 +1815,9 @@ test("Antigravity limit without a reset in the notice retries the continue in 15
   assert.equal(job?.retries, 1);
 });
 
-test("Antigravity continues at the notice's reset when its quota cannot be read", async () => {
-  const readSubscription = createSubscriptionReader({ run: async () => { throw new Error("agy unavailable"); } });
+test("Antigravity continues at the notice's reset without spawning agy", async () => {
+  let spawns = 0;
+  const readSubscription = createSubscriptionReader({ run: async () => { spawns++; throw new Error("must not spawn agy"); } });
   const { api, sent, resumer } = await setup({ g1: { provider: "antigravity" } }, { readSubscription });
   await resumer.onTurnEnded(turnEnded("g1", "antigravity", failed(ANTIGRAVITY_LIMIT)), api);
   const [job] = await store.list();
@@ -1826,6 +1826,7 @@ test("Antigravity continues at the notice's reset when its quota cannot be read"
   clock = new Date("2026-10-06T05:02:00.000Z");
   await resumer.tick();
   assert.deepEqual(sent, [{ agentId: "g1", text: CONTINUE_PROMPT }]);
+  assert.equal(spawns, 0);
 });
 
 test("startup scan schedules an Antigravity agent that hit its limit before the plugin ran", async () => {
@@ -1882,7 +1883,7 @@ test("an Antigravity reservation made before Paseo 0.17 split its model still co
     let agents: Map<string, Partial<PaseoAgent>> | undefined;
     const readSubscription: SubscriptionReader = async () => {
       agents!.set("g1", { provider: "antigravity-fast", ...latest });
-      return agyFallback();
+      return { auth: "subscription", status: "ready" };
     };
     const fake = await setup({ g1: { provider: "antigravity-fast", ...split } }, { readSubscription });
     agents = fake.agents;
@@ -1894,37 +1895,6 @@ test("an Antigravity reservation made before Paseo 0.17 split its model still co
     assert.deepEqual(outcome, expected, name);
     assert.equal(fake.sent.length, expected.result === "sent" ? 1 : 0, name);
   }
-});
-
-test("exhausted quota read through an ACP launch command holds the tick and Resume now", async () => {
-  // The agy usage fixture with its Gemini weekly bucket used up.
-  const usage = JSON.parse(await readFile(new URL("./fixtures/agy-usage-synthetic.json", import.meta.url), "utf8"));
-  usage.command.data.groups[0].buckets[0].remaining_fraction = 0;
-  const weekly = "2026-11-01T15:15:44.000Z";
-  const calls: Array<[string, string[]]> = [];
-  const real = createSubscriptionReader({ run: async (binary, args) => {
-    calls.push([binary, args]);
-    return args[0] === "--version" ? "1.5.10" : JSON.stringify(usage);
-  } });
-  // The fake daemon's own config has no Antigravity command; this one is Paseo 0.17's documented override.
-  const readSubscription: SubscriptionReader = (_api, ...rest) => real(
-    { config: { get: async () => ({ config: { providers: { antigravity: { command: ["/opt/agy", "acp", "--disable-telemetry"] } } } }) } } as unknown as Parameters<SubscriptionReader>[0],
-    ...rest,
-  );
-  const split = { model: "gemini-4-carbon", runtimeInfo: { provider: "antigravity", sessionId: "s1", model: "gemini-4-carbon", thinkingOptionId: "high" } } as Partial<PaseoAgent>;
-  // A real agent always has a working directory; the probe resolves the launch path against it.
-  const { api, sent, resumer } = await setup({ g1: { provider: "antigravity", cwd: "/repo", ...split } }, { readSubscription });
-  await resumer.onTurnEnded(turnEnded("g1", "antigravity", { kind: "completed" }, [
-    { type: "user_message", text: "Work on the task." }, { type: "assistant_message", text: ACP_LIMIT },
-  ]), api);
-  const [job] = await store.list();
-  assert.deepEqual(await resumer.resumeNow(api, "g1", { id: job!.id, dueAt: job!.dueAt }), { result: "used_up", until: weekly });
-  clock = new Date(job!.dueAt);
-  await resumer.tick();
-  assert.equal(sent.length, 0);
-  assert.equal((await store.list())[0]?.dueAt, "2026-11-01T15:17:44.000Z");
-  // An absolute path is resolved as Paseo spawns it, which adds the drive on Windows.
-  assert.ok(calls.length > 0 && calls.every(([binary, args]) => binary === resolve("/opt/agy") && !args.includes("acp")));
 });
 
 test("an Antigravity provider can be turned off while another built on it resumes", async () => {
@@ -2891,7 +2861,7 @@ test("Resume now that loses to a tick reports the continue as sending, or change
   }
 });
 
-test("Resume now sends an Antigravity continue before the notice's reset when quota is unavailable", async () => {
+test("Resume now sends an Antigravity continue before the notice's reset", async () => {
   const usage = [{
     providerId: "antigravity", displayName: `Antigravity (${ANTIGRAVITY_EMAIL})`,
     windows: [{ id: "gemini-5h", label: "Session", usedPct: 100, resetsAt: "2026-10-06T09:00:00.000Z" }],
@@ -2904,40 +2874,6 @@ test("Resume now sends an Antigravity continue before the notice's reset when qu
   assert.deepEqual(await resumer.resumeNow(api, "g1", await pinOf(store, "g1", job!.dueAt)), { result: "sent" });
   assert.equal(sent.length, 1);
   assert.equal(usageReads(), 0);
-});
-
-test("Antigravity probes only without a stated reset, then holds tick and Resume now for the weekly bucket", async () => {
-  let probes = 0;
-  const weekly = "2026-10-09T03:00:00.000Z";
-  const usage = { status: "SUCCESS", num_turns: 0, command: { name: "usage", data: { groups: [{ buckets: [
-    { id: "gemini-5h", remaining_fraction: 0.5, reset_time: "2026-10-06T05:00:00Z" },
-    { id: "gemini-weekly", remaining_fraction: 0, reset_time: weekly },
-  ] }] } } };
-  const readSubscription: SubscriptionReader = async (_api, _agent, _source, _at, _launch, mode) => {
-    if (mode === "identity") return agyFallback();
-    probes++;
-    return agyUsage(usage, "gemini-3.8-flash-high");
-  };
-  const { api, sent, resumer } = await setup({ g1: { provider: "antigravity" }, g2: { provider: "antigravity" } }, { readSubscription });
-  await resumer.onTurnEnded(turnEnded("g1", "antigravity", failed(ANTIGRAVITY_LIMIT)), api);
-  assert.equal(probes, 0, "stated reset schedules without a usage probe");
-  const original = (await store.list()).find((job) => job.agentId === "g1")!;
-  assert.deepEqual(await resumer.resumeNow(api, "g1", { id: original.id, dueAt: original.dueAt }), { result: "used_up", until: weekly });
-  assert.deepEqual((await store.list()).find((job) => job.agentId === "g1"), original, "blocked Resume now does not change the reservation");
-  clock = new Date(original.dueAt);
-  await resumer.tick();
-  assert.equal(sent.length, 0);
-  assert.equal((await store.list()).find((job) => job.agentId === "g1")?.dueAt, "2026-10-09T03:02:00.000Z");
-  await resumer.onTurnEnded(turnEnded("g2", "antigravity", failed("Individual quota reached.")), api);
-  assert.equal((await store.list()).find((job) => job.agentId === "g2")?.dueAt, "2026-10-09T03:02:00.000Z");
-  clock = new Date("2026-10-09T03:02:00Z");
-  await resumer.tick();
-  assert.equal(sent.length, 0, "a stale reset does not establish recovery");
-  assert.equal((await store.list()).find((job) => job.agentId === "g1")?.dueAt, "2026-10-09T03:17:00.000Z");
-  usage.command.data.groups[0]!.buckets[1]!.remaining_fraction = 0.5;
-  clock = new Date("2026-10-09T03:17:00Z");
-  await resumer.tick();
-  assert.equal(sent.length, 2, "both agents resume once their applicable windows recover");
 });
 
 test("a limit hit again after Resume now is reserved like one after an automatic continue", async () => {

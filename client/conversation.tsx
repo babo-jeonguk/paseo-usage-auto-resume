@@ -1,5 +1,5 @@
 import { useRpc, type PluginButtonContentProps } from "@getpaseo/plugin/client";
-import { Icon, useToast } from "@getpaseo/plugin/client/react-native";
+import { Icon, useToast } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
