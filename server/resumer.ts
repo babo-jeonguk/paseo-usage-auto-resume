@@ -1,5 +1,5 @@
 import type { AgentTimelineItem, PaseoAgent, PaseoApi } from "./paseo-types";
-import type { PluginLifecycleEvents, PluginSessionOpenRequest } from "@getpaseo/plugin/server";
+import type { PluginHookEvents, PluginSessionOpenRequest } from "@getpaseo/plugin/server";
 import { randomUUID } from "node:crypto";
 import { ACCOUNT_CHANGED, agentGate, API_ROUTE, canceled, turnAction, turnEventOf, type Cancellation, type Gate, type Outcome, type TurnEvent } from "./decisions";
 import { claimed, isSameJob, noted, pinned, postponed, replan, replanOverload, rescheduled, sent, switched, type Pin, type Plan } from "./reservation";
@@ -26,7 +26,7 @@ const SCAN_WINDOW_MS = 12 * 3_600_000;
 const TAIL_TIMELINE_ITEMS = 20;
 
 export type ResumerApi = Pick<PaseoApi, "agents" | "config" | "providers" | "workspaces">;
-type TurnEnded = PluginLifecycleEvents["agent.turn_ended"];
+type TurnEnded = PluginHookEvents["agent.turn.after"];
 
 function log(message: string): void {
   console.log(`[usage-auto-resume] ${message}`);

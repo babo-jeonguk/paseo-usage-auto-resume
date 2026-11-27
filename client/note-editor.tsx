@@ -1,5 +1,5 @@
 import { useRpc, type PluginSurfaceProps } from "@getpaseo/plugin/client";
-import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
+import { TextInput, useToast } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { NOTE_MAX_CHARS } from "../shared/prompt";

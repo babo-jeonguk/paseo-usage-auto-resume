@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
-import type { PluginLifecycleEvents } from "@getpaseo/plugin/server";
+import type { PluginHookEvents } from "@getpaseo/plugin/server";
 import type { PaseoAgent } from "./paseo-types";
 import { CONTINUE_PROMPT, createResumer, type ResumerApi } from "./resumer";
 import { createJobStore } from "./store";
@@ -159,7 +159,7 @@ async function harness(t: TestContext, source: UsageSource, plan: string) {
   const store = createJobStore(storePath);
   const makeResumer = () => createResumer({ store: createJobStore(storePath), now: () => clock, readSubscription: read });
   const resumer = makeResumer();
-  const event: PluginLifecycleEvents["agent.turn_ended"] = {
+  const event: PluginHookEvents["agent.turn.after"] = {
     agent: { id: agent.id, provider, workspaceId: null, parentAgentId: null, cwd: dir, title: null, metadata: {}, background: false },
     turnId: "fixture-turn", outcome: { kind: "failed", error: { message: source === "antigravity"
       ? "Individual quota reached. Resets in 120h." : "Usage limit reached" } },
