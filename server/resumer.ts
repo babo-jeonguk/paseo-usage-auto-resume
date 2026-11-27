@@ -71,6 +71,7 @@ function planFor(check: SubscriptionCheck, at: Date): Plan {
 
 const providerOff = (provider: string) => canceled("provider_off", `automatic resume is turned off for ${provider}`);
 const backgroundOff = () => canceled("background_off", "automatic resume is turned off for background agents");
+const subagentCanceled = () => canceled("subagent", "subagents are managed by their parent agent");
 
 /** The tick's attempt at a due job, or Resume now's on the user's request. */
 type DeliverMode = "auto" | "manual";
@@ -191,9 +192,11 @@ export function createResumer(options: {
       const { outcome } = event;
       // A subagent is the parent's to resume, so its turn end is not inspected: with no row, or a
       // claim left sending, nothing is read or planned. A legacy row is still settled below.
-      if (isSubagent(event.agent)) {
-        const row = (await store.list()).find((job) => job.agentId === event.agent.id);
-        if (!row || row.state === "sending") return;
+      const subagent = isSubagent(event.agent);
+      let seenRow: ResumeJob | null = null;
+      if (subagent) {
+        seenRow = (await store.list()).find((job) => job.agentId === event.agent.id) ?? null;
+        if (!seenRow || seenRow.state === "sending") return;
       }
       const observedAt = now();
       let stop = null;
@@ -205,7 +208,8 @@ export function createResumer(options: {
         if (!stop) overloaded = await isOverloadStop(api, event, timeline);
       }
       const kind = turnEventOf(outcome.kind, !!stop, overloaded);
-      await onTurn(api, event.agent.id, kind, stop || overloaded ? { resetAt: stop?.resetAt ?? null, observedAt } : undefined);
+      await onTurn(api, event.agent.id, kind, stop || overloaded ? { resetAt: stop?.resetAt ?? null, observedAt } : undefined,
+        subagent ? { subagent, seenRow } : undefined);
     } catch (error) {
       // A daemon stopping mid-turn decides nothing here; the same turn may be seen after a restart.
       if (isConnectionClosed(error)) return log("turn end stopped: the daemon connection closed");
@@ -243,8 +247,16 @@ export function createResumer(options: {
    * cancel or a clear acts on the reservation the event read, by its id, wherever it has moved
    * meanwhile; a stop at a limit is planned by `replan` inside its own write.
    */
-  async function onTurn(api: ResumerApi, agentId: string, event: TurnEvent, stop?: { resetAt: Date | null; observedAt: Date }): Promise<void> {
-    const row = (await store.list()).find((job) => job.agentId === agentId) ?? null;
+  async function onTurn(
+    api: ResumerApi,
+    agentId: string,
+    event: TurnEvent,
+    stop?: { resetAt: Date | null; observedAt: Date },
+    options?: { subagent: boolean; seenRow: ResumeJob | null },
+  ): Promise<void> {
+    // A legacy subagent's turn end acts on the row it saw before reading the timeline, so a
+    // replacement stored meanwhile is not taken for it.
+    const row = options ? options.seenRow : (await store.list()).find((job) => job.agentId === agentId) ?? null;
     // An agent that cannot be read only loses the message check; a finished turn still clears. A
     // closed connection says nothing about the agent, so the turn event stops instead.
     const agent = row?.state === "pending" || event === "limit" || event === "overload"
@@ -260,7 +272,8 @@ export function createResumer(options: {
     // A continue already sent was reported when it went, so it is cleared quietly.
     if (action.clearSent) await store.update(agentId, (current) => (stillSeen(current, "sent") ? null : undefined));
     // A subagent is planned by its parent: a legacy row above is settled, but nothing new is made.
-    if (agent && isSubagent(agent)) return;
+    // The hook knows this even when the refreshed snapshot omits the labels.
+    if (options?.subagent || (agent && isSubagent(agent))) return;
     if (!action.schedules || !agent || !stop) return;
     const settings = await readSettings();
     const source = settings && (await resumableSource(api, agent.provider, settings));
@@ -500,7 +513,7 @@ export function createResumer(options: {
     const title = agent && titleOf(agent);
     // A subagent is the parent's to resume: a reservation made before this check ends here, ahead
     // of the background switch and every other check, like an agent that is gone.
-    if (agent && isSubagent(agent)) return cancel({ ...canceled("subagent", "subagents are managed by their parent agent"), title });
+    if (agent && isSubagent(agent)) return cancel({ ...subagentCanceled(), title });
     // Step 2 precedes the agent's state: the stored flag decides on its own, even when the agent
     // is gone, and a row written before the switch existed reads the agent when it still exists.
     if (!settings.resumeBackground && (job.background === true || (agent && (await isBackground(api, agent))))) {
@@ -601,6 +614,19 @@ export function createResumer(options: {
       const providerTurnedOff = !isProviderOn(job.provider, settings);
       const backgroundTurnedOff = !settings.resumeBackground && job.background === true;
       if (!providerTurnedOff && !backgroundTurnedOff) continue;
+      // A turned-off provider keeps its precedence: it cancels without reading the agent. Only a
+      // background switch loaded from a row decides the reason, so the live agent is read then.
+      if (!providerTurnedOff && backgroundTurnedOff && paseo) {
+        const agent = await loadAgent(paseo, job.agentId).catch((error) => {
+          if (isConnectionClosed(error)) throw error;
+          return null;
+        });
+        if (agent && isSubagent(agent)) {
+          await retire(job.agentId, (current) => current.state === "pending" && current.id === job.id,
+            { ...subagentCanceled(), title: titleOf(agent) });
+          continue;
+        }
+      }
       const outcome = providerTurnedOff ? providerOff(job.provider) : backgroundOff();
       // The row stored when the write happens decides, so a reservation turned on again meanwhile stays.
       await retire(job.agentId, (current) => current.state === "pending" && (providerTurnedOff
