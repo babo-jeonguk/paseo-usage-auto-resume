@@ -172,7 +172,8 @@ export async function androidDevice(ctx, fixture, args) {
 
   const screenshotPng = timeout => adb(['exec-out', 'screencap', '-p'], { encoding: 'buffer', timeout });
   const shot = async name => writeFile(join(out, name + '.png'), await screenshotPng());
-  const launch = () => shell('monkey', '-p', PACKAGE, '-c', 'android.intent.category.LAUNCHER', '1');
+  // Monkey can abort on an unrelated app's ANR before it injects the launch event.
+  const launch = () => shell('am', 'start', '-a', 'android.intent.action.MAIN', '-c', 'android.intent.category.LAUNCHER', '-p', PACKAGE);
   const avdName = async () => (await adb(['emu', 'avd', 'name'], { timeout: 3000 })).trim().split(/\r?\n/)[0];
 
   async function boot() {
