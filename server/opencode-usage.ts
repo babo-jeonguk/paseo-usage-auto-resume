@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -7,6 +8,8 @@ import { unknownCheck, type SubscriptionCheck } from "./subscription";
 
 const USAGE_TIMEOUT_MS = 15_000;
 const GO_USAGE_URL = "https://opencode.ai/zen/go/v1/usage";
+const CONSOLE_SERVER = "https://opencode.ai/console";
+const CONSOLE_CREDENTIAL = "SELECT id, value FROM credential WHERE integration_id = 'opencode' ORDER BY active DESC, time_created DESC, id DESC LIMIT 1";
 const GO_CREDENTIAL = "SELECT id, value FROM credential WHERE integration_id = 'opencode-go' ORDER BY active DESC, time_created DESC, id DESC LIMIT 1";
 const GO_WINDOWS = ["rolling", "weekly", "monthly"] as const;
 const SESSION_HOST = "SELECT 1 FROM session_v2 WHERE id = ? LIMIT 1";
@@ -96,29 +99,50 @@ async function readDatabase<T>(env: NodeJS.ProcessEnv, query: (db: DatabaseSync)
   }
 }
 
-type Credential = { id: string; key: string } | { reason: "session_not_in_database" | "missing_credential" | "invalid_credential" };
 type Idle = { data: unknown } | { reason: "session_not_in_database" };
+type CredentialRow = { id: unknown; value: unknown };
+type GoSelection = { console?: CredentialRow; go?: CredentialRow };
+type GoCandidate = { key: string; identity: string };
 
 /** Whether this database is the runtime that hosts the agent, not another server's. */
 const hostsSession = (db: DatabaseSync, sessionId: string): boolean =>
   db.prepare(SESSION_HOST).get(sessionId) !== undefined;
 
-/** The Go credential OpenCode would select: active rows first, then the newest legacy import. */
-async function goCredential(env: NodeJS.ProcessEnv, sessionId: string): Promise<Credential | null> {
-  return await readDatabase(env, (db) => {
-    if (!hostsSession(db, sessionId)) return { reason: "session_not_in_database" as const };
-    const row = db.prepare(GO_CREDENTIAL).get();
-    if (!row) return { reason: "missing_credential" as const };
-    let value: Record<string, unknown> = {};
-    try { value = record(JSON.parse(String(row.value))); } catch { /* not JSON */ }
-    const id = string(row.id), key = string(value.key);
-    // Never fall back past OpenCode's selected row: anything but a key stays unverified.
-    return id && value.type === "key" && key ? { id, key } : { reason: "invalid_credential" as const };
+// Any returned row is present, even with a NULL or non-string value: auth.json must not replace it.
+const rowOf = (value: unknown): CredentialRow | undefined => {
+  if (!value || typeof value !== "object") return undefined;
+  const row = record(value);
+  return { id: row.id, value: row.value };
+};
+
+/** The selected Console and opencode-go rows, read only from the database that hosts the session. */
+async function selectCredentials(env: NodeJS.ProcessEnv, sessionId: string): Promise<GoSelection | { reason: "session_not_in_database" } | null> {
+  return await readDatabase<GoSelection | { reason: "session_not_in_database" }>(env, (db) => {
+    if (!hostsSession(db, sessionId)) return { reason: "session_not_in_database" };
+    return { console: rowOf(db.prepare(CONSOLE_CREDENTIAL).get()), go: rowOf(db.prepare(GO_CREDENTIAL).get()) };
   });
 }
 
+/** The Console URL OpenCode would use, with its retired origin mapped forward. */
+const consoleServer = (value: Record<string, unknown>): string => {
+  const server = string(record(value.metadata).server);
+  if (!server) return CONSOLE_SERVER;
+  return server.replace(/^https:\/\/console\.opencode\.ai(?=\/|$)/, CONSOLE_SERVER);
+};
+
+const parseValue = (raw: unknown): Record<string, unknown> => {
+  if (typeof raw !== "string") return {};
+  try { return record(JSON.parse(raw)); } catch { return {}; }
+};
+
+const keyHash = (key: string): string => createHash("sha256").update(key).digest("hex");
+const dbIdentity = (id: string, key: string, model: string): string =>
+  createHash("sha256").update(JSON.stringify(["opencode", "go", id, keyHash(key), model])).digest("hex");
+const fileIdentity = (key: string, model: string): string =>
+  createHash("sha256").update(JSON.stringify(["opencode", "go", "file", "auth.json", keyHash(key), model])).digest("hex");
+
 /** Why usage gave no evidence; each is logged as is, never with output, keys or rows. */
-type Unavailable = "missing_model" | "database_unavailable" | "session_not_in_database" | "missing_credential" | "invalid_credential" | "usage_unavailable" | "missing_session" | "no_free_limit_record";
+type Unavailable = "missing_model" | "database_unavailable" | "session_not_in_database" | "missing_credential" | "invalid_credential" | "oauth_credential" | "usage_unavailable" | "missing_session" | "no_free_limit_record";
 
 /** How Paseo reaches OpenCode for the agent: the environment that selects its data. */
 interface OpenCodeLaunch {
@@ -143,8 +167,8 @@ export function createOpenCodeUsageReader(deps: {
   const fetchApi = deps.fetch ?? fetch;
   const log = deps.log ?? ((message: string) => console.warn(`[usage-auto-resume] ${message}`));
 
-  /** The Go usage answer, or null when the call failed or was not JSON. */
-  async function goBody(key: string): Promise<unknown | null> {
+  /** The Go usage answer with its outcome, or null when the call itself failed. */
+  async function goAnswer(key: string): Promise<{ ok: boolean; status: number; body?: unknown } | null> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), USAGE_TIMEOUT_MS);
     try {
@@ -153,10 +177,27 @@ export function createOpenCodeUsageReader(deps: {
         redirect: "error",
         signal: controller.signal,
       });
-      return response.ok ? await response.json() : null;
+      if (!response.ok) return { ok: false, status: response.status };
+      try {
+        return { ok: true, status: response.status, body: await response.json() };
+      } catch {
+        // A successful response whose body is not JSON still confirms the credential; it just has no windows.
+        return { ok: true, status: response.status };
+      }
     } catch {
       return null;
     } finally { clearTimeout(timer); }
+  }
+
+  /** The opencode-go key saved by `opencode auth login`, read only as a last resort. */
+  async function readAuthKey(env: NodeJS.ProcessEnv): Promise<string | undefined> {
+    try {
+      const auth = record(JSON.parse(await readFile(join(openCodeDataDir(env), "auth.json"), "utf8")));
+      const entry = record(auth["opencode-go"]), key = string(entry.key);
+      return entry.type === "api" ? key : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   return async (launch: OpenCodeLaunch, agent: OpenCodeAgent, at: Date, mode: "identity" | "usage"): Promise<SubscriptionCheck> => {
@@ -193,16 +234,61 @@ export function createOpenCodeUsageReader(deps: {
       return check;
     }
 
-    const credential = await goCredential(launch.env, sessionId);
-    if (!credential) return unavailable("database_unavailable");
-    if ("reason" in credential) return unavailable(credential.reason);
-    // The key is hashed separately so identity changes when OpenCode replaces it, without keeping
-    // the key itself in any result or log.
-    const keyHash = createHash("sha256").update(credential.key).digest("hex");
-    const identity = createHash("sha256").update(JSON.stringify(["opencode", "go", credential.id, keyHash, model])).digest("hex");
-    if (mode === "identity") return { auth: "subscription", status: "unknown", identity };
-    const check = goUsage(await goBody(credential.key), identity);
-    if (check.status === "unknown") reason("usage_unavailable");
-    return check;
+    const selection = await selectCredentials(launch.env, sessionId);
+    if (!selection) return unavailable("database_unavailable");
+    if ("reason" in selection) return unavailable(selection.reason);
+
+    // The Console credential is OpenCode's first choice; a different Console server is not ours.
+    // Selecting one that cannot serve Go stops here rather than falling back to another account.
+    const first: GoCandidate[] = [];
+    if (selection.console) {
+      const value = parseValue(selection.console.value);
+      if (consoleServer(value) === CONSOLE_SERVER) {
+        const id = string(selection.console.id), key = string(value.key);
+        if (value.type === "oauth") return unavailable("oauth_credential");
+        if (value.type !== "key" || !id || !key) return unavailable("invalid_credential");
+        first.push({ key, identity: dbIdentity(id, key, model) });
+      }
+    }
+
+    // A present opencode-go row is authoritative: auth.json is only read when the table has none.
+    const second: GoCandidate[] = [];
+    if (selection.go) {
+      const value = parseValue(selection.go.value), id = string(selection.go.id), key = string(value.key);
+      if (consoleServer(value) === CONSOLE_SERVER && value.type === "key" && id && key) {
+        second.push({ key, identity: dbIdentity(id, key, model) });
+      }
+    } else {
+      const key = await readAuthKey(launch.env);
+      if (key) second.push({ key, identity: fileIdentity(key, model) });
+    }
+
+    const [primary, fallback] = [...first, ...second];
+    if (!primary) return unavailable(selection.go ? "invalid_credential" : "missing_credential");
+    // Two possible keys bind only on the one a confirmed usage check used.
+    if (mode === "identity") {
+      return fallback ? { auth: "subscription", status: "unknown" } : { auth: "subscription", status: "unknown", identity: primary.identity };
+    }
+    const answer = await goAnswer(primary.key);
+    if (!fallback) {
+      const check = answer?.ok ? goUsage(answer.body, primary.identity) : goUsage(null, primary.identity);
+      if (check.status === "unknown") reason("usage_unavailable");
+      return check;
+    }
+    // A successful answer is the Console key's, whatever its body says; only a rejected key falls back.
+    if (answer?.ok) {
+      const check = goUsage(answer.body, primary.identity);
+      if (check.status === "unknown") reason("usage_unavailable");
+      return check;
+    }
+    if (answer && (answer.status === 401 || answer.status === 403)) {
+      const retry = await goAnswer(fallback.key);
+      const check = retry?.ok ? goUsage(retry.body, fallback.identity) : goUsage(null, fallback.identity);
+      if (check.status === "unknown") reason("usage_unavailable");
+      return check;
+    }
+    // A temporary failure says nothing about which key is bound.
+    reason("usage_unavailable");
+    return { auth: "subscription", status: "unknown" };
   };
 }

@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test, type TestContext } from "node:test";
-import type { PluginLifecycleEvents } from "@getpaseo/plugin/server";
+import type { PluginHookEvents } from "@getpaseo/plugin/server";
 import {
   createOpenCodeUsageReader, freeUsage, goUsage, openCodeDataDir, openCodeRoute,
 } from "./opencode-usage";
@@ -64,6 +64,9 @@ async function openCodeData(t: TestContext) {
   let rows = 0;
   return {
     xdg: root,
+    async authFile(content: unknown) {
+      await writeFile(join(dir, "auth.json"), typeof content === "string" ? content : JSON.stringify(content));
+    },
     /**
      * The OpenCode session this database hosts. `version` is what OpenCode recorded for it: the
      * creating runtime's, or a fork's parent's. It says nothing about the server writing it now.
@@ -76,7 +79,7 @@ async function openCodeData(t: TestContext) {
     },
     credential(id: string, integration: string, value: unknown, active: number | null, created: number) {
       db.prepare("INSERT INTO credential (id, integration_id, value, active, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(id, integration, JSON.stringify(value), active, created, created);
+        .run(id, integration, value === undefined ? null : JSON.stringify(value), active, created, created);
     },
     message(session: string, type: string, seq: number, data: unknown) {
       rows++;
@@ -231,7 +234,7 @@ test("reader: the Go credential is the one OpenCode selects: active first, then 
   const data = await openCodeData(t);
   data.session(SESSION);
   data.credential("cred_old", "opencode-go", { type: "key", key: "old-key" }, null, 100);
-  data.credential("cred_other", "opencode", { type: "key", key: "other-key" }, 1, 500);
+  data.credential("cred_other", "anthropic", { type: "key", key: "other-key" }, 1, 500);
   data.credential("cred_new", "opencode-go", { type: "key", key: GO_KEY }, null, 300);
   const f = fakes();
   const read = createOpenCodeUsageReader(f);
@@ -242,6 +245,225 @@ test("reader: the Go credential is the one OpenCode selects: active first, then 
   const active = await read(launchFor(data.xdg), agent, at, "usage");
   assert.equal(active.status, "ready");
   assert.notEqual(active.identity, newest.identity, "another selected credential is another identity");
+});
+
+test("reader: Go prefers the selected opencode Console key over opencode-go and auth.json when it serves Go", async (t) => {
+  const data = await openCodeData(t);
+  data.session(SESSION);
+  const consoleKey = "fixture-only-console-key";
+  data.credential("cred_console", "opencode", { type: "key", key: consoleKey }, 1, 200);
+  data.credential("cred_go", "opencode-go", { type: "key", key: GO_KEY }, 1, 100);
+  await data.authFile({ "opencode-go": { type: "api", key: "fixture-only-file-key" } });
+  const tokens: string[] = [];
+  const read = createOpenCodeUsageReader({
+    fetch: async (url, options) => {
+      assert.equal(String(url), GO_URL);
+      assert.equal(options?.redirect, "error");
+      tokens.push((options?.headers as Record<string, string>).Authorization ?? "");
+      return new Response(JSON.stringify(goBody()), { status: 200 });
+    },
+    log: () => {},
+  });
+  const check = await read(launchFor(data.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage");
+  assert.equal(check.status, "ready");
+  assert.ok(check.identity);
+  assert.deepEqual(tokens, [`Bearer ${consoleKey}`]);
+});
+
+test("reader: Go falls back from an opencode Console key to opencode-go only on 401 or 403, never on temporary failures", async (t) => {
+  const consoleKey = "fixture-only-console-key";
+  for (const rejectStatus of [401, 403] as const) {
+    const data = await openCodeData(t);
+    data.session(SESSION);
+    data.credential("cred_console", "opencode", { type: "key", key: consoleKey }, 1, 200);
+    data.credential("cred_go", "opencode-go", { type: "key", key: GO_KEY }, 1, 100);
+    const tokens: string[] = [];
+    const read = createOpenCodeUsageReader({
+      fetch: async (_url, options) => {
+        const auth = (options?.headers as Record<string, string>).Authorization ?? "";
+        tokens.push(auth);
+        if (auth === `Bearer ${consoleKey}`) return new Response("no go", { status: rejectStatus });
+        return new Response(JSON.stringify(goBody()), { status: 200 });
+      },
+      log: () => {},
+    });
+    const check = await read(launchFor(data.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage");
+    assert.equal(check.status, "ready", `status ${rejectStatus}`);
+    assert.ok(check.identity, `status ${rejectStatus}`);
+    assert.deepEqual(tokens, [`Bearer ${consoleKey}`, `Bearer ${GO_KEY}`], `status ${rejectStatus}`);
+  }
+
+  for (const failure of ["500", "network", "malformed"] as const) {
+    const data = await openCodeData(t);
+    data.session(SESSION);
+    data.credential("cred_console", "opencode", { type: "key", key: consoleKey }, 1, 200);
+    data.credential("cred_go", "opencode-go", { type: "key", key: GO_KEY }, 1, 100);
+    const tokens: string[] = [];
+    const read = createOpenCodeUsageReader({
+      fetch: async (_url, options) => {
+        tokens.push((options?.headers as Record<string, string>).Authorization ?? "");
+        if (failure === "network") throw new Error("network down");
+        if (failure === "500") return new Response("outage", { status: 500 });
+        return new Response(JSON.stringify({}), { status: 200 });
+      },
+      log: () => {},
+    });
+    const check = await read(launchFor(data.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage");
+    assert.equal(check.auth, "subscription", failure);
+    assert.equal(check.status, "unknown", failure);
+    assert.deepEqual(tokens, [`Bearer ${consoleKey}`], `must not fall back on ${failure}`);
+    if (failure === "malformed") assert.ok(check.identity, "200 OK binds the Console key identity even if the body is malformed");
+    else assert.equal(check.identity, undefined, "temporary failure before confirmation does not bind an unconfirmed key");
+  }
+});
+
+test("reader: an opencode Console OAuth login blocks fallback to opencode-go or auth.json", async (t) => {
+  for (const metadata of [
+    { orgID: "org_123" },
+    { server: "https://opencode.ai/console", orgID: "org_123" },
+    { server: "https://console.opencode.ai", orgID: "org_123" },
+  ]) {
+    const data = await openCodeData(t);
+    data.session(SESSION);
+    data.credential("cred_oauth", "opencode", { type: "oauth", access: "fixture-token", expires: 9_999_999_999_999, metadata }, 1, 200);
+    data.credential("cred_go", "opencode-go", { type: "key", key: GO_KEY }, 1, 100);
+    await data.authFile({ "opencode-go": { type: "api", key: "fixture-only-file-key" } });
+    const f = fakes();
+    const read = createOpenCodeUsageReader(f);
+    assert.deepEqual(await read(launchFor(data.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage"), { auth: "unknown", status: "unknown" });
+    assert.deepEqual(await read(launchFor(data.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "identity"), { auth: "unknown", status: "unknown" });
+    assert.equal(f.calls.fetches, 0);
+  }
+});
+
+test("reader: credentials for another Console server are ignored, while retired console.opencode.ai maps to opencode.ai", async (t) => {
+  const data = await openCodeData(t);
+  data.session(SESSION);
+  data.credential("cred_other_server", "opencode", { type: "key", key: "other-server-key", metadata: { server: "https://self-hosted.example/console" } }, 1, 300);
+  data.credential("cred_go", "opencode-go", { type: "key", key: GO_KEY, metadata: { server: "https://console.opencode.ai" } }, 1, 100);
+  const f = fakes();
+  const read = createOpenCodeUsageReader(f);
+  const check = await read(launchFor(data.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage");
+  assert.equal(check.status, "ready");
+  assert.equal(f.calls.fetches, 1);
+
+  const retiredSubpath = await openCodeData(t);
+  retiredSubpath.session(SESSION);
+  retiredSubpath.credential("cred_subpath", "opencode", { type: "key", key: "subpath-key", metadata: { server: "https://console.opencode.ai/other" } }, 1, 300);
+  retiredSubpath.credential("cred_go", "opencode-go", { type: "key", key: GO_KEY }, 1, 100);
+  const fSubpath = fakes();
+  const subpathCheck = await createOpenCodeUsageReader(fSubpath)(launchFor(retiredSubpath.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage");
+  assert.equal(subpathCheck.status, "ready", "console.opencode.ai with an extra path is not the default Console");
+  assert.equal(fSubpath.calls.fetches, 1);
+
+  const foreignGo = await openCodeData(t);
+  foreignGo.session(SESSION);
+  foreignGo.credential("cred_foreign_go", "opencode-go", { type: "key", key: "foreign-go-key", metadata: { server: "https://self-hosted.example/console" } }, 1, 100);
+  await foreignGo.authFile({ "opencode-go": { type: "api", key: GO_KEY } });
+  const f2 = fakes();
+  assert.deepEqual(await createOpenCodeUsageReader(f2)(launchFor(foreignGo.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage"), { auth: "unknown", status: "unknown" });
+  assert.equal(f2.calls.fetches, 0, "foreign opencode-go DB row is neither sent to opencode.ai nor bypassed to auth.json");
+  assert.ok(f2.calls.logs.some((line) => line.includes("invalid_credential")));
+});
+
+test("reader: auth.json opencode-go key is used only when the local DB hosts the session and has no opencode-go row", async (t) => {
+  const data = await openCodeData(t);
+  data.session(SESSION);
+  await data.authFile({ "opencode-go": { type: "api", key: GO_KEY } });
+  const f = fakes();
+  const read = createOpenCodeUsageReader(f);
+  const agent = { id: "a", model: GO_MODEL, sessionId: SESSION };
+  const bound = await read(launchFor(data.xdg), agent, at, "identity");
+  assert.equal(bound.auth, "subscription");
+  assert.equal(bound.status, "unknown");
+  assert.ok(bound.identity);
+  assert.equal(f.calls.fetches, 0);
+
+  const check = await read(launchFor(data.xdg), agent, at, "usage");
+  assert.equal(check.status, "ready");
+  assert.equal(check.identity, bound.identity);
+  assert.equal(f.calls.fetches, 1);
+  assert.doesNotMatch(JSON.stringify([bound, check, f.calls.logs]), new RegExp(GO_KEY));
+
+  // Rotating the key in auth.json changes identity.
+  await data.authFile({ "opencode-go": { type: "api", key: "fixture-only-rotated-file-key" } });
+  const rotated = await read(launchFor(data.xdg), agent, at, "identity");
+  assert.ok(rotated.identity);
+  assert.notEqual(rotated.identity, bound.identity);
+
+  // An opencode Console key that returns 403 falls back to auth.json when no DB opencode-go row exists.
+  const consoleKey = "fixture-only-console-key";
+  data.credential("cred_console", "opencode", { type: "key", key: consoleKey }, 1, 200);
+  await data.authFile({ "opencode-go": { type: "api", key: GO_KEY } });
+  const tokens: string[] = [];
+  const withFallback = createOpenCodeUsageReader({
+    fetch: async (_url, options) => {
+      const auth = (options?.headers as Record<string, string>).Authorization ?? "";
+      tokens.push(auth);
+      return auth === `Bearer ${consoleKey}`
+        ? new Response("no go", { status: 403 })
+        : new Response(JSON.stringify(goBody()), { status: 200 });
+    },
+    log: () => {},
+  });
+  const fellBack = await withFallback(launchFor(data.xdg), agent, at, "usage");
+  assert.equal(fellBack.status, "ready");
+  assert.equal(fellBack.identity, bound.identity);
+  assert.deepEqual(tokens, [`Bearer ${consoleKey}`, `Bearer ${GO_KEY}`]);
+
+  // Once a DB opencode-go row exists (valid, invalid, or NULL value), auth.json is never used.
+  const withInvalidGo = await openCodeData(t);
+  withInvalidGo.session(SESSION);
+  withInvalidGo.credential("cred_oauth_go", "opencode-go", { type: "oauth", access: "tok" }, 1, 100);
+  await withInvalidGo.authFile({ "opencode-go": { type: "api", key: GO_KEY } });
+  const fInvalid = fakes();
+  assert.deepEqual(await createOpenCodeUsageReader(fInvalid)(launchFor(withInvalidGo.xdg), agent, at, "usage"), { auth: "unknown", status: "unknown" });
+  assert.equal(fInvalid.calls.fetches, 0);
+  assert.ok(fInvalid.calls.logs.some((line) => line.includes("invalid_credential")));
+
+  const withNullGo = await openCodeData(t);
+  withNullGo.session(SESSION);
+  withNullGo.credential("cred_null_go", "opencode-go", undefined, 1, 100);
+  await withNullGo.authFile({ "opencode-go": { type: "api", key: GO_KEY } });
+  const fNull = fakes();
+  assert.deepEqual(await createOpenCodeUsageReader(fNull)(launchFor(withNullGo.xdg), agent, at, "usage"), { auth: "unknown", status: "unknown" });
+  assert.equal(fNull.calls.fetches, 0);
+  assert.ok(fNull.calls.logs.some((line) => line.includes("invalid_credential")));
+
+  // Without a matching session in the local DB, auth.json is never trusted.
+  const unhosted = await openCodeData(t);
+  await unhosted.authFile({ "opencode-go": { type: "api", key: GO_KEY } });
+  const fUnhosted = fakes();
+  assert.deepEqual(await createOpenCodeUsageReader(fUnhosted)(launchFor(unhosted.xdg), agent, at, "usage"), { auth: "unknown", status: "unknown" });
+  assert.equal(fUnhosted.calls.fetches, 0);
+});
+
+test("reader: identity mode defers binding when both opencode and fallback keys exist, avoiding false account_changed on 403 fallback", async (t) => {
+  const data = await openCodeData(t);
+  data.session(SESSION);
+  const consoleKey = "fixture-only-console-key";
+  data.credential("cred_console", "opencode", { type: "key", key: consoleKey }, 1, 200);
+  data.credential("cred_go", "opencode-go", { type: "key", key: GO_KEY }, 1, 100);
+  let fetches = 0;
+  const read = createOpenCodeUsageReader({
+    fetch: async (_url, options) => {
+      fetches++;
+      const auth = (options?.headers as Record<string, string>).Authorization ?? "";
+      return auth === `Bearer ${consoleKey}`
+        ? new Response("no go", { status: 403 })
+        : new Response(JSON.stringify(goBody()), { status: 200 });
+    },
+    log: () => {},
+  });
+  const agent = { id: "a", model: GO_MODEL, sessionId: SESSION };
+  const initial = await read(launchFor(data.xdg), agent, at, "identity");
+  assert.deepEqual(initial, { auth: "subscription", status: "unknown" });
+  assert.equal(fetches, 0);
+
+  const delivery = await read(launchFor(data.xdg), agent, at, "usage");
+  assert.equal(delivery.status, "ready");
+  assert.ok(delivery.identity);
+  assert.equal(fetches, 2);
 });
 
 test("reader: a selected Go credential that is not a key, or none, waits for verification", async (t) => {
@@ -429,7 +651,7 @@ async function scenario(t: TestContext, model: string, message: string, start: s
   const store = createJobStore(storePath);
   const resumer = createResumer({ store: createJobStore(storePath), now: () => clock, readSubscription: read });
   await resumer.attach(api);
-  const event: PluginLifecycleEvents["agent.turn_ended"] = {
+  const event: PluginHookEvents["agent.turn.after"] = {
     agent: { id: agent.id, provider: "opencode", workspaceId: null, parentAgentId: null, cwd: dir, title: null, metadata: {}, background: false },
     turnId: "turn", outcome: { kind: "failed", error: { message } },
   };
