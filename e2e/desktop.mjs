@@ -51,7 +51,7 @@ await nativeRun('desktop', args, async ctx => {
   const display = inherited(['DISPLAY', 'XAUTHORITY', 'WAYLAND_DISPLAY', 'XDG_RUNTIME_DIR']);
   const environment = {
     ...fixture.environment, ...display,
-    CODEX_HOME: join(fixture.profile, '.codex'),
+    ...(isWin ? { CODEX_HOME: join(fixture.profile, '.codex') } : {}),
     PASEO_ELECTRON_USER_DATA_DIR: join(root, 'electron'),
     PASEO_ELECTRON_FLAGS: `--proxy-server=${appProxy.url} --proxy-bypass-list=localhost;127.0.0.1;[::1] --lang=en-US`,
   };
