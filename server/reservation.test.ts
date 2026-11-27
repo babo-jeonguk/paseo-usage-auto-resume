@@ -1,7 +1,7 @@
 import { replanOverload } from "./reservation";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isSameJob, noted, pinned, postponed, replan, rescheduled, sent, switched, type Plan, type Stop } from "./reservation";
+import { isSameJob, noted, pinned, postponed, replan, rescheduled, sent, switched, verified, type Plan, type Stop } from "./reservation";
 import type { ResumeJob } from "./store";
 
 // The row transitions behind the table in docs/behavior.md.
@@ -125,6 +125,16 @@ test("a postponement makes the time the plan's again, and a renewal starts the r
 test("a sent continue keeps its id and drops what the user set for it", () => {
   const done = sent(job({ state: "sending", note: "x", userChosenTime: true }));
   assert.deepEqual([done.id, done.state, done.note, done.userChosenTime], ["r1", "sent", undefined, undefined]);
+});
+
+test("verification metadata on a held check binds an unset identity and updates launch without touching schedule fields", () => {
+  const base = job({ enabled: false, note: "keep", userChosenTime: true, waiting: "usage", retries: 2 });
+  const launch = { env: { XDG_DATA_HOME: "/tmp/oc" } };
+  const bound = verified(base, { identity: "account-a", launch });
+  assert.ok(bound);
+  assert.deepEqual(bound, { ...base, identity: "account-a", launch });
+  assert.equal(verified(bound, { identity: "account-b" }), undefined, "an already bound identity is kept and causes no write");
+  assert.equal(verified(base, {}), undefined, "empty verification metadata causes no write");
 });
 
 test("capacity stages keep pending jobs, advance only after sending, and share the total bound", () => {

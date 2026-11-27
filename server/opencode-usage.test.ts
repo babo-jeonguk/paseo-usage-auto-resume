@@ -367,34 +367,34 @@ test("reader: an opencode Console OAuth login on the default Console blocks fall
   assert.equal(check.status, "ready", "OAuth for another Console server does not block an eligible opencode-go key");
   assert.equal(fOther.calls.fetches, 1);
 
-  for (const blankKey of ["   ", "\t\n", "bad\r\nkey"] as const) {
+  for (const invalidKey of ["   ", "\t\n", "bad\r\nkey", "foo bar", " sk-trimmed ", "foo\tbar", "foo\x00bar", "sk-한글"] as const) {
     const blankConsole = await openCodeData(t);
     blankConsole.session(SESSION);
-    blankConsole.credential("cred_blank", "opencode", { type: "key", key: blankKey }, 1, 200);
+    blankConsole.credential("cred_blank", "opencode", { type: "key", key: invalidKey }, 1, 200);
     blankConsole.credential("cred_go", "opencode-go", { type: "key", key: GO_KEY }, 1, 100);
     await blankConsole.authFile({ "opencode-go": { type: "api", key: GO_KEY } });
     const fBlank = fakes();
     const blankReader = createOpenCodeUsageReader(fBlank);
-    assert.deepEqual(await blankReader(launchFor(blankConsole.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage"), { auth: "unknown", status: "unknown" }, JSON.stringify(blankKey));
-    assert.deepEqual(await blankReader(launchFor(blankConsole.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "identity"), { auth: "unknown", status: "unknown" }, JSON.stringify(blankKey));
-    assert.equal(fBlank.calls.fetches, 0, `blank/malformed Console key (${JSON.stringify(blankKey)}) must block fallback without sending a request`);
-    assert.ok(fBlank.calls.logs.some((line) => line.includes("invalid_credential")), JSON.stringify(blankKey));
+    assert.deepEqual(await blankReader(launchFor(blankConsole.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage"), { auth: "unknown", status: "unknown" }, JSON.stringify(invalidKey));
+    assert.deepEqual(await blankReader(launchFor(blankConsole.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "identity"), { auth: "unknown", status: "unknown" }, JSON.stringify(invalidKey));
+    assert.equal(fBlank.calls.fetches, 0, `invalid Bearer Console key (${JSON.stringify(invalidKey)}) must block fallback without sending a request`);
+    assert.ok(fBlank.calls.logs.some((line) => line.includes("invalid_credential")), JSON.stringify(invalidKey));
 
     const blankGo = await openCodeData(t);
     blankGo.session(SESSION);
-    blankGo.credential("cred_blank_go", "opencode-go", { type: "key", key: blankKey }, 1, 100);
+    blankGo.credential("cred_blank_go", "opencode-go", { type: "key", key: invalidKey }, 1, 100);
     await blankGo.authFile({ "opencode-go": { type: "api", key: GO_KEY } });
     const fBlankGo = fakes();
-    assert.deepEqual(await createOpenCodeUsageReader(fBlankGo)(launchFor(blankGo.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage"), { auth: "unknown", status: "unknown" }, JSON.stringify(blankKey));
-    assert.equal(fBlankGo.calls.fetches, 0, `blank/malformed Go DB key (${JSON.stringify(blankKey)}) must neither fetch nor bypass to auth.json`);
-    assert.ok(fBlankGo.calls.logs.some((line) => line.includes("invalid_credential")), JSON.stringify(blankKey));
+    assert.deepEqual(await createOpenCodeUsageReader(fBlankGo)(launchFor(blankGo.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage"), { auth: "unknown", status: "unknown" }, JSON.stringify(invalidKey));
+    assert.equal(fBlankGo.calls.fetches, 0, `invalid Bearer Go DB key (${JSON.stringify(invalidKey)}) must neither fetch nor bypass to auth.json`);
+    assert.ok(fBlankGo.calls.logs.some((line) => line.includes("invalid_credential")), JSON.stringify(invalidKey));
 
     const blankFile = await openCodeData(t);
     blankFile.session(SESSION);
-    await blankFile.authFile({ "opencode-go": { type: "api", key: blankKey } });
+    await blankFile.authFile({ "opencode-go": { type: "api", key: invalidKey } });
     const fBlankFile = fakes();
-    assert.deepEqual(await createOpenCodeUsageReader(fBlankFile)(launchFor(blankFile.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage"), { auth: "unknown", status: "unknown" }, JSON.stringify(blankKey));
-    assert.equal(fBlankFile.calls.fetches, 0, `blank/malformed auth.json key (${JSON.stringify(blankKey)}) must not fetch`);
+    assert.deepEqual(await createOpenCodeUsageReader(fBlankFile)(launchFor(blankFile.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage"), { auth: "unknown", status: "unknown" }, JSON.stringify(invalidKey));
+    assert.equal(fBlankFile.calls.fetches, 0, `invalid Bearer auth.json key (${JSON.stringify(invalidKey)}) must not fetch`);
   }
 });
 
@@ -885,4 +885,50 @@ test("OpenCode Go synthetic: a blocked Resume now binds the first confirmed iden
   await s.resumer.tick();
   assert.deepEqual(s.sent, [], "must not send under the fallback key after Console was bound");
   assert.deepEqual(await s.store.list(), [], "reservation canceled as account_changed");
+});
+
+test("OpenCode Go synthetic: a failed Console usage check never binds an unconfirmed identity even if the fallback is transiently absent", async (t) => {
+  const consoleKey = "fixture-only-console-key";
+  let consoleStatus = 503;
+  const s = await scenario(
+    t,
+    GO_MODEL,
+    "Usage limit reached. Resets at 5:00 PM UTC.",
+    "2026-11-02T13:00:00.000Z",
+    async (_url, options) => {
+      const auth = (options?.headers as Record<string, string>).Authorization ?? "";
+      if (auth === `Bearer ${consoleKey}`) {
+        return new Response("no go", { status: consoleStatus });
+      }
+      return new Response(JSON.stringify(goBody()), { status: 200 });
+    },
+  );
+  s.data.credential("cred_console", "opencode", { type: "key", key: consoleKey }, 1, 200);
+  s.data.credential("cred_go", "opencode-go", { type: "key", key: GO_KEY }, 1, 100);
+
+  // Starts unbound because both keys exist in identity mode.
+  await s.resumer.onTurnEnded(s.event, s.api);
+  const [planned] = await s.store.list();
+  assert.ok(planned);
+  assert.equal(planned.identity, undefined);
+
+  // Go row becomes transiently unusable while Console returns 503 during a check.
+  s.data.rekey("cred_go", { type: "oauth", access: "temporary-non-key" });
+  const manual = await s.resumer.resumeNow(s.api, planned.agentId, { id: planned.id, dueAt: planned.dueAt });
+  assert.deepEqual(manual, { result: "unverified", waiting: "usage" });
+  const [afterManual] = await s.store.list();
+  assert.equal(afterManual?.identity, undefined, "Console 503 must not bind an unconfirmed identity on Resume now");
+
+  s.setTime(planned.dueAt);
+  await s.resumer.tick();
+  const [afterTick] = await s.store.list();
+  assert.ok(afterTick);
+  assert.equal(afterTick.identity, undefined, "Console 503 must not bind an unconfirmed identity on tick postponement");
+
+  // Once the Go row is valid again, Console 403 + Go 200 confirms Go and continues instead of canceling as account_changed.
+  s.data.rekey("cred_go", { type: "key", key: GO_KEY });
+  consoleStatus = 403;
+  s.setTime(afterTick.dueAt);
+  await s.resumer.tick();
+  assert.equal(s.sent.length, 1, "first confirmed usage check under fallback continues cleanly");
 });
