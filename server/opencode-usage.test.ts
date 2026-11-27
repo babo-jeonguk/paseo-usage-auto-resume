@@ -424,7 +424,18 @@ test("reader: credentials for another Console server are skipped, malformed meta
 
   // Malformed Console metadata (or empty/non-URL metadata.server) is invalid, not another Console server:
   // it must block fallback on Console rows (both key and OAuth) and never send any key to opencode.ai.
-  const malformedMetadata: unknown[] = [[], "corrupt", { server: "" }, { server: "   " }, { server: "not-a-url" }, { server: null }, { server: 123 }];
+  const malformedMetadata: unknown[] = [
+    [],
+    "corrupt",
+    { server: "" },
+    { server: "   " },
+    { server: "not-a-url" },
+    { server: null },
+    { server: 123 },
+    { server: "https://opencode.ai/console#section" },
+    { server: "https://opencode.ai/console?extra=1" },
+    { server: "https://user@opencode.ai/console" },
+  ];
   for (const metadata of malformedMetadata) {
     for (const consoleValue of [
       { type: "key", key: "console-key", metadata },
