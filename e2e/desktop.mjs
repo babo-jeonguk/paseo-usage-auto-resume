@@ -62,6 +62,7 @@ await nativeRun('desktop', args, async ctx => {
   report.runtime = JSON.parse(runtimeProbe.stdout);
   assert(report.runtime.electron && report.runtime.node, 'Expected Electron bundled runtime');
 
+  const launcher = isWin ? join(root, 'desktop-job.exe') : executable;
   let app, browser, page, launch = 0;
   const closeBrowser = () => withDeadline(() => browser?.close(), 'Electron CDP disconnect', 10_000);
   const daemonInstance = () => readJson(join(fixture.home, 'paseo.pid'));
@@ -75,11 +76,9 @@ await nativeRun('desktop', args, async ctx => {
     const port = await freePort();
     const appLog = join(root, `electron-${++launch}.log`);
     artifacts[`electron-${launch}.log`] = appLog;
-    const command = isWin ? 'powershell.exe' : executable;
-    const flags = isWin ? ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'RemoteSigned', '-File',
-      fileURLToPath(new URL('./desktop-job.ps1', import.meta.url)), '-Executable', executable, '-Port', String(port)]
+    const flags = isWin ? [executable, String(port)]
       : ['--no-sandbox', `--remote-debugging-port=${port}`];
-    app = spawnLogged(command, flags, { env: environment, cwd: root, log: appLog });
+    app = spawnLogged(launcher, flags, { env: environment, cwd: root, log: appLog });
     browser = await waitFor(async () => {
       assert(running(app), 'Electron exited during startup');
       return chromium.connectOverCDP(`http://127.0.0.1:${port}`, { timeout: 2000 }).catch(() => null);
@@ -209,6 +208,11 @@ await nativeRun('desktop', args, async ctx => {
   const { waitJob } = fixture;
 
   await check('Electron owns the version-matched daemon and loads the installed plugin', async () => {
+    if (isWin) {
+      await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'RemoteSigned', '-File',
+        fileURLToPath(new URL('./desktop-job-build.ps1', import.meta.url)), '-Output', launcher],
+      { env: environment, cwd: root, timeout: 180_000, windowsHide: true });
+    }
     await startApp();
     report.daemon = await assertManaged();
     report.installStartedAt = Date.now();

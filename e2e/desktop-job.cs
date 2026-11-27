@@ -1,8 +1,3 @@
-param([Parameter(Mandatory=$true)][string]$Executable, [Parameter(Mandatory=$true)][int]$Port)
-$ErrorActionPreference = 'Stop'
-
-# The launcher joins the job before it starts Electron. The kernel owns every descendant.
-Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -51,8 +46,15 @@ public static class DesktopJob
     [DllImport("kernel32.dll")]
     private static extern bool CloseHandle(IntPtr handle);
 
-    public static void Run(string executable, int port)
+    public static int Main(string[] args)
     {
+        ushort port;
+        if (args.Length != 2 || !ushort.TryParse(args[1], out port) || port == 0) {
+            Console.Error.WriteLine("Usage: desktop-job.exe <Paseo.exe> <debugging port>");
+            return 2;
+        }
+
+        // Join the job before starting Electron so the kernel owns every descendant.
         IntPtr job = CreateJobObject(IntPtr.Zero, IntPtr.Zero);
         if (job == IntPtr.Zero) throw new Win32Exception();
         var limits = new ExtendedLimits();
@@ -65,7 +67,7 @@ public static class DesktopJob
         }
 
         // The OS closes our noninheritable job handle on exit, including forced termination.
-        using (Process app = Process.Start(new ProcessStartInfo(executable,
+        using (Process app = Process.Start(new ProcessStartInfo(args[0],
             "--no-sandbox --remote-debugging-port=" + port) { UseShellExecute = false })) {
             if (app == null) throw new InvalidOperationException("Could not start Paseo");
             Console.WriteLine("Started Paseo " + app.Id + " in the Desktop E2E job");
@@ -75,10 +77,7 @@ public static class DesktopJob
                     throw new Win32Exception();
                 if (accounting.ActiveProcesses > 1) Thread.Sleep(200);
             } while (accounting.ActiveProcesses > 1); // Only this launcher remains.
-            if (app.ExitCode != 0) throw new InvalidOperationException("Paseo exited with " + app.ExitCode);
+            return app.ExitCode;
         }
     }
 }
-'@
-
-[DesktopJob]::Run($Executable, $Port)
