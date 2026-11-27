@@ -315,9 +315,32 @@ test("reader: Go falls back from an opencode Console key to opencode-go only on 
     if (failure === "malformed") assert.ok(check.identity, "200 OK binds the Console key identity even if the body is malformed");
     else assert.equal(check.identity, undefined, "temporary failure before confirmation does not bind an unconfirmed key");
   }
+
+  for (const fallbackFailure of ["503", "401", "network"] as const) {
+    const data = await openCodeData(t);
+    data.session(SESSION);
+    data.credential("cred_console", "opencode", { type: "key", key: consoleKey }, 1, 200);
+    data.credential("cred_go", "opencode-go", { type: "key", key: GO_KEY }, 1, 100);
+    const tokens: string[] = [];
+    const logs: string[] = [];
+    const read = createOpenCodeUsageReader({
+      fetch: async (_url, options) => {
+        const auth = (options?.headers as Record<string, string>).Authorization ?? "";
+        tokens.push(auth);
+        if (auth === `Bearer ${consoleKey}`) return new Response("no go", { status: 403 });
+        if (fallbackFailure === "network") throw new Error("fallback timeout");
+        return new Response("down", { status: Number(fallbackFailure) });
+      },
+      log: (line) => { logs.push(line); },
+    });
+    const check = await read(launchFor(data.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage");
+    assert.deepEqual(check, { auth: "subscription", status: "unknown" }, `failed fallback (${fallbackFailure}) must not return an unconfirmed identity`);
+    assert.deepEqual(tokens, [`Bearer ${consoleKey}`, `Bearer ${GO_KEY}`], fallbackFailure);
+    assert.ok(logs.some((line) => line.includes("usage_unavailable")), fallbackFailure);
+  }
 });
 
-test("reader: an opencode Console OAuth login blocks fallback to opencode-go or auth.json", async (t) => {
+test("reader: an opencode Console OAuth login on the default Console blocks fallback, while another Console's OAuth row is skipped", async (t) => {
   for (const metadata of [
     { orgID: "org_123" },
     { server: "https://opencode.ai/console", orgID: "org_123" },
@@ -334,9 +357,18 @@ test("reader: an opencode Console OAuth login blocks fallback to opencode-go or 
     assert.deepEqual(await read(launchFor(data.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "identity"), { auth: "unknown", status: "unknown" });
     assert.equal(f.calls.fetches, 0);
   }
+
+  const otherOauth = await openCodeData(t);
+  otherOauth.session(SESSION);
+  otherOauth.credential("cred_other_oauth", "opencode", { type: "oauth", access: "fixture-token", expires: 9_999_999_999_999, metadata: { server: "https://self-hosted.example/console" } }, 1, 200);
+  otherOauth.credential("cred_go", "opencode-go", { type: "key", key: GO_KEY }, 1, 100);
+  const fOther = fakes();
+  const check = await createOpenCodeUsageReader(fOther)(launchFor(otherOauth.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage");
+  assert.equal(check.status, "ready", "OAuth for another Console server does not block an eligible opencode-go key");
+  assert.equal(fOther.calls.fetches, 1);
 });
 
-test("reader: credentials for another Console server are ignored, while retired console.opencode.ai maps to opencode.ai", async (t) => {
+test("reader: credentials for another Console server or empty/invalid metadata.server are rejected, while retired console.opencode.ai maps to opencode.ai", async (t) => {
   const data = await openCodeData(t);
   data.session(SESSION);
   data.credential("cred_other_server", "opencode", { type: "key", key: "other-server-key", metadata: { server: "https://self-hosted.example/console" } }, 1, 300);
@@ -347,23 +379,45 @@ test("reader: credentials for another Console server are ignored, while retired 
   assert.equal(check.status, "ready");
   assert.equal(f.calls.fetches, 1);
 
-  const retiredSubpath = await openCodeData(t);
-  retiredSubpath.session(SESSION);
-  retiredSubpath.credential("cred_subpath", "opencode", { type: "key", key: "subpath-key", metadata: { server: "https://console.opencode.ai/other" } }, 1, 300);
-  retiredSubpath.credential("cred_go", "opencode-go", { type: "key", key: GO_KEY }, 1, 100);
-  const fSubpath = fakes();
-  const subpathCheck = await createOpenCodeUsageReader(fSubpath)(launchFor(retiredSubpath.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage");
-  assert.equal(subpathCheck.status, "ready", "console.opencode.ai with an extra path is not the default Console");
-  assert.equal(fSubpath.calls.fetches, 1);
+  for (const invalidServer of ["https://console.opencode.ai/other", "", null, 123] as const) {
+    const nonDefaultConsole = await openCodeData(t);
+    nonDefaultConsole.session(SESSION);
+    nonDefaultConsole.credential("cred_non_default", "opencode", { type: "key", key: "non-default-key", metadata: { server: invalidServer } }, 1, 300);
+    nonDefaultConsole.credential("cred_go", "opencode-go", { type: "key", key: GO_KEY }, 1, 100);
+    const fConsole = fakes();
+    const consoleCheck = await createOpenCodeUsageReader(fConsole)(launchFor(nonDefaultConsole.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage");
+    assert.equal(consoleCheck.status, "ready", `non-default Console server (${JSON.stringify(invalidServer)}) is skipped, not sent to opencode.ai`);
+    assert.equal(fConsole.calls.fetches, 1);
 
-  const foreignGo = await openCodeData(t);
-  foreignGo.session(SESSION);
-  foreignGo.credential("cred_foreign_go", "opencode-go", { type: "key", key: "foreign-go-key", metadata: { server: "https://self-hosted.example/console" } }, 1, 100);
-  await foreignGo.authFile({ "opencode-go": { type: "api", key: GO_KEY } });
-  const f2 = fakes();
-  assert.deepEqual(await createOpenCodeUsageReader(f2)(launchFor(foreignGo.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage"), { auth: "unknown", status: "unknown" });
-  assert.equal(f2.calls.fetches, 0, "foreign opencode-go DB row is neither sent to opencode.ai nor bypassed to auth.json");
-  assert.ok(f2.calls.logs.some((line) => line.includes("invalid_credential")));
+    const nonDefaultGo = await openCodeData(t);
+    nonDefaultGo.session(SESSION);
+    nonDefaultGo.credential("cred_foreign_go", "opencode-go", { type: "key", key: "foreign-go-key", metadata: { server: invalidServer } }, 1, 100);
+    await nonDefaultGo.authFile({ "opencode-go": { type: "api", key: GO_KEY } });
+    const fGo = fakes();
+    assert.deepEqual(await createOpenCodeUsageReader(fGo)(launchFor(nonDefaultGo.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage"), { auth: "unknown", status: "unknown" }, JSON.stringify(invalidServer));
+    assert.equal(fGo.calls.fetches, 0, `non-default opencode-go DB row (${JSON.stringify(invalidServer)}) is neither sent to opencode.ai nor bypassed to auth.json`);
+    assert.ok(fGo.calls.logs.some((line) => line.includes("invalid_credential")), JSON.stringify(invalidServer));
+  }
+
+  // auth.json entries must also validate metadata.server and map retired console.opencode.ai.
+  for (const rejectedServer of ["https://self-hosted.example/console", "https://console.opencode.ai/other", "", null, 123] as const) {
+    const foreignFile = await openCodeData(t);
+    foreignFile.session(SESSION);
+    await foreignFile.authFile({ "opencode-go": { type: "api", key: "foreign-file-key", metadata: { server: rejectedServer } } });
+    const fFile = fakes();
+    assert.deepEqual(await createOpenCodeUsageReader(fFile)(launchFor(foreignFile.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage"), { auth: "unknown", status: "unknown" }, JSON.stringify(rejectedServer));
+    assert.equal(fFile.calls.fetches, 0, `auth.json key with server ${JSON.stringify(rejectedServer)} must never be sent to opencode.ai`);
+  }
+
+  for (const acceptedServer of ["https://opencode.ai/console", "https://console.opencode.ai"] as const) {
+    const validFile = await openCodeData(t);
+    validFile.session(SESSION);
+    await validFile.authFile({ "opencode-go": { type: "api", key: GO_KEY, metadata: { server: acceptedServer } } });
+    const fValidFile = fakes();
+    const fileCheck = await createOpenCodeUsageReader(fValidFile)(launchFor(validFile.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage");
+    assert.equal(fileCheck.status, "ready", acceptedServer);
+    assert.equal(fValidFile.calls.fetches, 1, acceptedServer);
+  }
 });
 
 test("reader: auth.json opencode-go key is used only when the local DB hosts the session and has no opencode-go row", async (t) => {
@@ -694,4 +748,110 @@ test("OpenCode synthetic: a balance-billed Zen model is excluded like an API rou
     error: { type: "provider.budget-limit", message: "Workspace usage limit reached. Model use is paused until the limit resets.", status: 429 } });
   await s.resumer.onTurnEnded(s.event, s.api);
   assert.deepEqual(await s.store.list(), []);
+});
+
+test("OpenCode Go synthetic: a failed fallback after Console 403 neither binds an unconfirmed identity nor cancels a Console-bound reservation", async (t) => {
+  const consoleKey = "fixture-only-console-key";
+  let consoleStatus = 403;
+  let goStatus = 503;
+  const data = await openCodeData(t);
+  data.session(SESSION);
+  data.credential("cred_console", "opencode", { type: "key", key: consoleKey }, 1, 200);
+  data.credential("cred_go", "opencode-go", { type: "key", key: GO_KEY }, 1, 100);
+  const dir = await mkdtemp(join(tmpdir(), "opencode-fallback-scenario-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const start = "2026-11-02T13:00:00.000Z";
+  let clock = new Date(start);
+  const sent: string[] = [];
+  const agent = {
+    id: "oc-fallback", provider: "opencode", cwd: dir, model: GO_MODEL, status: "idle", updatedAt: start, lastUserMessageAt: start,
+    activeTurn: null, pendingPermissions: [], attentionReason: null, archivedAt: null,
+    runtimeInfo: { provider: "opencode", sessionId: SESSION, model: GO_MODEL },
+  } as unknown as PaseoAgent;
+  const api = {
+    workspaces: { ref: () => ({ refresh: async () => null }) },
+    config: { get: async () => ({ config: { providers: { opencode: { env: { XDG_DATA_HOME: data.xdg } } } } }) },
+    agents: {
+      list: async () => ({ entries: [], pageInfo: { hasMore: false } }),
+      ref: () => ({
+        refresh: async () => ({ agent, project: null }),
+        send: async (text: string) => { sent.push(text); },
+        timeline: { refetch: async () => ({ error: null, entries: [
+          { item: { type: "user_message", text: "Do the task" }, seqStart: 0 },
+          { item: { type: "assistant_message", text: `[System Error] ${GO_MESSAGE}` }, seqStart: 1 },
+        ] }) },
+      }),
+    },
+  } as unknown as ResumerApi;
+  const read = createSubscriptionReader({
+    fetch: (async (_url: string, options?: RequestInit) => {
+      const auth = (options?.headers as Record<string, string>).Authorization ?? "";
+      if (auth === `Bearer ${consoleKey}`) {
+        return consoleStatus === 200 ? new Response(JSON.stringify(goBody()), { status: 200 }) : new Response("no go", { status: consoleStatus });
+      }
+      return goStatus === 200 ? new Response(JSON.stringify(goBody()), { status: 200 }) : new Response("down", { status: goStatus });
+    }) as typeof fetch,
+  });
+  const storePath = join(dir, "jobs.json");
+  const store = createJobStore(storePath);
+  const resumer = createResumer({ store: createJobStore(storePath), now: () => clock, readSubscription: read });
+  await resumer.attach(api);
+  const event: PluginHookEvents["agent.turn.after"] = {
+    agent: { id: agent.id, provider: "opencode", workspaceId: null, parentAgentId: null, cwd: dir, title: null, metadata: {}, background: false },
+    turnId: "turn", outcome: { kind: "failed", error: { message: GO_MESSAGE } },
+  };
+
+  // Case 1: Unbound reservation -> Console 403 + fallback 503 postpones without binding fallback identity,
+  // so a later successful Console check continues instead of canceling as account_changed.
+  await resumer.onTurnEnded(event, api);
+  const [planned] = await store.list();
+  assert.ok(planned, "reservation scheduled for verification wait");
+  assert.equal(planned.identity, undefined, "unconfirmed fallback must not bind identity on initial stop");
+
+  clock = new Date(planned.dueAt);
+  await resumer.tick();
+  const [postponedJob] = await store.list();
+  assert.ok(postponedJob, "reservation stays pending after failed fallback");
+  assert.equal(postponedJob.identity, undefined, "failed fallback must not save identity during postponement");
+
+  consoleStatus = 200;
+  clock = new Date(postponedJob.dueAt);
+  await resumer.tick();
+  assert.equal(sent.length, 1, "subsequent Console success continues instead of canceling as account_changed");
+
+  // Case 2: Console-bound reservation -> Console 403 + fallback 503 postpones instead of canceling immediately.
+  let boundBody: unknown = goBody(goWindow("rate-limited", 100, "2026-11-02T17:00:00Z"));
+  const read2 = createSubscriptionReader({
+    fetch: (async (_url: string, options?: RequestInit) => {
+      const auth = (options?.headers as Record<string, string>).Authorization ?? "";
+      if (auth === `Bearer ${consoleKey}`) {
+        return consoleStatus === 200 ? new Response(JSON.stringify(boundBody), { status: 200 }) : new Response("no go", { status: consoleStatus });
+      }
+      return new Response("down", { status: 503 });
+    }) as typeof fetch,
+  });
+  const dir2 = await mkdtemp(join(tmpdir(), "opencode-bound-fallback-"));
+  t.after(() => rm(dir2, { recursive: true, force: true }));
+  const storePath2 = join(dir2, "jobs.json");
+  const store2 = createJobStore(storePath2);
+  const resumer2 = createResumer({ store: createJobStore(storePath2), now: () => clock, readSubscription: read2 });
+  await resumer2.attach(api);
+  clock = new Date(start);
+  consoleStatus = 200;
+  await resumer2.onTurnEnded(event, api);
+  const [bound] = await store2.list();
+  assert.ok(bound?.identity, "initial Console 200 binds Console identity");
+
+  consoleStatus = 403;
+  clock = new Date(bound.dueAt);
+  await resumer2.tick();
+  const [stillPending] = await store2.list();
+  assert.ok(stillPending, "Console-bound reservation must postpone, not cancel, when fallback fails");
+  assert.equal(stillPending.identity, bound.identity);
+  assert.equal(stillPending.state, "pending");
+  boundBody = goBody();
+  consoleStatus = 200;
+  clock = new Date(stillPending.dueAt);
+  await resumer2.tick();
+  assert.equal(sent.length, 2);
 });
