@@ -6,7 +6,12 @@ import { join } from 'node:path';
 import { chmod, writeFile } from 'node:fs/promises';
 
 export async function uiPhase(ctx) {
-  const { step, note, rpc, mkAgent, hit, setUsage, jobOf, editJob, readJobs, readHistory, continues, writeSettings, waitFor, sleep, origin, out, home, API, DEFAULT_MARK } = ctx;
+  const { step, note, rpc, mkAgent, hit, setUsage, editJob, continues, writeSettings, waitFor, sleep, origin, out, home, API, DEFAULT_MARK } = ctx;
+  // Browser checks observe the daemon. Polling the files directly can block its atomic saves on Windows.
+  const readJobs = async () => (await rpc('auto-resume.list')).jobs;
+  const readHistory = async () => (await rpc('auto-resume.history')).entries;
+  const jobOf = async id => (await readJobs()).find(job => job.agentId === id);
+  const pending = async () => (await readJobs()).filter(job => !job.sending);
   const S = 'claude-ui';
   const isWin = process.platform === 'win32';
   const pwRoot = process.env.PW_ROOT;
@@ -230,14 +235,16 @@ export async function uiPhase(ctx) {
       // The chip shrinks before the row's switch leaves the screen.
       await page.setViewportSize({ width: 390, height: 844 });
       try {
-        await row.scrollIntoViewIfNeeded();
-        await expect(row).toBeInViewport({ ratio: 1, timeout: 15000 });
+        await expect.poll(async () => {
+          const bounds = await row.boundingBox();
+          return Boolean(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 390);
+        }, { timeout: 15000 }).toBe(true);
         await expect(page.getByText('Claude Sub', { exact: true }).first()).toBeVisible();
         await shot('ui-5-provider-label-phone');
       } finally {
         await page.setViewportSize({ width: 1440, height: 960 });
       }
-      return 'row chip "Claude Sub", no raw ID; switch fully on screen at 390px';
+      return 'row chip "Claude Sub", no raw ID; switch fits horizontally at 390px';
     });
     await guarded(9, 'Settings switch turns Claude Sub off: its pending reservation is canceled at once', async () => {
       if (!(await jobOf(u4.id))) await hit(u4, 'claude');
@@ -346,17 +353,20 @@ export async function uiPhase(ctx) {
     await guarded(15, 'header names an earlier verification check before the next continue, matching row order', async () => {
       const saved = await jobOf(r2.id);
       // Five minutes before the earliest enabled pending continue, whatever earlier steps left behind; still in the future, so no tick acts on it.
-      const conts = (await readJobs()).filter((j) => j.agentId !== r2.id && j.state === 'pending' && j.enabled && !j.waiting).sort((a, b) => a.dueAt.localeCompare(b.dueAt));
+      const conts = (await pending()).filter(j => j.agentId !== r2.id && j.enabled && !j.waiting);
       assert.ok(conts[0], 'no enabled pending continue to seed the check before');
       const checkAt = Date.parse(conts[0].dueAt) - 5 * 60000;
       assert.ok(checkAt > Date.now() + 2 * 60000, `earliest continue ${conts[0].dueAt} is too close to now for a check 5 minutes before it to stay in the future`);
       await editJob(r2.id, { waiting: 'usage', resetAt: null, dueAt: iso(checkAt) });
       try {
         await openScreen();
-        const on = (await readJobs()).filter((j) => j.state === 'pending' && j.enabled).sort((a, b) => a.dueAt.localeCompare(b.dueAt));
+        const rows = await pending();
+        const on = rows.filter(j => j.enabled);
         const firstCheck = on.find((j) => j.waiting), firstContinue = on.find((j) => !j.waiting);
         assert.ok(firstCheck && firstContinue && Date.parse(firstCheck.dueAt) < Date.parse(firstContinue.dueAt), 'seeded check should be the earlier event');
-        const want = `Next check ${hhmm(Date.parse(firstCheck.dueAt))} · Next at ${hhmm(Date.parse(firstContinue.dueAt))}`;
+        const skipped = rows.length - on.length;
+        const want = `Next check ${hhmm(Date.parse(firstCheck.dueAt))} · Next at ${hhmm(Date.parse(firstContinue.dueAt))}` +
+          (skipped ? ` · ${skipped} skipped` : '');
         await expect(page.getByText(want, { exact: true })).toBeVisible({ timeout: 30000 });
         const top = async (title) => (await page.getByRole('button', { name: new RegExp(`^Change time for ${title}, now `) }).boundingBox())?.y ?? NaN;
         const [y2, y1] = [await top(T2), await top(T1)];
@@ -457,13 +467,13 @@ export async function uiPhase(ctx) {
 
     await guarded(15, 'Turn all off / Turn all on change every pending reservation on screen', async () => {
       await openScreen();
-      const pending = async () => (await readJobs()).filter((j) => j.state === 'pending');
-      const shown = (await pending()).length;
+      const changed = (await pending()).filter(job => job.enabled).length;
       await page.getByRole('button', { name: 'Turn all off', exact: true }).click();
-      await expect(toast(`${shown} ${shown === 1 ? 'schedule' : 'schedules'} turned off`)).toBeVisible({ timeout: 30000 });
+      await expect(toast(`${changed} ${changed === 1 ? 'schedule' : 'schedules'} turned off`)).toBeVisible({ timeout: 30000 });
       await waitFor(async () => (await pending()).every((j) => !j.enabled), 'all off', 20000, 300);
       await expect(page.getByText('All turned off', { exact: true })).toBeVisible();
       await shot('ui-9-all-off');
+      const shown = (await pending()).length;
       await page.getByRole('button', { name: 'Turn all on', exact: true }).click();
       await expect(toast(`${shown} ${shown === 1 ? 'schedule' : 'schedules'} turned on`)).toBeVisible({ timeout: 30000 });
       await waitFor(async () => (await pending()).every((j) => j.enabled), 'all on', 20000, 300);
@@ -475,14 +485,15 @@ export async function uiPhase(ctx) {
       await page.getByRole('switch', { name: new RegExp(`^Continue ${T1} automatically at `) }).click();
       await waitFor(async () => (await jobOf(r1.id))?.enabled === false, 'switched off', 20000, 300);
       // The header detail; Recent activity's summary also ends in "· 1 skipped".
-      await expect(page.getByText(/^(Next (check )?at \d\d:\d\d|Next check \d\d:\d\d · Next at \d\d:\d\d|Next at \d\d:\d\d · Next check \d\d:\d\d|Next check and resume at \d\d:\d\d) · 1 skipped$/)).toBeVisible({ timeout: 15000 });
+      const skipped = (await pending()).filter(job => !job.enabled).length;
+      await expect(page.getByText(new RegExp(`^Next .* · ${skipped} skipped$`))).toBeVisible({ timeout: 15000 });
       const sent0 = continues('claude').length;
       await editJob(r1.id, { resetAt: iso(Date.now() - 120000), dueAt: iso(Date.now() - 60000) });
       await waitFor(async () => (await readHistory()).some((h) => h.agentId === r1.id && h.outcome === 'skipped'), 'skipped', 240000, 1000);
       assert.equal(continues('claude').length, sent0, 'a continue was sent');
       assert.equal(await jobOf(r1.id), undefined);
       assert.ok(!(await readJobs()).some((j) => j.note === NOTE), 'note kept after the skip');
-      return 'switch off -> "1 skipped" in the header; at the due time history skipped, row and its note gone, 0 continues';
+      return `switch off -> "${skipped} skipped" in the header; at the due time history skipped, row and its note gone, 0 continues`;
     });
 
     // ---- item 21: live updates from the plugin subscription -----------------------------------

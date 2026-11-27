@@ -46,7 +46,7 @@ node e2e/e2e.mjs --label linux-0.16.0 --cli /tmp/paseo-0.16.0/node_modules/@getp
 | `--source` | Plugin git source (default `git:babo-jeonguk/paseo-usage-auto-resume`); `file://<checkout>` installs an unpushed local branch with `--to <SHA>` |
 | `--min 1` | Skips items 9–11, 16, the newer sections (17–20) and the `--ui 1` phase |
 | `--ui 1` | Also runs `ui-steps.mjs` in the web app (items 4, 5, 6, 9, 12, 15 and 21) |
-| `--only` | Runs only the listed newer sections (`17`, `18`, `19`, `20`); items 1–16 always run |
+| `--only` | `core` runs the original CLI checks and any requested web phase. Use a comma-separated list of `17`, `18`, `19`, and `20` to select extended scenarios. The default runs all applicable checks. |
 | `--agy` | Path to the `agy` binary. The harness configures it as `[path]` on Paseo 0.16 and as `[path, "acp", "--disable-telemetry"]` on Paseo 0.17 and later, which starts Antigravity as an ACP server |
 | `--opencode` | Path to the `opencode` binary, for `--suites opencode` |
 | `--model` | OpenCode model the fake `opencode-go` provider serves (default `opencode-go/deepseek-v4.1-flash`) |
@@ -57,7 +57,7 @@ node e2e/e2e.mjs --label linux-0.16.0 --cli /tmp/paseo-0.16.0/node_modules/@getp
 
 On Windows, run `node.exe e2e\e2e.mjs …` with the same flags.
 
-CI installs the pinned Claude Code and Codex npm packages and runs those suites with the web phase. The manual simulation also covers Antigravity and OpenCode. Antigravity requires a separate `agy` installation, and the public `opencode-ai` npm package does not provide the version required by the free-limit scenario. The `simulation` jobs upload their reports, logs and any screenshots on success or failure.
+CI installs pinned Claude Code and Codex npm packages and runs the core suites and browser checks. The manual release simulation also runs the longer background and restart overlap scenarios, Antigravity and OpenCode. Antigravity requires a separate `agy` installation, and the public `opencode-ai` npm package does not provide the version required by the free-limit scenario. The `simulation` jobs upload their reports, logs and any screenshots on success or failure.
 
 Each run writes `results.json` (one row per checked item), `daemon.log` and `model.jsonl` (every fake request) to the results directory, then stops everything it started. `inspect-agent.mjs` prints an agent's latest timeline from a running daemon.
 
@@ -122,7 +122,7 @@ For Paseo 0.16 to 0.17, Codex needs CLI 0.121.0 or later to reopen a conversatio
 ## Known issues
 
 - **Background agents in the agent list.** `fetchAgents({ includeBackground: true })` may not return an agent-level background agent even though the plugin's own list and its scan see it; item 17d records what the connected client sees and is a NOTE, not a failure.
-- **Windows: an item that saves a reservation or history entry fails now and then.** The plugin saves `jobs.json` and `history.json` by renaming a temporary file over them. Windows refuses that rename while another process has the file open, and the harness reads both files throughout the run, so a save that lands on a read fails. On a Windows host this failed 1.8% of saves with a reader polling every second and 3.6% every 0.3 seconds (the UI phase's pace); no save failed out of 1000 without one. The failed save is lost, so the item waiting for it times out (seen in 8, the UI phase's 4, 9 and 15). The daemon log then holds an `EPERM: operation not permitted, rename '…jobs.json.….tmp' -> '…jobs.json'` (or `history.json`) line from the same moment; rerun the item. The plugin keeps a single rename because no other program normally reads these files. Item 14 does not catch a failure on an RPC path, which the daemon logs as `Error handling message` rather than as plugin output.
+- **Windows: an item that saves a reservation or history entry fails now and then.** The plugin saves `jobs.json` and `history.json` by renaming a temporary file over them. Windows refuses that rename while another process has the file open, and a concurrent file read can make that save fail. Browser checks read reservation and history state through daemon RPCs. The CLI persistence checks still inspect the files directly. On a Windows host this failed 1.8% of saves with a reader polling every second and 3.6% every 0.3 seconds (the old UI file-polling pace); no save failed out of 1000 without one. The failed save is lost, so the item waiting for it times out (seen in 8, the UI phase's 4, 9 and 15). The daemon log then holds an `EPERM: operation not permitted, rename '…jobs.json.….tmp' -> '…jobs.json'` (or `history.json`) line from the same moment; rerun the item. The plugin keeps a single rename because no other program normally reads these files. Item 14 does not catch a failure on an RPC path, which the daemon logs as `Error handling message` rather than as plugin output.
 
 ## Native apps
 

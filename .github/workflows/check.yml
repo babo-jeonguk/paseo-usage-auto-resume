@@ -69,7 +69,7 @@ jobs:
           node --no-maglev e2e/e2e.mjs --cli "$tools/node_modules/@getpaseo/cli" \
             --path "$tool_path" --root "$RUNNER_TEMP/uar-simulation" \
             --from v1.4.1 --to "$GITHUB_SHA" --source "$source_url" \
-            --suites claude,codex --ui 1 --out test-results/simulation \
+            --suites claude,codex --ui 1 --only core --out test-results/simulation \
             2>&1 | tee test-results/simulation/run.log
       - uses: actions/upload-artifact@v7
         if: always()

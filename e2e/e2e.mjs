@@ -5,12 +5,12 @@
 //
 // node e2e.mjs --label linux-0.16 --cli <@getpaseo/cli dir> --root <run dir> --suites claude,codex,antigravity,opencode \
 //   [--from <ref, default v1.2.2>] [--to <ref, default main>] [--source <git source>] [--out <results dir>] \
-//   [--min 1] [--ui 1] [--hold 1] [--only 17,18,19] [--upgrade-cli <newer @getpaseo/cli dir>] [--claude <bin>] [--codex <bin>] [--agy <bin>] \
+//   [--min 1] [--ui 1] [--hold 1] [--only core or 17,18,19] [--upgrade-cli <newer @getpaseo/cli dir>] [--claude <bin>] [--codex <bin>] [--agy <bin>] \
 //   [--opencode <bin>] [--model <opencode model>] [--path <extra PATH dirs>]
 // --ui 1 reads Playwright from PW_ROOT and the browser from CHROME, else Chromium on Linux and Edge on Windows (see ui-steps.mjs).
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, appendFileSync } from 'node:fs';
-import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -29,7 +29,7 @@ const label = args.label;
 const suites = args.suites.split(',');
 const MIN = args.min === '1';
 const UI = args.ui === '1';
-// Only the newer sections (17+) honour this; the existing items always run.
+// Select extended scenarios. "core" runs the original checks and any requested browser phase.
 const ONLY = args.only.split(',').map((s) => s.trim()).filter(Boolean);
 const wants = (id) => ONLY.length === 0 || ONLY.includes(String(id));
 const GIT_SOURCE = args.source;
@@ -343,8 +343,12 @@ const setResumeBackground = async (resumeBackground) => {
 };
 
 // The daemon stores one JSON record per agent; a restart reads these fields.
-const agentRecordFile = (id) => join(home, 'agents', work.replace(/^\//, '').replace(/\//g, '-'), id + '.json');
-const agentRecord = async (id) => JSON.parse(await readFile(agentRecordFile(id), 'utf8'));
+const agentRecord = async (id) => {
+  const entries = await readdir(join(home, 'agents'), { recursive: true, withFileTypes: true });
+  const record = entries.find(entry => entry.isFile() && entry.name === id + '.json');
+  assert(record, `No persisted agent record for ${id}`);
+  return JSON.parse(await readFile(join(record.parentPath, record.name), 'utf8'));
+};
 const writeDaemonConfig = async (patch) => {
   const file = join(home, 'config.json');
   const current = JSON.parse(await readFile(file, 'utf8'));
