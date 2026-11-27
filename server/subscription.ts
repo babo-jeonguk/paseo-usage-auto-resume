@@ -102,7 +102,6 @@ function applyLaunch(base: NodeJS.ProcessEnv, launch: LaunchContext | undefined,
 /** Uses native status and read-only endpoints; never requests model turns or token refresh. */
 export function createSubscriptionReader(deps: {
   run?: typeof runCli;
-  now?: () => number;
   codex?: (command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }) => Promise<CodexSnapshot>;
   fetch?: typeof fetch;
   readClaudeCredentials?: ClaudeCredentialReader;

@@ -18,7 +18,8 @@ const BALANCE_TYPES = new Set(["provider.budget-limit", "provider.model-budget-l
 
 const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-const string = (value: unknown): string | undefined => typeof value === "string" && value ? value : undefined;
+const string = (value: unknown): string | undefined =>
+  typeof value === "string" && value.trim().length > 0 && !/[\r\n]/.test(value) ? value : undefined;
 const number = (value: unknown): number | undefined => typeof value === "number" && Number.isFinite(value) ? value : undefined;
 
 /** A reset instant as normalized ISO, or null when the service's value is not a time. */
