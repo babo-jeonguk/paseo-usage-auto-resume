@@ -6,10 +6,9 @@ import { join } from 'node:path';
 import { chmod, writeFile } from 'node:fs/promises';
 
 export async function uiPhase(ctx) {
-  const { step, note, rpc, mkAgent, hit, setUsage, editJob, continues, writeSettings, waitFor, sleep, origin, out, home, API, DEFAULT_MARK } = ctx;
+  const { step, note, rpc, mkAgent, hit, setUsage, editJob, readHistory, continues, writeSettings, waitFor, sleep, origin, out, home, API, DEFAULT_MARK } = ctx;
   // Browser checks observe the daemon. Polling the files directly can block its atomic saves on Windows.
   const readJobs = async () => (await rpc('auto-resume.list')).jobs;
-  const readHistory = async () => (await rpc('auto-resume.history')).entries;
   const jobOf = async id => (await readJobs()).find(job => job.agentId === id);
   const pending = async () => (await readJobs()).filter(job => !job.sending);
   const S = 'claude-ui';

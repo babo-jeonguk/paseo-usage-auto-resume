@@ -74,7 +74,7 @@ const note = (item, suite, name, ev) => { results.push({ item, suite, ok: null, 
 
 // ---- data files ---------------------------------------------------------------------------
 const readJobs = async () => existsSync(jobsFile) ? JSON.parse(await readFile(jobsFile, 'utf8')).jobs : [];
-const readHistory = async () => existsSync(historyFile) ? JSON.parse(await readFile(historyFile, 'utf8')).entries : [];
+const readHistoryFile = async () => existsSync(historyFile) ? JSON.parse(await readFile(historyFile, 'utf8')).entries : [];
 const writeJobs = async (jobs) => { await mkdir(data, { recursive: true }); await replace(jobsFile, JSON.stringify({ version: 1, jobs }, null, 2)); };
 const jobOf = async (id) => (await readJobs()).find((j) => j.agentId === id);
 const editJob = async (id, patch) => writeJobs((await readJobs()).map((j) => j.agentId === id ? { ...j, ...patch } : j));
@@ -161,6 +161,8 @@ async function startDaemon() {
 }
 // ---- plugin helpers -----------------------------------------------------------------------
 const rpc = (method, input = {}) => client.invokePluginRpc(PLUGIN, method, input);
+// The daemon serializes history reads with writes. A live external read can block the rename on Windows.
+const readHistory = async () => (await rpc('auto-resume.history')).entries;
 const pluginDir = async () => pluginDirectory(await installedPlugin(paseo));
 const pluginRevision = async () => revisionOf(await installedPlugin(paseo));
 const patchInstalled = () => patchCopy({ paseo, client, patch: source => patchEntry(source, usageFile) });
@@ -453,7 +455,7 @@ try {
         await waitFor(async () => (await rpc('auto-resume.list')).jobs.some((j) => j.agentId === agent.id), `seeded job listed by ${OLD_REF}`, 60000);
       }
       const ago = (m) => iso(Date.now() - m * 60000);
-      const h = await readHistory();
+      const h = await readHistoryFile();
       await writeFile(historyFile, JSON.stringify({ version: 1, entries: [
         ...h, { id: 'e2e-h1', at: ago(90), agentId: legacyAgent.id, provider: 'claude', outcome: 'canceled', reason: 'new_message', title: 'Old canceled' },
         { id: 'e2e-h2', at: ago(30), agentId: 'gone-agent', provider: 'claude', outcome: 'continued', title: 'Old finished task' }] }, null, 2));
