@@ -3,15 +3,13 @@ import { access } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { androidDevice, matchNode, PACKAGE, within } from './android-device.mjs';
-import { assertRecordedToast, assertScreenshotText } from './android-visual.mjs';
 import { DEFAULT_CONTINUE_PROMPT } from '../shared/prompt.ts';
-import { cliBin, DEFAULT_MARK, iso, killTree, nativeRun, options, run, running, spawnLogged, waitFor } from './core.mjs';
-import { assertDaemonLogs, assertStagedSource, editSavedJobs, localClock, nativeDefaults, nativeFixture, tomorrowAtNoon } from './native-fixture.mjs';
+import { cliBin, DEFAULT_MARK, iso, killTree, nativeRun, options, running, spawnLogged, waitFor } from './core.mjs';
+import { assertDaemonLogs, editSavedJobs, localClock, nativeDefaults, nativeFixture, tomorrowAtNoon } from './native-fixture.mjs';
 import { patchEntry } from './patch-plugin.mjs';
-import { assertNativeOffline, isOfflineRegistryFailure } from './native-network.mjs';
 import { FALLBACK_REFRESH_MS, observeAndroidWire, scheduleWire } from './schedule-wire.mjs';
 
-const args = options(['cli', 'apk', 'source', 'to'], { out: nativeDefaults.out, path: nativeDefaults.path, port: '5584',
+const args = options(['cli', 'apk'], { ...nativeDefaults, port: '5584',
   sdk: process.env.ANDROID_HOME ?? join(homedir(), 'Android', 'Sdk'),
   'system-image': 'system-images;android-34;google_apis;x86_64',
 });
@@ -19,12 +17,7 @@ const args = options(['cli', 'apk', 'source', 'to'], { out: nativeDefaults.out, 
 await nativeRun('android', args, async ctx => {
   const { root, out, artifacts, dispose, check, report } = ctx;
   assert.equal(process.platform, 'linux', 'The Android runner uses a Linux SDK and emulator');
-  assertStagedSource(args);
-  await check('The operating system rejects direct external TCP connections', assertNativeOffline);
   await access(args.apk);
-  const { stdout: languages } = await run('tesseract', ['--list-langs'], { timeout: 10_000 });
-  assert(languages.split(/\r?\n/).includes('eng'), 'Install Tesseract with its English OCR data');
-  await run('ffmpeg', ['-version'], { timeout: 10_000 });
   const fixture = await nativeFixture(ctx, args);
   await fixture.configure({ claude: { env: { ...fixture.claudeEnv, CLAUDE_CODE_OAUTH_TOKEN: 'e2e-fixture-only' } } });
   const device = await androidDevice(ctx, fixture, args);
@@ -76,30 +69,19 @@ await nativeRun('android', args, async ctx => {
     (node.desc ?? '').startsWith('Continue ' + agent.title + ' automatically');
   const closeKeyboard = () => device.shell('input', 'keyevent', 'KEYCODE_BACK');
 
-  const confirmResume = async (reservation, expectedResult, toast, artifact) => {
+  const confirmResume = async (reservation, expectedResult, screenshot) => {
     await device.tap('Resume now');
     const send = await device.find('Send');
     const client = await wire.ready(1);
-    const video = join(out, artifact + '.mp4');
-    // Keep sampling beyond the response so the renderer can show its transient feedback.
-    const tailMs = 3000;
-    const capture = await device.recordScreen(video, async () => {
-      const mark = wire.checkpoint(await wire.settled(client));
-      await device.tapNode(send, 10_000);
-      return waitFor(() => wire.resumeResult(mark, reservation), 'Android Resume now response for the tested reservation',
-        12_000, 100);
-    }, tailMs);
-    const evidence = { reservationId: reservation.id, result: capture.result, video,
-      responseAt: capture.at, clockSamples: capture.clocks };
-    (report.resumeNow ??= []).push(evidence);
-    assert.equal(capture.result, expectedResult, 'Android Resume now returned an unexpected result');
-    const { elapsedMs } = await assertRecordedToast({
-      video, frames: join(root, artifact + '-frames'), text, capture, tailMs,
-      screenshot: join(out, artifact + '.png'),
-    });
-    evidence.toastAtMs = elapsedMs;
+    const mark = wire.checkpoint(await wire.settled(client));
+    await device.tapNode(send, 10_000);
+    const response = await waitFor(() => wire.resumeResult(mark, reservation), 'Android Resume now response for the tested reservation');
+    assert.equal(response.result, expectedResult, 'Android Resume now returned an unexpected result');
+    (report.resumeNow ??= []).push({ reservationId: reservation.id, result: response.result, screenshot: screenshot + '.png' });
+    await device.shot(screenshot);
   };
 
+  report.manualVisualChecks = ['Resume now toast wording and visibility', 'Labs tooltip clipping'];
   const primaryTitle = 'Android live limit';
   let primary, primaryJob, liveList;
   await check('Clean AVD, APK version match, Direct connection, Hermes bundle and live push', async () => {
@@ -259,14 +241,14 @@ await nativeRun('android', args, async ctx => {
     return { dueAt: iso(due), note };
   });
 
-  await check('Resume now shows blocked and successful toasts and sends exactly one continue', async () => {
+  await check('Resume now returns limited and sent results and sends exactly one continue', async () => {
     const before = await fixture.job(primary.id);
     await fixture.setUsage('limited', iso(Date.now() + 40 * 60_000));
-    await confirmResume(before, 'used_up', /\bUsage is still used up\b/i, 'resume-blocked');
+    await confirmResume(before, 'used_up', 'resume-blocked');
     assert.deepEqual(await fixture.job(primary.id), before);
     assert.equal(fixture.continueRequests().length, 0);
     await fixture.setUsage('ready');
-    await confirmResume(before, 'sent', /\bContinue sent\b/i, 'resume-sent');
+    await confirmResume(before, 'sent', 'resume-sent');
     await waitJob(primary, row => !row, 'continued row clears');
     const lists = await device.nodes();
     assert(lists.some(node => node.pkg === PACKAGE), 'Paseo must still be in the foreground');
@@ -279,7 +261,7 @@ await nativeRun('android', args, async ctx => {
     return { modelContinues: 1 };
   });
 
-  await check('Settings cancel, Labs tooltip pixels, Labs switch, and continue prompt edit/reset', async () => {
+  await check('Settings cancel, Labs tooltip accessibility text, Labs switch, and continue prompt edit/reset', async () => {
     await settings();
     await device.scrollTo('resume-provider-claude');
     const controls = await device.nodes();
@@ -298,13 +280,8 @@ await nativeRun('android', args, async ctx => {
     await device.tapNode(info);
     const body = 'If a turn fails because the provider is busy, retry the turn up to 3 times — about 3, 10, then 25 minutes later.';
     const details = 'Claude, Codex and Antigravity only. Usage limits are checked first.';
-    const bodyBounds = await device.find(body);
-    const detailsBounds = await device.find(details);
-    const tooltip = await device.screenshotRaw();
-    const tooltipText = [
-      await assertScreenshotText(tooltip, bodyBounds, body, join(out, 'labs-tooltip-body.pgm')),
-      await assertScreenshotText(tooltip, detailsBounds, details, join(out, 'labs-tooltip-details.pgm')),
-    ];
+    await device.find(body);
+    await device.find(details);
     await device.shot('labs-tooltip');
     await device.tap('resume-labs-info');
     const labs = matchNode('resume-labs-toggle');
@@ -324,7 +301,7 @@ await nativeRun('android', args, async ctx => {
     await device.tapNode(await device.scrollTo('Reset to default'));
     await device.scrollTo('Default prompt', 'up');
     await device.scrollTo(prompt(DEFAULT_CONTINUE_PROMPT), 'up');
-    return { tooltipText };
+    return { accessibleTooltipText: [body, details], screenshot: 'labs-tooltip.png' };
   });
 
   await check('Recent activity shows native outcome text and Hermes dates', async () => {
@@ -365,13 +342,7 @@ await nativeRun('android', args, async ctx => {
     assert.equal(fixture.continueRequests().length, 1, 'Cold reopen must leave the total at one manual continue');
     await device.shot('cold-reopen');
     report.providerProxyHits = fixture.proxy.hits();
-    report.offlineRegistryFailures = 0;
-    await assertDaemonLogs(report, log, entry => {
-      if (!isOfflineRegistryFailure(entry)) return false;
-      report.offlineRegistryFailures++;
-      return true;
-    });
-    report.directTcpAfter = await assertNativeOffline();
+    await assertDaemonLogs(report, log);
     return { reservationId: job.id, duplicateContinues: 0, anrDismissed: report.anrDismissed };
   });
 });

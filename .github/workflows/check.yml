@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -14,6 +15,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, windows-latest]
+        paseo: [0.16.2, 0.17.1]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -22,48 +24,51 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
+      - if: matrix.paseo != '0.17.1'
+        run: npm install --no-save --package-lock=false @getpaseo/client@${{ matrix.paseo }} @getpaseo/plugin@${{ matrix.paseo }} @getpaseo/protocol@${{ matrix.paseo }}
       - run: npm run check
 
-  # The account check against real installed CLIs, with fixture logins and in-process HTTP.
-  # Installs are deliberately unpinned except one Codex release, so a new CLI release that breaks
-  # the check fails here; a run can therefore differ from the last one.
-  native-cli:
-    name: native CLI / ${{ matrix.os }} / ${{ matrix.install }}
+  simulation:
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, windows-latest]
-        install: [claude-native, claude-npm, codex-npm, codex-npm-latest]
+        paseo: [0.16.2, 0.17.1]
     runs-on: ${{ matrix.os }}
-    env:
-      NATIVE_CLI: ${{ startsWith(matrix.install, 'claude') && 'claude' || 'codex' }}
-      # Recent Codex releases do not answer a fixture login, so they are only started.
-      NATIVE_CLI_HANDSHAKE_ONLY: ${{ matrix.install == 'codex-npm-latest' && '1' || '' }}
-      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
-      DISABLE_TELEMETRY: '1'
-      DISABLE_AUTOUPDATER: '1'
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
-          cache: npm
-      - run: npm ci
-      - name: Install Claude Code with the native installer (Windows)
-        if: matrix.install == 'claude-native' && runner.os == 'Windows'
-        shell: pwsh
+      - name: Prepare simulation tools
+        shell: bash
         run: |
-          irm https://claude.ai/install.ps1 | iex
-          "$env:USERPROFILE\.local\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-      - name: Install Claude Code with the native installer (Linux)
-        if: matrix.install == 'claude-native' && runner.os == 'Linux'
+          mkdir -p test-results/simulation
+          npm install --prefix "$RUNNER_TEMP/uar-tools" --no-audit --no-fund \
+            @getpaseo/cli@${{ matrix.paseo }} @anthropic-ai/claude-code@2.1.306 \
+            @openai/codex@0.152.1 playwright@1.65.0 \
+            2>&1 | tee test-results/simulation/setup.log
+      - name: Install Chromium
+        if: runner.os == 'Linux'
+        shell: bash
+        run: npx --prefix "$RUNNER_TEMP/uar-tools" playwright install --with-deps chromium 2>&1 | tee test-results/simulation/browser.log
+      - name: Run CLI and web simulation
+        shell: bash
         run: |
-          curl -fsSL https://claude.ai/install.sh | bash
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - if: matrix.install == 'claude-npm'
-        run: npm install -g @anthropic-ai/claude-code
-      - if: matrix.install == 'codex-npm'
-        run: npm install -g @openai/codex@0.152.1
-      - if: matrix.install == 'codex-npm-latest'
-        run: npm install -g @openai/codex
-      - run: npm run test:native
+          tools="$RUNNER_TEMP/uar-tools"
+          export PW_ROOT="$tools/node_modules"
+          source_url=$(node -p 'require("node:url").pathToFileURL(process.cwd()).href')
+          node --no-maglev e2e/e2e.mjs --cli "$tools/node_modules/@getpaseo/cli" \
+            --path "$tools/node_modules/.bin" --root "$RUNNER_TEMP/uar-simulation" \
+            --from v1.4.1 --to "$GITHUB_SHA" --source "$source_url" \
+            --suites claude,codex --ui 1 --out test-results/simulation \
+            2>&1 | tee test-results/simulation/run.log
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: simulation-${{ matrix.os }}-paseo-${{ matrix.paseo }}
+          path: test-results/simulation/
+          if-no-files-found: warn

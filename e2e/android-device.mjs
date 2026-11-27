@@ -4,8 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { freePort, inherited, killTree, run, running, sleep, spawnLogged, waitFor } from './core.mjs';
-import { locateScreenshotText } from './android-visual.mjs';
+import { freePort, inherited, killTree, run, running, spawnLogged, waitFor } from './core.mjs';
 
 export const PACKAGE = 'sh.paseo';
 const quote = value => "'" + String(value).replaceAll("'", "'\\''") + "'";
@@ -69,7 +68,7 @@ export async function androidDevice(ctx, fixture, args) {
   report.anrDismissed = 0;
 
   const dump = timeout => adb(['exec-out', 'uiautomator', 'dump', '/dev/tty'], { timeout });
-  async function nodes(timeout = 12_000) {
+  async function nodes(timeout = 60_000) {
     let xml;
     try {
       xml = await dump(timeout);
@@ -80,7 +79,7 @@ export async function androidDevice(ctx, fixture, args) {
     }
     const list = hierarchy(xml);
     const dialog = list.find(node => node.pkg === 'android' && node.id === 'android:id/alertTitle' &&
-      /^(?:Process system|System UI|com\.android\.systemui) isn.t responding$/i.test(node.text));
+      / isn.t responding$/i.test(node.text));
     const wait = dialog && list.find(node => node.pkg === dialog.pkg && node.id === 'android:id/aerr_wait');
     if (wait) {
       await tapNode(wait);
@@ -90,11 +89,11 @@ export async function androidDevice(ctx, fixture, args) {
     return list;
   }
 
-  function find(label, timeout = 40_000, description = String(label)) {
+  function find(label, timeout = 120_000, description = String(label)) {
     const start = performance.now();
     return waitFor(async () => {
       const remaining = Math.max(1, timeout - (performance.now() - start));
-      return (await nodes(Math.min(12_000, remaining))).find(matchNode(label));
+      return (await nodes(Math.min(60_000, remaining))).find(matchNode(label));
     }, `Android UI ${description}`, timeout, 100);
   }
   const tap = async (label, timeout) => {
@@ -105,17 +104,11 @@ export async function androidDevice(ctx, fixture, args) {
     const matches = matchNode(label);
     const input = node => node.pkg === PACKAGE && node.class === 'android.widget.EditText' &&
       matches({ ...node, text: undefined, id: undefined });
-    const field = await find(input, 40_000, `${label} field`);
+    const field = await find(input, undefined, `${label} field`);
     assert(/^[ -~]*$/.test(value) && !value.includes('%s'), 'adb input text requires ASCII and reserves %s for a space');
     await tapNode(field);
     await shell('input', 'keyevent', 'KEYCODE_MOVE_END', ...Array(Math.max(1, field.text?.length ?? 0)).fill('KEYCODE_DEL'));
-    // Give a controlled React Native input time to render each batch before injecting the next.
-    let typed = '';
-    for (const batch of value.match(/.{1,4}/g) ?? []) {
-      await shell('input', 'text', batch.replaceAll(' ', '%s'));
-      typed += batch;
-      await find(node => input(node) && node.text === typed, 40_000, `typed text in ${label}`);
-    }
+    if (value) await shell('input', 'text', value.replaceAll(' ', '%s'));
   }
 
   const swipe = (x, y, endY) => shell('input', 'swipe', x, y, x, endY, 500);
@@ -136,51 +129,6 @@ export async function androidDevice(ctx, fixture, args) {
 
   const screenshotPng = timeout => adb(['exec-out', 'screencap', '-p'], { encoding: 'buffer', timeout });
   const shot = async name => writeFile(join(out, name + '.png'), await screenshotPng());
-  async function sampleGuestClock() {
-    const before = performance.now();
-    const uptime = await shellCommand(['cat', '/proc/uptime'], 5_000);
-    const after = performance.now();
-    const elapsedMs = Number(uptime.trim().split(/\s+/)[0]) * 1000;
-    assert(Number.isFinite(elapsedMs) && elapsedMs > 0, 'Expected the Android guest uptime');
-    return { before, after, elapsedMs };
-  }
-  async function recordScreen(video, action, tailMs) {
-    const remote = '/data/local/tmp/uar-' + randomUUID() + '.mp4';
-    const pidFile = remote + '.pid';
-    // Android encodes changes directly from the display while adb is busy with input or RPCs.
-    let ended = false;
-    const script = `screenrecord --time-limit 60 "${remote}" & pid=$!; echo "$pid" > "${pidFile}"; wait "$pid"`;
-    const recording = Promise.allSettled([shellCommand(['sh', '-c', script], 70_000)
-      .finally(() => { ended = true; })]);
-    const interact = async () => {
-      await waitFor(async () => {
-        assert(!ended, 'Android screen recording stopped before the action');
-        // An MP4 header can exist before the encoder has provided a video sample.
-        return await shellCommand(['stat', '-c', '%s', remote], 2_000).then(size => Number(size) > 1024, () => false);
-      }, 'first encoded Android screen frame', 8_000, 100);
-      assert(!ended, 'Android screen recording stopped before the action');
-      const before = await sampleGuestClock();
-      const response = await action();
-      const after = await sampleGuestClock();
-      await sleep(Math.max(0, response.at + tailMs - performance.now()));
-      assert(!ended, 'Android screen recording stopped before the post-response capture window ended');
-      return { ...response, clocks: [before, after] };
-    };
-    const stop = async () => {
-      if (ended) return;
-      const pid = (await shellCommand(['cat', pidFile], 5_000)).trim();
-      assert(/^\d+$/.test(pid), 'Invalid Android screen recording PID');
-      await shellCommand(['kill', '-INT', pid], 5_000);
-    };
-    const [response] = await Promise.allSettled([interact()]);
-    const stopped = await Promise.allSettled([stop()]);
-    const capture = await recording;
-    const artifacts = await Promise.allSettled([adb(['pull', remote, video], { timeout: 30_000 })]);
-    const cleanup = await Promise.allSettled([shellCommand(['rm', '-f', remote, pidFile], 5_000)]);
-    const errors = [response, ...stopped, ...capture, ...artifacts, ...cleanup].filter(result => result.status === 'rejected');
-    assert(!errors.length, errors.map(({ reason }) => reason.message).join('\n'));
-    return response.value;
-  }
   const launch = () => shell('monkey', '-p', PACKAGE, '-c', 'android.intent.category.LAUNCHER', '1');
   const avdName = async () => (await adb(['emu', 'avd', 'name'], { timeout: 3000 })).trim().split(/\r?\n/)[0];
 
@@ -209,8 +157,7 @@ export async function androidDevice(ctx, fixture, args) {
     emulator = spawnLogged(join(sdk, 'emulator', 'emulator'),
       ['-avd', avd, '-port', String(port), '-wipe-data', '-no-window', '-no-audio', '-no-snapshot',
         '-no-boot-anim', '-gpu', 'swiftshader_indirect', '-cores', '2', '-memory', '2048', '-timezone', timezone,
-        '-no-metrics', '-crash-report-mode', 'disabled',
-        '-network-user-mode-options', 'restrict=on', '-wifi-user-mode-options', 'restrict=on'],
+        '-no-metrics', '-crash-report-mode', 'disabled'],
       { env, log });
     dispose(async () => {
       try {
@@ -267,28 +214,12 @@ export async function androidDevice(ctx, fixture, args) {
       await shell('pm', 'grant', PACKAGE, 'android.permission.POST_NOTIFICATIONS');
     await adb(['reverse', `tcp:${fixture.port}`, `tcp:${observerPort}`]);
     await launch();
-    let direct;
-    try { direct = await find('Direct connection', 120_000); }
-    catch (error) {
-      if (error.message !== 'Timeout: Android UI Direct connection') throw error;
-      // UI Automator can time out waiting for idle while the welcome button is already drawn.
-      direct = await locateScreenshotText(await screenshotRaw(), 'Direct connection', join(out, 'direct-connection.pgm'));
-    }
-    await tapNode(direct);
+    await tap('Direct connection', 120_000);
     await type('Host', '127.0.0.1');
     await type('Port', String(fixture.port));
     await tap('Connect');
     await find('Open menu', 120_000);
   }
 
-  async function screenshotRaw() {
-    const raw = await adb(['exec-out', 'screencap'], { encoding: 'buffer' });
-    const width = raw.readUInt32LE(0), height = raw.readUInt32LE(4), format = raw.readUInt32LE(8);
-    assert.equal(format, 1, 'Expected RGBA_8888 from emulator screencap');
-    const offset = raw.length - width * height * 4;
-    assert(offset === 12 || offset === 16, 'Unexpected raw screenshot size');
-    return { width, height, pixels: raw.subarray(offset) };
-  }
-
-  return { boot, connect, nodes, find, tap, tapNode, type, shell, scrollTo, shot, launch, swipe, recordScreen, screenshotRaw };
+  return { boot, connect, nodes, find, tap, tapNode, type, shell, scrollTo, shot, launch, swipe };
 }

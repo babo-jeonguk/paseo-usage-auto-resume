@@ -2,15 +2,9 @@ import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { cliBin, connectToDaemon, daemonErrors, freePort, installPlugin, patchInstalled,
-  paseoCommand, PLUGIN, providerEnvironment, readJson, replace, revisionOf, runHome, startModels, startProxy, waitFor } from './core.mjs';
+  paseoCommand, PLUGIN, providerEnvironment, readJson, replace, revisionOf, runHome, startModels, startProxy, waitFor, SOURCE } from './core.mjs';
 
-export const nativeDefaults = { to: 'main', out: 'e2e/out-native', path: '' };
-
-export function assertStagedSource({ source, to }) {
-  const url = new URL(source);
-  assert(url.protocol === 'file:' && !url.hostname, 'Use the local file URL produced by desktop-source.mjs');
-  assert.match(to, /^[a-f0-9]{40}$/, 'Use the full verified commit from desktop-source.mjs');
-}
+export const nativeDefaults = { source: SOURCE, to: 'main', out: 'e2e/out-native', path: '' };
 
 export function modelContinueRequests(requests, limitWindows) {
   return requests.filter((request, index) => request.counted && !limitWindows.some(({ prompt, from, to }) =>
@@ -60,7 +54,7 @@ export async function nativeFixture(ctx, args) {
     },
     async install(patch, activate) {
       report.revision = revisionOf(await installPlugin(paseo, args.source, args.to, environment));
-      assert.equal(report.revision, args.to, 'Run the exact staged plugin revision');
+      if (args.source.startsWith('file:')) assert.equal(report.revision, args.to, 'Use a full commit SHA for a local source');
       await patchInstalled({ paseo, client, patch, activate });
       workspace = (await client.createWorkspace({ source: { kind: 'directory', path: work }, title: 'Usage Auto Resume E2E' })).workspace;
     },

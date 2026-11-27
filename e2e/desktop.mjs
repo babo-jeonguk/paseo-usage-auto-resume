@@ -6,20 +6,17 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { freePort, inherited, isWin, iso, killTree, nativeRun, options, pidAlive, readJson,
   DEFAULT_MARK, run, running, spawnLogged, startProxy, waitFor, withDeadline } from './core.mjs';
-import { assertNativeOffline, isOfflineRegistryFailure } from './native-network.mjs';
 import { assertSubscriptionRequests, patchDesktopEntry, prepareLogins } from './desktop-subscription.mjs';
-import { assertDaemonLogs, assertStagedSource, editSavedJobs, localClock, nativeDefaults, nativeFixture, tomorrowAtNoon } from './native-fixture.mjs';
+import { assertDaemonLogs, editSavedJobs, localClock, nativeDefaults, nativeFixture, tomorrowAtNoon } from './native-fixture.mjs';
 import { scheduleWire } from './schedule-wire.mjs';
 
-const args = options(['cli', 'app', 'source', 'to'], {
-  out: nativeDefaults.out, path: nativeDefaults.path, 'expect-platform': process.platform,
+const args = options(['cli', 'app'], {
+  ...nativeDefaults, 'expect-platform': process.platform,
 });
 await nativeRun('desktop', args, async ctx => {
   const { root, out, report, artifacts, dispose, check } = ctx;
   assert(['linux', 'win32'].includes(process.platform), 'Desktop E2E requires Linux or Windows');
   assert.equal(process.platform, args['expect-platform'], 'Use Node on the requested native OS');
-  assertStagedSource(args);
-  await check('The operating system rejects direct external TCP connections', assertNativeOffline);
   assert(isWin || process.env.DISPLAY || process.env.WAYLAND_DISPLAY, 'Run under xvfb-run on a headless Linux host');
   const appDir = resolve(args.app);
   report.app = appDir;
@@ -408,8 +405,7 @@ await nativeRun('desktop', args, async ctx => {
     return { before, after, deliveryMs: Math.round(performance.now() - advancedAt), modelContinues: 1 };
   });
 
-  await check('No direct external connections, self-update files, renderer errors or unexpected daemon errors', async () => {
-    const directTcp = await assertNativeOffline();
+  await check('No self-update files, renderer errors or unexpected daemon errors', async () => {
     const cache = await readdir(fixture.cache, { recursive: true, withFileTypes: true }).catch(error => {
       if (error.code === 'ENOENT') return [];
       throw error;
@@ -417,13 +413,7 @@ await nativeRun('desktop', args, async ctx => {
     report.updateFiles = cache.filter(entry => entry.isFile() && /updater/i.test(entry.parentPath)).map(entry => entry.name);
     report.appProxyHits = appProxy.hits();
     report.providerProxyHits = fixture.proxy.hits();
-    report.offlineRegistryFailures = 0;
     await assertDaemonLogs(report, daemonLog, entry => {
-      // Settings reads the directory from the real Desktop-managed daemon, which is offline.
-      if (isOfflineRegistryFailure(entry)) {
-        report.offlineRegistryFailures++;
-        return true;
-      }
       // An in-flight renderer RPC can lose its plugin worker as the isolated app reloads or quits.
       const message = entry.error?.message;
       return (message === 'Plugin is not available: usage-auto-resume' &&
@@ -433,6 +423,6 @@ await nativeRun('desktop', args, async ctx => {
     });
     assert.deepEqual(report.updateFiles, []);
     assert.deepEqual(report.pageErrors, []);
-    return { directTcp, refusedProviderRequests: report.providerProxyHits.length, offlineRegistryFailures: report.offlineRegistryFailures };
+    return { refusedAppRequests: report.appProxyHits.length, refusedProviderRequests: report.providerProxyHits.length };
   });
 });

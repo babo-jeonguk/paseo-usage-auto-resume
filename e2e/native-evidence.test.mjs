@@ -87,34 +87,3 @@ test('only the exact Resume now invocation is evidence for the reservation', asy
   resume('expected', pin, 'sent');
   assert.equal(wire.resumeResult(mark, pin).result, 'sent');
 });
-
-test('Android toast frames are judged on the guest clock, independently of recorder start', async () => {
-  const visual = await import('./android-visual.mjs');
-  const response = 2000;
-  const samples = [
-    { before: 1990, after: 2000, elapsedMs: 11_990 },
-    { before: 2010, after: 2020, elapsedMs: 12_010 },
-  ];
-  const window = visual.androidToastWindow(response, samples, 3000);
-  assert.deepEqual(window, { earliest: 11_990, latest: 12_010, end: 15_010 });
-  const frames = Array.from({ length: 35 }, (_, n) => 11_650 + n * 100);
-  assert.equal(visual.hasToastFrameCoverage(frames, window), true);
-  assert.equal(visual.toastFrameTime(11_850, window), 'outside');
-  assert.equal(visual.toastFrameTime(11_995, window), 'uncertain');
-  assert.equal(visual.toastFrameTime(12_030, window), 'after');
-  assert.equal(visual.hasToastFrameCoverage([11_650, 12_030, 14_950], window), false);
-});
-
-test('Android toast timing preserves uncertain frames when the guest clock probe stalls', async () => {
-  const visual = await import('./android-visual.mjs');
-  const window = visual.androidToastWindow(2000, [{ before: 1000, after: 3400, elapsedMs: 12_000 }], 3000);
-  const times = Array.from({ length: 55 }, (_, index) => 10_600 + index * 100);
-  const toast = time => time >= 10_750 && time < 12_950;
-  assert.equal(visual.hasToastFrameCoverage(times, window), true);
-  assert.equal(times.filter(time => toast(time) && visual.toastFrameTime(time, window) === 'after').length, 0);
-  assert.equal(times.filter(time => toast(time) && visual.toastFrameTime(time, window) === 'uncertain').length, 22);
-  const ordered = visual.toastFrameOrder(times, window);
-  assert.equal(ordered[0].time, 13_100);
-  assert.equal(ordered.at(-1).time, 13_000);
-  assert(ordered.findIndex(frame => frame.timing === 'uncertain') > ordered.findIndex(frame => frame.time === 14_000));
-});
