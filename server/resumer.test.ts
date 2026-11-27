@@ -4129,3 +4129,71 @@ test("delivery cancels with subagent when a parent link is added during the usag
   ]);
   assert.equal((await history.list()).find((entry) => entry.agentId === "a1")?.title, "Adopted auto");
 });
+
+test("delivery re-reads provider, background and Labs settings after the final agent refresh before claiming", async () => {
+  let settings: ProviderSettings | null = { ...DEFAULT_PROVIDER_SETTINGS, resumeBackground: true };
+  let resumeSettings: ResumeSettings | null = labs;
+  let onFinalRefresh: (() => void) | undefined;
+  let refreshCount = 0;
+  const { api, resumer, sent } = await setup({
+    p1: { provider: "codex", title: "Provider off" },
+    b1: { provider: "codex", title: "Background off", background: true },
+    l1: { provider: "codex", title: "Labs off" },
+    u1: { provider: "codex", title: "Unreadable settings" },
+  }, {
+    readSettings: async () => settings,
+    readResumeSettings: async () => resumeSettings,
+    readSubscription: async () => ({ auth: "subscription", status: "ready", identity: "account" }),
+    duringAgentRefresh: async () => {
+      refreshCount += 1;
+      // Only trigger on the post-usage final refresh (second refresh inside deliver).
+      if (refreshCount === 2) onFinalRefresh?.();
+    },
+  });
+
+  // 1. Provider turned off during final agent refresh (manual Resume now)
+  await resumer.onTurnEnded(turnEnded("p1", "codex", failed(CODEX_LIMIT)), api);
+  refreshCount = 0;
+  onFinalRefresh = () => { settings = { ...DEFAULT_PROVIDER_SETTINGS, disabledProviders: ["codex"] }; };
+  assert.deepEqual(await resumer.resumeNow(api, "p1", await pinOf(store, "p1")), { result: "canceled", reason: "provider_off" });
+  assert.deepEqual(sent, []);
+
+  // 2. Background switch turned off during final agent refresh (automatic tick)
+  settings = { ...DEFAULT_PROVIDER_SETTINGS, resumeBackground: true };
+  onFinalRefresh = undefined;
+  await resumer.onTurnEnded(turnEnded("b1", "codex", failed(CODEX_LIMIT)), api);
+  refreshCount = 0;
+  onFinalRefresh = () => { settings = { ...DEFAULT_PROVIDER_SETTINGS }; };
+  clock = new Date(CODEX_DUE);
+  await resumer.tick();
+  assert.deepEqual(sent, []);
+  assert.equal((await store.list()).find((job) => job.agentId === "b1"), undefined);
+
+  // 3. Labs turned off during final agent refresh on overload reservation (manual Resume now)
+  settings = { ...DEFAULT_PROVIDER_SETTINGS, resumeBackground: true };
+  resumeSettings = labs;
+  onFinalRefresh = undefined;
+  clock = START;
+  await resumer.onTurnEnded(turnEnded("l1", "codex", failed(CAPACITY)), api);
+  refreshCount = 0;
+  onFinalRefresh = () => { resumeSettings = { ...labs, overloadRetry: false }; };
+  assert.deepEqual(await resumer.resumeNow(api, "l1", await pinOf(store, "l1")), { result: "canceled", reason: "overload_off" });
+  assert.deepEqual(sent, []);
+
+  // 4. Provider settings become unreadable during final agent refresh (holds without sending)
+  settings = { ...DEFAULT_PROVIDER_SETTINGS, resumeBackground: true };
+  resumeSettings = labs;
+  onFinalRefresh = undefined;
+  await resumer.onTurnEnded(turnEnded("u1", "codex", failed(CODEX_LIMIT)), api);
+  refreshCount = 0;
+  onFinalRefresh = () => { settings = null; };
+  assert.deepEqual(await resumer.resumeNow(api, "u1", await pinOf(store, "u1")), { result: "unavailable" });
+  assert.deepEqual(sent, []);
+  assert.equal((await store.list()).find((job) => job.agentId === "u1")?.state, "pending");
+
+  assert.deepEqual(await recorded(), [
+    "p1 canceled/provider_off (manual)",
+    "b1 canceled/background_off",
+    "l1 canceled/overload_off (manual)",
+  ]);
+});
