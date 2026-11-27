@@ -130,6 +130,7 @@ export const HistoryReasonSchema = z.enum([
   "turn_started", "new_message", "turn_finished", "agent_missing", "archived",
   "provider_changed", "model_changed", "agent_busy", "permission",
   "account_changed", "api_route", "provider_off", "background_off", "unsupported_cli", "overload_off",
+  "subagent",
   // gave_up
   "attempts", "retries", "overload_retries",
 ]);
