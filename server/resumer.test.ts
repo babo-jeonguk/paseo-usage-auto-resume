@@ -4092,3 +4092,40 @@ test("legacy subagent turn-end cleanup acts only on the reservation seen before 
   assert.equal((await store.list()).find((job) => job.agentId === "sub")?.id, "replacement-2");
   assert.deepEqual(await recorded(), []);
 });
+
+test("delivery cancels with subagent when a parent link is added during the usage check", async () => {
+  let duringUsage: (agentId: string) => void = () => {};
+  const { api, agents, resumer, sent } = await setup({
+    a1: { provider: "codex", title: "Adopted auto" },
+    a2: { provider: "codex", title: "Adopted manual" },
+  }, {
+    readSubscription: async (_api, agent, _source, _at, _launch, mode) => {
+      if (mode !== "identity") duringUsage(agent.id);
+      return { auth: "subscription", status: "ready", identity: "account" };
+    },
+  });
+
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT)), api);
+  await resumer.onTurnEnded(turnEnded("a2", "codex", failed(CODEX_LIMIT)), api);
+
+  duringUsage = (agentId) => {
+    const existing = agents.get(agentId);
+    if (existing) agents.set(agentId, { ...existing, labels: SUBAGENT_LABEL });
+  };
+
+  // Manual Resume now
+  assert.deepEqual(await resumer.resumeNow(api, "a2", await pinOf(store, "a2")), { result: "canceled", reason: "subagent" });
+  assert.deepEqual(sent, []);
+  assert.equal((await history.list()).find((entry) => entry.agentId === "a2")?.title, "Adopted manual");
+
+  // Automatic due-time tick
+  clock = new Date(CODEX_DUE);
+  await resumer.tick();
+  assert.deepEqual(await store.list(), []);
+  assert.deepEqual(sent, []);
+  assert.deepEqual(await recorded(), [
+    "a2 canceled/subagent (manual)",
+    "a1 canceled/subagent",
+  ]);
+  assert.equal((await history.list()).find((entry) => entry.agentId === "a1")?.title, "Adopted auto");
+});
