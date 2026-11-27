@@ -86,6 +86,8 @@ interface FakeOptions {
   duringWorkspaceRead?: () => Promise<void>;
   /** Runs while a timeline is being read, as a concurrent change would. */
   duringTimelineRead?: (agentId: string) => Promise<void>;
+  /** Runs while an agent snapshot is being refreshed, as a concurrent change would. */
+  duringAgentRefresh?: (agentId: string) => Promise<void>;
   listError?: Error;
   /** Thrown by an agent read, an agent send, a workspace read or a timeline read. Mutable after setup. */
   refreshError?: Error;
@@ -138,6 +140,7 @@ function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOption
       },
       ref: (agentId: string) => ({
         refresh: async () => {
+          await options.duringAgentRefresh?.(agentId);
           if (options.refreshError) throw options.refreshError;
           const agent = agents.get(agentId);
           return agent ? { agent: snapshot(agentId, agent), project: null } : null;
@@ -3857,21 +3860,25 @@ test("rememberSession skips caching launch context and automation tokens for sub
   assert.equal(top.tokens?.CODEX_ACCESS_TOKEN, "tok-top");
 });
 
-test("startup attach and background-off reconciliation cancel pre-existing background subagent rows with subagent", async () => {
+test("startup attach and background-off reconciliation leave live background subagents for due-time or Resume now delivery", async () => {
   let inspections = 0;
   let settings: ProviderSettings = { ...DEFAULT_PROVIDER_SETTINGS, disabledProviders: ["claude"] };
   const base = { resetAt: null, dueAt: CODEX_DUE, baseline: "2026-10-06T02:00:00.000Z", attempts: 0, state: "pending" as const, enabled: true, background: true };
   await writeFile(join(dir, "jobs.json"), JSON.stringify({
     version: 1,
     jobs: [
-      { ...base, agentId: "bgSub", provider: "codex" },
+      { ...base, agentId: "bgSubFuture", provider: "codex" },
+      { ...base, agentId: "bgSubDue", provider: "codex", dueAt: "2026-10-06T02:30:00.000Z" },
       { ...base, agentId: "offProviderSub", provider: "claude" },
       { ...base, agentId: "goneBg", provider: "codex" },
+      { ...base, agentId: "topBg", provider: "codex" },
     ],
   }));
-  const { resumer, workspaceReads } = await setup({
-    bgSub: { provider: "codex", title: "Background worker", background: true, workspaceId: "wks-bg", labels: SUBAGENT_LABEL },
+  const { api, resumer, workspaceReads } = await setup({
+    bgSubFuture: { provider: "codex", title: "Future background worker", background: true, workspaceId: "wks-bg", labels: SUBAGENT_LABEL },
+    bgSubDue: { provider: "codex", title: "Due background worker", background: true, workspaceId: "wks-bg", labels: SUBAGENT_LABEL },
     offProviderSub: { provider: "claude", title: "Off-provider sub", background: true, workspaceId: "wks-bg", labels: SUBAGENT_LABEL },
+    topBg: { provider: "codex", title: "Top background agent", background: true, workspaceId: "wks-bg" },
     toggleSub: { provider: "codex", title: "Toggled worker", background: true, workspaceId: "wks-bg", labels: SUBAGENT_LABEL },
   }, {
     readSettings: async () => settings,
@@ -3882,17 +3889,26 @@ test("startup attach and background-off reconciliation cancel pre-existing backg
     },
   });
 
-  assert.deepEqual(await store.list(), []);
+  // Startup attach cancels disabled-provider and confirmed non-subagent background rows, and its
+  // tick cancels the already-due subagent; the future-due subagent stays pending for Resume now.
+  assert.deepEqual((await store.list()).map((job) => job.agentId), ["bgSubFuture"]);
   assert.equal(workspaceReads(), 0);
   assert.equal(inspections, 0);
   assert.deepEqual(await recorded(), [
-    "bgSub canceled/subagent",
     "offProviderSub canceled/provider_off",
     "goneBg canceled/background_off",
+    "topBg canceled/background_off",
+    "bgSubDue canceled/subagent",
   ]);
-  assert.equal((await history.list()).find((entry) => entry.agentId === "bgSub")?.title, "Background worker");
+  assert.equal((await history.list()).find((entry) => entry.agentId === "bgSubDue")?.title, "Due background worker");
 
-  // Also verify toggling Resume background agents off after attach prioritizes subagent over background_off.
+  assert.deepEqual(await resumer.resumeNow(api, "bgSubFuture", await pinOf(store, "bgSubFuture")), { result: "canceled", reason: "subagent" });
+  assert.deepEqual(await store.list(), []);
+  assert.equal(workspaceReads(), 0);
+  assert.equal(inspections, 0);
+  assert.equal((await history.list()).find((entry) => entry.agentId === "bgSubFuture")?.title, "Future background worker");
+
+  // Toggling Resume background agents off after attach also leaves a live subagent for delivery.
   settings = { ...DEFAULT_PROVIDER_SETTINGS, resumeBackground: true };
   await store.update("toggleSub", () => ({
     id: "job-toggleSub", agentId: "toggleSub", provider: "codex", resetAt: null, dueAt: CODEX_DUE,
@@ -3900,17 +3916,122 @@ test("startup attach and background-off reconciliation cancel pre-existing backg
   }));
   settings = { ...DEFAULT_PROVIDER_SETTINGS };
   await resumer.reconcileProviders();
+  assert.deepEqual((await store.list()).map((job) => job.agentId), ["toggleSub"]);
 
+  clock = new Date(CODEX_DUE);
+  await resumer.tick();
   assert.deepEqual(await store.list(), []);
   assert.equal(workspaceReads(), 0);
   assert.equal(inspections, 0);
   assert.deepEqual(await recorded(), [
-    "bgSub canceled/subagent",
     "offProviderSub canceled/provider_off",
     "goneBg canceled/background_off",
+    "topBg canceled/background_off",
+    "bgSubDue canceled/subagent",
+    "bgSubFuture canceled/subagent (manual)",
     "toggleSub canceled/subagent",
   ]);
   assert.equal((await history.list()).find((entry) => entry.agentId === "toggleSub")?.title, "Toggled worker");
+});
+
+test("reconcileProviders never falls back to background_off when API is unattached or agent refresh fails", async () => {
+  const settings: ProviderSettings = { ...DEFAULT_PROVIDER_SETTINGS, disabledProviders: ["claude"] };
+  const base = { resetAt: null, dueAt: CODEX_DUE, baseline: "2026-10-06T02:00:00.000Z", attempts: 0, state: "pending" as const, enabled: true, background: true };
+  await writeFile(join(dir, "jobs.json"), JSON.stringify({
+    version: 1,
+    jobs: [
+      { ...base, agentId: "bgSub", provider: "codex" },
+      { ...base, agentId: "offSub", provider: "claude" },
+    ],
+  }));
+  const agents = new Map<string, Partial<PaseoAgent>>([
+    ["bgSub", { provider: "codex", title: "Subagent", background: true, labels: SUBAGENT_LABEL }],
+    ["offSub", { provider: "claude", background: true, labels: SUBAGENT_LABEL }],
+  ]);
+  const fakeOptions: FakeOptions = {};
+  const { api } = fakePaseo(agents, fakeOptions);
+  const resumer = createResumer({ store, history, now: () => clock, readSettings: async () => settings });
+
+  // Pre-attach: disabled provider cancels, while background subagent stays for attach/delivery.
+  await resumer.reconcileProviders();
+  assert.deepEqual((await store.list()).map((job) => job.agentId), ["bgSub"]);
+  assert.deepEqual(await recorded(), ["offSub canceled/provider_off"]);
+
+  // Transient snapshot failure after attach also leaves the background subagent untouched.
+  fakeOptions.refreshError = new Error("transient refresh error");
+  await resumer.attach(api);
+  assert.deepEqual((await store.list()).map((job) => job.agentId), ["bgSub"]);
+  assert.deepEqual(await recorded(), ["offSub canceled/provider_off"]);
+
+  // Once snapshots work again, Resume now cancels it with subagent (not background_off).
+  fakeOptions.refreshError = undefined;
+  assert.deepEqual(await resumer.resumeNow(api, "bgSub", await pinOf(store, "bgSub")), { result: "canceled", reason: "subagent" });
+  assert.deepEqual(await store.list(), []);
+  assert.deepEqual(await recorded(), ["offSub canceled/provider_off", "bgSub canceled/subagent (manual)"]);
+});
+
+test("a connection-closed agent refresh during reconcileProviders does not block later provider-off cancellations", async () => {
+  const settings: ProviderSettings = { ...DEFAULT_PROVIDER_SETTINGS, disabledProviders: ["claude"] };
+  const base = { resetAt: null, dueAt: CODEX_DUE, baseline: "2026-10-06T02:00:00.000Z", attempts: 0, state: "pending" as const, enabled: true };
+  await writeFile(join(dir, "jobs.json"), JSON.stringify({
+    version: 1,
+    jobs: [
+      { ...base, agentId: "bgFirst", provider: "codex", background: true },
+      { ...base, agentId: "offLater", provider: "claude" },
+    ],
+  }));
+  const closed = new Error("Daemon client closed");
+  await setup({
+    bgFirst: { provider: "codex", background: true, labels: SUBAGENT_LABEL },
+    offLater: { provider: "claude" },
+  }, {
+    readSettings: async () => settings,
+    refreshError: closed,
+  });
+
+  assert.deepEqual((await store.list()).map((job) => job.agentId), ["bgFirst"]);
+  assert.deepEqual(await recorded(), ["offLater canceled/provider_off"]);
+});
+
+test("reconcileProviders does not cancel a new background reservation created after background resumption is re-enabled mid-refresh", async () => {
+  let settings: ProviderSettings = { ...DEFAULT_PROVIDER_SETTINGS, resumeBackground: true };
+  let hold = false;
+  let reached!: () => void;
+  const refreshing = new Promise<void>((resolve) => { reached = resolve; });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const { resumer } = await setup({
+    bg: { provider: "codex", background: true },
+  }, {
+    readSettings: async () => settings,
+    duringAgentRefresh: async (agentId) => {
+      if (agentId !== "bg" || !hold) return;
+      hold = false;
+      reached();
+      await gate;
+    },
+  });
+  await store.update("bg", () => ({
+    id: "old-bg", agentId: "bg", provider: "codex", resetAt: null, dueAt: CODEX_DUE,
+    baseline: "2026-10-06T02:00:00.000Z", attempts: 0, retries: 0, state: "pending", enabled: true, background: true,
+  }));
+
+  settings = { ...DEFAULT_PROVIDER_SETTINGS };
+  hold = true;
+  const reconciling = resumer.reconcileProviders();
+  await refreshing;
+
+  // User turns background resumption back on and a replacement reservation is saved while refresh was paused.
+  settings = { ...DEFAULT_PROVIDER_SETTINGS, resumeBackground: true };
+  await store.update("bg", () => ({
+    id: "new-bg", agentId: "bg", provider: "codex", resetAt: null, dueAt: CODEX_DUE,
+    baseline: "2026-10-06T02:00:00.000Z", attempts: 0, retries: 0, state: "pending", enabled: true, background: true,
+  }));
+  release();
+  await reconciling;
+
+  assert.equal((await store.list()).find((job) => job.agentId === "bg")?.id, "new-bg");
+  assert.deepEqual(await recorded(), []);
 });
 
 test("hook parentAgentId prevents replanning a legacy subagent row even when the refreshed snapshot omits labels", async () => {
