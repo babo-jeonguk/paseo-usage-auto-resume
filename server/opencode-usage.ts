@@ -8,7 +8,6 @@ import { unknownCheck, type SubscriptionCheck } from "./subscription";
 
 const USAGE_TIMEOUT_MS = 15_000;
 const GO_USAGE_URL = "https://opencode.ai/zen/go/v1/usage";
-const CONSOLE_SERVER = "https://opencode.ai/console";
 const CONSOLE_CREDENTIAL = "SELECT id, value FROM credential WHERE integration_id = 'opencode' ORDER BY active DESC, time_created DESC, id DESC LIMIT 1";
 const GO_CREDENTIAL = "SELECT id, value FROM credential WHERE integration_id = 'opencode-go' ORDER BY active DESC, time_created DESC, id DESC LIMIT 1";
 const GO_WINDOWS = ["rolling", "weekly", "monthly"] as const;
@@ -136,14 +135,19 @@ const consoleTarget = (value: Record<string, unknown>): "default" | "other" | "i
   const server = record(metadata).server;
   if (server === undefined) return "default";
   if (typeof server !== "string") return "invalid";
-  const mapped = server.replace(/^https:\/\/console\.opencode\.ai(?=\/|$)/, CONSOLE_SERVER);
-  if (mapped === CONSOLE_SERVER) return "default";
+  let url: URL;
   try {
-    const url = new URL(server);
-    return url.protocol === "https:" || url.protocol === "http:" ? "other" : "invalid";
+    url = new URL(server);
   } catch {
     return "invalid";
   }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return "invalid";
+  const path = url.pathname.replace(/\/+$/, "");
+  const clean = !url.username && !url.password && !url.search && !url.hash;
+  const isDefault =
+    (url.origin === "https://opencode.ai" && path === "/console") ||
+    (url.origin === "https://console.opencode.ai" && path === "");
+  return clean && isDefault ? "default" : "other";
 };
 
 const parseValue = (raw: unknown): Record<string, unknown> => {
