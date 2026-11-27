@@ -7,7 +7,6 @@ import type { UsageSource } from "../shared/settings";
 import { providerLaunch } from "./usage";
 import { createClaudeCredentialReader, type ClaudeCredentialReader } from "./claude-credentials";
 import { CLI_STOP_GRACE_MS, cliHome, runCli, spawnCli, stopProcessTree } from "./cli-launch";
-import { agyFallback, createAgyUsageReader } from "./agy-usage";
 import { createOpenCodeUsageReader } from "./opencode-usage";
 import { isExhausted, type QuotaWindow } from "./quota";
 import { throwIfConnectionClosed } from "./connection";
@@ -112,7 +111,6 @@ export function createSubscriptionReader(deps: {
   const fetchApi = deps.fetch ?? fetch;
   const codex = deps.codex ?? codexSnapshot;
   const readClaudeCredentials = deps.readClaudeCredentials ?? createClaudeCredentialReader();
-  const readAgyUsage = createAgyUsageReader({ run: deps.run, now: deps.now });
   const readOpenCodeUsage = createOpenCodeUsageReader({ fetch: deps.fetch });
 
   /** A status and body, for an endpoint whose refusal carries meaning. */
@@ -150,13 +148,11 @@ export function createSubscriptionReader(deps: {
           at, mode,
         );
       }
-      // Stated resets only request identity. agy has none; quota is read when planning without
-      // a reset and before delivery. The quota reader turns its own failures into the existing
-      // notice behavior; a route that cannot be classified waits for verification like any other.
+      // Antigravity has no quota probe or account identity. API routes are excluded here, an
+      // unreadable config waits for verification, and otherwise the notice decides.
       if (source === "antigravity") {
         if (env.GEMINI_API_KEY || env.AGY_ADC_AUTH || env.GOOGLE_GEMINI_BASE_URL) return apiCheck;
-        if (mode === "identity") return agyFallback();
-        return await readAgyUsage({ command: runtime.command, cwd: agent.cwd, env }, subscriptionModel(agent), agent.id);
+        return { auth: "subscription", status: "ready" };
       }
       const model = subscriptionModel(agent);
       const options = { cwd: agent.cwd, env };

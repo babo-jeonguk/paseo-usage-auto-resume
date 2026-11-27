@@ -19,13 +19,13 @@
 - **Paseo 데몬과 앱 0.16.0 이상**, **Settings → Plugins**에서 플러그인 활성화
 - 데몬 호스트에 로그인된 provider CLI, 그리고 절전 상태에 들어가지 않는 데몬 호스트
 - OpenCode 에이전트는 **OpenCode 2.2.2 이상**이 필요합니다.
-- Paseo 0.17에서는 Paseo가 요구하는 대로 Antigravity 사용자 지정 명령에 `acp`가 있어야 합니다. [동작 문서](docs/behavior.md#data-access-and-storage)에 적힌 것 외의 플래그가 있으면 쿼터를 확인할 수 없습니다. Paseo 0.16에서 시작한 Codex 에이전트를 Paseo 0.17이 다시 열려면 Codex CLI 0.121.0 이상이 필요합니다.
+- Paseo 0.17 이상에서는 Paseo가 요구하는 대로 Antigravity 사용자 지정 명령에 `acp`가 있어야 합니다. Paseo 0.16에서 시작한 Codex 에이전트를 Paseo 0.17 이상이 다시 열려면 Codex CLI 0.121.0 이상이 필요합니다.
 
 | Provider | 보내기 전에 |
 | --- | --- |
 | Codex | ChatGPT 구독 사용량이 남았는지 확인합니다. 워크스페이스 액세스 토큰(`CODEX_ACCESS_TOKEN`)도 마찬가지입니다. |
 | Claude | claude.ai 구독 사용량이 남았는지 확인합니다. 사용량을 읽을 수 없는 setup token(`CLAUDE_CODE_OAUTH_TOKEN`)이면 한도 안내를 따릅니다. |
-| Antigravity | 가능하면 모델의 쿼터를 확인하고, 확인할 수 없으면 한도 안내를 따릅니다. |
+| Antigravity | 쿼터 조회 없이 한도 안내를 따릅니다. |
 | OpenCode | Go: Go 사용량 창을 확인합니다. 무료 모델: OpenCode가 무료 사용 한도와 함께 기록한 리셋 시각까지 기다립니다. |
 
 API 키나 다른 과금 경로로 쓰는 에이전트와 다른 에이전트가 생성한 서브에이전트는 재개하지 않습니다(서브에이전트는 상위 에이전트가 관리합니다).
