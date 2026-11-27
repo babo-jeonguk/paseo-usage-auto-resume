@@ -398,45 +398,68 @@ test("reader: an opencode Console OAuth login on the default Console blocks fall
   }
 });
 
-test("reader: credentials for another Console server or empty/invalid metadata.server are rejected, while retired console.opencode.ai maps to opencode.ai", async (t) => {
-  const data = await openCodeData(t);
-  data.session(SESSION);
-  data.credential("cred_other_server", "opencode", { type: "key", key: "other-server-key", metadata: { server: "https://self-hosted.example/console" } }, 1, 300);
-  data.credential("cred_go", "opencode-go", { type: "key", key: GO_KEY, metadata: { server: "https://console.opencode.ai" } }, 1, 100);
-  const f = fakes();
-  const read = createOpenCodeUsageReader(f);
-  const check = await read(launchFor(data.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage");
-  assert.equal(check.status, "ready");
-  assert.equal(f.calls.fetches, 1);
+test("reader: credentials for another Console server are skipped, malformed metadata blocks Console fallback, and retired console.opencode.ai maps to opencode.ai", async (t) => {
+  for (const otherServer of ["https://self-hosted.example/console", "https://console.opencode.ai/other"] as const) {
+    const data = await openCodeData(t);
+    data.session(SESSION);
+    data.credential("cred_other_server", "opencode", { type: "key", key: "other-server-key", metadata: { server: otherServer } }, 1, 300);
+    data.credential("cred_go", "opencode-go", { type: "key", key: GO_KEY, metadata: { server: "https://console.opencode.ai" } }, 1, 100);
+    const f = fakes();
+    const check = await createOpenCodeUsageReader(f)(launchFor(data.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage");
+    assert.equal(check.status, "ready", `another Console server (${otherServer}) is skipped so eligible opencode-go verifies`);
+    assert.equal(f.calls.fetches, 1, otherServer);
 
-  for (const invalidServer of ["https://console.opencode.ai/other", "", null, 123] as const) {
-    const nonDefaultConsole = await openCodeData(t);
-    nonDefaultConsole.session(SESSION);
-    nonDefaultConsole.credential("cred_non_default", "opencode", { type: "key", key: "non-default-key", metadata: { server: invalidServer } }, 1, 300);
-    nonDefaultConsole.credential("cred_go", "opencode-go", { type: "key", key: GO_KEY }, 1, 100);
-    const fConsole = fakes();
-    const consoleCheck = await createOpenCodeUsageReader(fConsole)(launchFor(nonDefaultConsole.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage");
-    assert.equal(consoleCheck.status, "ready", `non-default Console server (${JSON.stringify(invalidServer)}) is skipped, not sent to opencode.ai`);
-    assert.equal(fConsole.calls.fetches, 1);
-
-    const nonDefaultGo = await openCodeData(t);
-    nonDefaultGo.session(SESSION);
-    nonDefaultGo.credential("cred_foreign_go", "opencode-go", { type: "key", key: "foreign-go-key", metadata: { server: invalidServer } }, 1, 100);
-    await nonDefaultGo.authFile({ "opencode-go": { type: "api", key: GO_KEY } });
+    const foreignGo = await openCodeData(t);
+    foreignGo.session(SESSION);
+    foreignGo.credential("cred_foreign_go", "opencode-go", { type: "key", key: "foreign-go-key", metadata: { server: otherServer } }, 1, 100);
+    await foreignGo.authFile({ "opencode-go": { type: "api", key: GO_KEY } });
     const fGo = fakes();
-    assert.deepEqual(await createOpenCodeUsageReader(fGo)(launchFor(nonDefaultGo.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage"), { auth: "unknown", status: "unknown" }, JSON.stringify(invalidServer));
-    assert.equal(fGo.calls.fetches, 0, `non-default opencode-go DB row (${JSON.stringify(invalidServer)}) is neither sent to opencode.ai nor bypassed to auth.json`);
-    assert.ok(fGo.calls.logs.some((line) => line.includes("invalid_credential")), JSON.stringify(invalidServer));
+    assert.deepEqual(await createOpenCodeUsageReader(fGo)(launchFor(foreignGo.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage"), { auth: "unknown", status: "unknown" }, otherServer);
+    assert.equal(fGo.calls.fetches, 0, `other-server opencode-go DB row (${otherServer}) is neither sent to opencode.ai nor bypassed to auth.json`);
+    assert.ok(fGo.calls.logs.some((line) => line.includes("invalid_credential")), otherServer);
   }
 
-  // auth.json entries must also validate metadata.server and map retired console.opencode.ai.
-  for (const rejectedServer of ["https://self-hosted.example/console", "https://console.opencode.ai/other", "", null, 123] as const) {
+  // Malformed Console metadata (or empty/non-URL metadata.server) is invalid, not another Console server:
+  // it must block fallback on Console rows (both key and OAuth) and never send any key to opencode.ai.
+  const malformedMetadata: unknown[] = [[], "corrupt", { server: "" }, { server: "   " }, { server: "not-a-url" }, { server: null }, { server: 123 }];
+  for (const metadata of malformedMetadata) {
+    for (const consoleValue of [
+      { type: "key", key: "console-key", metadata },
+      { type: "oauth", access: "fixture-token", expires: 9_999_999_999_999, metadata },
+    ]) {
+      const badConsole = await openCodeData(t);
+      badConsole.session(SESSION);
+      badConsole.credential("cred_bad_console", "opencode", consoleValue, 1, 300);
+      badConsole.credential("cred_go", "opencode-go", { type: "key", key: GO_KEY }, 1, 100);
+      await badConsole.authFile({ "opencode-go": { type: "api", key: GO_KEY } });
+      const fConsole = fakes();
+      assert.deepEqual(
+        await createOpenCodeUsageReader(fConsole)(launchFor(badConsole.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage"),
+        { auth: "unknown", status: "unknown" },
+        `malformed Console ${consoleValue.type} metadata ${JSON.stringify(metadata)} must block fallback`,
+      );
+      assert.equal(fConsole.calls.fetches, 0, `malformed Console ${consoleValue.type} metadata ${JSON.stringify(metadata)} must not fall back to Go`);
+      assert.ok(fConsole.calls.logs.some((line) => line.includes("invalid_credential")), JSON.stringify(metadata));
+    }
+
+    const badGo = await openCodeData(t);
+    badGo.session(SESSION);
+    badGo.credential("cred_bad_go", "opencode-go", { type: "key", key: "foreign-go-key", metadata }, 1, 100);
+    await badGo.authFile({ "opencode-go": { type: "api", key: GO_KEY } });
+    const fGo = fakes();
+    assert.deepEqual(await createOpenCodeUsageReader(fGo)(launchFor(badGo.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage"), { auth: "unknown", status: "unknown" }, JSON.stringify(metadata));
+    assert.equal(fGo.calls.fetches, 0, `malformed opencode-go DB metadata ${JSON.stringify(metadata)} must neither fetch nor bypass to auth.json`);
+    assert.ok(fGo.calls.logs.some((line) => line.includes("invalid_credential")), JSON.stringify(metadata));
+  }
+
+  // auth.json entries must also validate metadata / metadata.server and map retired console.opencode.ai.
+  for (const rejectedMetadata of [{ server: "https://self-hosted.example/console" }, { server: "https://console.opencode.ai/other" }, ...malformedMetadata]) {
     const foreignFile = await openCodeData(t);
     foreignFile.session(SESSION);
-    await foreignFile.authFile({ "opencode-go": { type: "api", key: "foreign-file-key", metadata: { server: rejectedServer } } });
+    await foreignFile.authFile({ "opencode-go": { type: "api", key: "foreign-file-key", metadata: rejectedMetadata } });
     const fFile = fakes();
-    assert.deepEqual(await createOpenCodeUsageReader(fFile)(launchFor(foreignFile.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage"), { auth: "unknown", status: "unknown" }, JSON.stringify(rejectedServer));
-    assert.equal(fFile.calls.fetches, 0, `auth.json key with server ${JSON.stringify(rejectedServer)} must never be sent to opencode.ai`);
+    assert.deepEqual(await createOpenCodeUsageReader(fFile)(launchFor(foreignFile.xdg), { id: "a", model: GO_MODEL, sessionId: SESSION }, at, "usage"), { auth: "unknown", status: "unknown" }, JSON.stringify(rejectedMetadata));
+    assert.equal(fFile.calls.fetches, 0, `auth.json key with metadata ${JSON.stringify(rejectedMetadata)} must never be sent to opencode.ai`);
   }
 
   for (const acceptedServer of ["https://opencode.ai/console", "https://console.opencode.ai"] as const) {
