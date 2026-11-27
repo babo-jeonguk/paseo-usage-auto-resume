@@ -172,8 +172,13 @@ export async function androidDevice(ctx, fixture, args) {
 
   const screenshotPng = timeout => adb(['exec-out', 'screencap', '-p'], { encoding: 'buffer', timeout });
   const shot = async name => writeFile(join(out, name + '.png'), await screenshotPng());
-  // Monkey can abort on an unrelated app's ANR before it injects the launch event.
-  const launch = () => shell('am', 'start', '-a', 'android.intent.action.MAIN', '-c', 'android.intent.category.LAUNCHER', '-p', PACKAGE);
+  async function launch() {
+    const intent = ['-a', 'android.intent.action.MAIN', '-c', 'android.intent.category.LAUNCHER'];
+    const component = (await shell('cmd', 'package', 'resolve-activity', '--components', ...intent, '-p', PACKAGE)).trim();
+    assert.equal(component.match(/^(\S+)\/[\w.$]+$/)?.[1], PACKAGE, `Could not resolve the Paseo launcher activity: ${component}`);
+    // A launcher filter can lack DEFAULT, which implicit Activity Manager starts require.
+    await shell('am', 'start', ...intent, '-n', component);
+  }
   const avdName = async () => (await adb(['emu', 'avd', 'name'], { timeout: 3000 })).trim().split(/\r?\n/)[0];
 
   async function boot() {
