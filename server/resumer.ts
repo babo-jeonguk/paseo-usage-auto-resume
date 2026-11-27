@@ -603,35 +603,43 @@ export function createResumer(options: {
 
   /**
    * Turning a provider off also retires the reservations it already has: it concerns the agent,
-   * so whatever pending reservation is stored when the write happens goes, moved or not. The
-   * background switch works the same way; rows saved without the flag are decided at delivery.
+   * so whatever pending reservation is stored when the write happens goes, moved or not. That
+   * pass reads no agent, so a disconnect or refresh failure cannot keep a disabled provider's
+   * rows alive. The background switch retires a row only after the live agent confirms it is not
+   * a subagent, and re-reads the switch before the write: a live subagent, an agent that cannot
+   * be read, or an unattached API is left for delivery to cancel with the right reason.
    */
   async function reconcileProviders(): Promise<void> {
     const settings = await readSettings();
     if (!settings) return;
-    for (const job of await store.list()) {
-      if (job.state !== "pending") continue;
-      const providerTurnedOff = !isProviderOn(job.provider, settings);
-      const backgroundTurnedOff = !settings.resumeBackground && job.background === true;
-      if (!providerTurnedOff && !backgroundTurnedOff) continue;
-      // A turned-off provider keeps its precedence: it cancels without reading the agent. Only a
-      // background switch loaded from a row decides the reason, so the live agent is read then.
-      if (!providerTurnedOff && backgroundTurnedOff && paseo) {
-        const agent = await loadAgent(paseo, job.agentId).catch((error) => {
-          if (isConnectionClosed(error)) throw error;
-          return null;
-        });
-        if (agent && isSubagent(agent)) {
-          await retire(job.agentId, (current) => current.state === "pending" && current.id === job.id,
-            { ...subagentCanceled(), title: titleOf(agent) });
-          continue;
-        }
-      }
-      const outcome = providerTurnedOff ? providerOff(job.provider) : backgroundOff();
+    const jobs = await store.list();
+    // Pass 1: disabled providers, with no agent lookups, so nothing about an agent can block it.
+    for (const job of jobs) {
+      if (job.state !== "pending" || isProviderOn(job.provider, settings)) continue;
       // The row stored when the write happens decides, so a reservation turned on again meanwhile stays.
-      await retire(job.agentId, (current) => current.state === "pending" && (providerTurnedOff
-        ? !isProviderOn(current.provider, settings)
-        : !settings.resumeBackground && current.background === true), outcome);
+      await retire(job.agentId, (current) => current.state === "pending" && !isProviderOn(current.provider, settings),
+        providerOff(job.provider));
+    }
+    // Pass 2: the background switch, only once an agent can be read and it is off.
+    if (settings.resumeBackground || !paseo) return;
+    for (const job of jobs) {
+      if (job.state !== "pending" || !isProviderOn(job.provider, settings) || job.background !== true) continue;
+      let agent: PaseoAgent | null;
+      try {
+        agent = await loadAgent(paseo, job.agentId);
+      } catch (error) {
+        // The rest of this pass can read nothing either; leaving the row is safer than guessing.
+        if (isConnectionClosed(error)) return log("provider reconciliation stopped: the daemon connection closed");
+        continue;
+      }
+      // A live subagent is delivery's to cancel, and an unreadable one says nothing about it.
+      if (agent && isSubagent(agent)) continue;
+      // The switch may have been turned back on while the agent was read, and a row may have been
+      // replaced meanwhile: only the reservation checked above is retired.
+      const latest = await readSettings();
+      if (!latest || latest.resumeBackground) return;
+      await retire(job.agentId, (current) => current.state === "pending" && current.id === job.id
+        && !latest.resumeBackground && current.background === true, backgroundOff());
     }
   }
 
