@@ -142,12 +142,12 @@ const consoleTarget = (value: Record<string, unknown>): "default" | "other" | "i
     return "invalid";
   }
   if (url.protocol !== "https:" && url.protocol !== "http:") return "invalid";
+  if (url.username || url.password || url.search || url.hash) return "invalid";
   const path = url.pathname.replace(/\/+$/, "");
-  const clean = !url.username && !url.password && !url.search && !url.hash;
   const isDefault =
     (url.origin === "https://opencode.ai" && path === "/console") ||
     (url.origin === "https://console.opencode.ai" && path === "");
-  return clean && isDefault ? "default" : "other";
+  return isDefault ? "default" : "other";
 };
 
 const parseValue = (raw: unknown): Record<string, unknown> => {
