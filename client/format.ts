@@ -320,6 +320,7 @@ const CANCEL_REASONS: Partial<Record<HistoryReason, string>> = {
   background_off: "background agents turned off",
   unsupported_cli: "unsupported CLI",
   overload_off: "overload retry turned off",
+  subagent: "subagent managed by parent",
 };
 
 /** One line for how a reservation ended, e.g. "Canceled · a newer message", naming Resume now when it started it. */

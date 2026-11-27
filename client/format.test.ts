@@ -378,6 +378,7 @@ test("each Resume now result reads as one toast, colored by what it means", () =
   assert.equal(toast({ result: "unverified", waiting: "auth" }), "warning: Couldn’t verify the account. Check the CLI login.");
   assert.equal(toast({ result: "unverified", waiting: "usage" }), "warning: Couldn’t verify usage. Try again shortly.");
   assert.equal(toast({ result: "canceled", reason: "new_message" }), "warning: Canceled · a newer message");
+  assert.equal(toast({ result: "canceled", reason: "subagent" }), "warning: Canceled · subagent managed by parent");
   assert.equal(toast({ result: "send_failed" }), "error: Couldn’t send the continue");
   assert.equal(toast({ result: "busy" }), "info: The agent is still working. Try again when it stops.");
   assert.equal(toast({ result: "sending" }), "info: This agent is continuing now.");
@@ -414,6 +415,7 @@ test("every recorded result reads as one line", () => {
     ["canceled", "api_route", "Canceled · API billing route"],
     ["canceled", "provider_off", "Canceled · provider turned off"],
     ["canceled", "background_off", "Canceled · background agents turned off"],
+    ["canceled", "subagent", "Canceled · subagent managed by parent"],
     ["canceled", "unsupported_cli", "Canceled · unsupported CLI"],
     ["canceled", undefined, "Canceled"],
   ];
@@ -428,6 +430,7 @@ test("every recorded result reads as one line", () => {
 test("a result Resume now started says so", () => {
   assert.equal(historyLabel({ outcome: "continued", trigger: "manual" }), "Continued · Resume now");
   assert.equal(historyLabel({ outcome: "canceled", reason: "new_message", trigger: "manual" }), "Canceled · a newer message · Resume now");
+  assert.equal(historyLabel({ outcome: "canceled", reason: "subagent", trigger: "manual" }), "Canceled · subagent managed by parent · Resume now");
   assert.equal(historyLabel({ outcome: "send_failed", trigger: "manual" }), "Couldn’t send the continue · Resume now");
 });
 

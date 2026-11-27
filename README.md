@@ -28,7 +28,7 @@ Actual Paseo web interface with sample reservations. Each row shows what is sche
 | Antigravity | Checks the model's quota when available; otherwise follows the limit message. |
 | OpenCode | Go: checks the Go usage windows. Free models: waits for the reset time OpenCode recorded with the free-usage limit. |
 
-Agents billed through an API key or another billing route are not resumed.
+Agents billed through an API key or another billing route, and subagents created by another agent, are not resumed (their parent agent manages them).
 
 ## Install
 

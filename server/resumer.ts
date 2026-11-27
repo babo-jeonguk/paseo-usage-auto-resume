@@ -16,6 +16,7 @@ import { isExhausted } from "./quota";
 import { continuePrompt, DEFAULT_CONTINUE_PROMPT } from "../shared/prompt";
 import { readBackground } from "./background";
 import { isConnectionClosed, throwIfConnectionClosed } from "./connection";
+import { isSubagent } from "./subagent";
 
 /** Kept for callers that compare against the built-in prompt; sends go through `continuePrompt`. */
 export const CONTINUE_PROMPT = DEFAULT_CONTINUE_PROMPT;
@@ -170,8 +171,9 @@ export function createResumer(options: {
   const verifiedLaunch = (check: SubscriptionCheck, launch: LaunchContext | undefined) => check.identity ? launch : undefined;
 
   // Only the fields read here, so the request type can grow across Paseo versions.
-  function rememberSession(request: Pick<PluginSessionOpenRequest, "agentId" | "purpose" | "env">): void {
-    if (request.purpose === "interactive") launches.set(request.agentId, { context: captureLaunch(request), tokens: captureTokens(request) });
+  function rememberSession(request: Pick<PluginSessionOpenRequest, "agentId" | "purpose" | "env"> & { labels?: PluginSessionOpenRequest["labels"] | null }): void {
+    // A subagent's session belongs to its parent; nothing here is resumed on its own.
+    if (request.purpose === "interactive" && !isSubagent(request)) launches.set(request.agentId, { context: captureLaunch(request), tokens: captureTokens(request) });
   }
 
   async function loadAgent(api: ResumerApi, agentId: string): Promise<PaseoAgent | null> {
@@ -187,6 +189,12 @@ export function createResumer(options: {
   async function onTurnEnded(event: TurnEnded, api: ResumerApi): Promise<void> {
     try {
       const { outcome } = event;
+      // A subagent is the parent's to resume, so its turn end is not inspected: with no row, or a
+      // claim left sending, nothing is read or planned. A legacy row is still settled below.
+      if (isSubagent(event.agent)) {
+        const row = (await store.list()).find((job) => job.agentId === event.agent.id);
+        if (!row || row.state === "sending") return;
+      }
       const observedAt = now();
       let stop = null;
       let overloaded = false;
@@ -251,6 +259,8 @@ export function createResumer(options: {
     if (action.cancel) await retire(agentId, (current) => stillSeen(current, "pending"), action.cancel);
     // A continue already sent was reported when it went, so it is cleared quietly.
     if (action.clearSent) await store.update(agentId, (current) => (stillSeen(current, "sent") ? null : undefined));
+    // A subagent is planned by its parent: a legacy row above is settled, but nothing new is made.
+    if (agent && isSubagent(agent)) return;
     if (!action.schedules || !agent || !stop) return;
     const settings = await readSettings();
     const source = settings && (await resumableSource(api, agent.provider, settings));
@@ -265,6 +275,8 @@ export function createResumer(options: {
     observedAt: Date,
     options: { onlyIfNone: boolean; overload?: boolean },
   ): Promise<void> {
+    // Only a parent agent's stops are resumed; a subagent's reservation is never planned.
+    if (isSubagent(agent)) return;
     if (options.overload && !(await overloadRetry())) return;
     const previous = (await store.list()).find((job) => job.agentId === agent.id);
     // A missed stop is planned unless a reservation is still waiting or being sent; after a sent
@@ -377,6 +389,8 @@ export function createResumer(options: {
     const { entries } = await api.agents.list(query);
     const since = now().getTime() - SCAN_WINDOW_MS;
     for (const { agent } of entries) {
+      // A subagent is the parent's to resume, so it is skipped before any workspace or timeline read.
+      if (isSubagent(agent)) continue;
       const source = isProviderOn(agent.provider, settings) ? cliFor(config, agent.provider) : null;
       if (!source || agent.archivedAt) continue;
       if (Date.parse(agent.updatedAt) < since) continue;
@@ -484,6 +498,9 @@ export function createResumer(options: {
     };
     const agent = await loadAgent(api, job.agentId);
     const title = agent && titleOf(agent);
+    // A subagent is the parent's to resume: a reservation made before this check ends here, ahead
+    // of the background switch and every other check, like an agent that is gone.
+    if (agent && isSubagent(agent)) return cancel({ ...canceled("subagent", "subagents are managed by their parent agent"), title });
     // Step 2 precedes the agent's state: the stored flag decides on its own, even when the agent
     // is gone, and a row written before the switch existed reads the agent when it still exists.
     if (!settings.resumeBackground && (job.background === true || (agent && (await isBackground(api, agent))))) {

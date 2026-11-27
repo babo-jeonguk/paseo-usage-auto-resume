@@ -232,10 +232,11 @@ function turnEnded(
   provider: string,
   outcome: PluginTurnOutcome,
   timeline: AgentTimelineItem[] = [{ type: "user_message", text: "Implement the feature" }],
+  parentAgentId: string | null = null,
 ): PluginLifecycleEvents["agent.turn_ended"] {
   turnTimelines.set(agentId, timeline);
   return {
-    agent: { id: agentId, workspaceId: "wks", parentAgentId: null, provider, cwd: "/repo", title: null, metadata: {}, background: false },
+    agent: { id: agentId, workspaceId: "wks", parentAgentId, provider, cwd: "/repo", title: null, metadata: {}, background: false },
     turnId: "turn-1",
     outcome,
   };
@@ -3573,4 +3574,282 @@ test("a provider switch turned off while a limit reservation is being planned ca
   await scheduling;
   assert.deepEqual(await store.list(), []);
   assert.deepEqual(await recorded(), ["c1 canceled/provider_off"]);
+});
+
+const SUBAGENT_LABEL = { "paseo.parent-agent-id": "parent-1" };
+
+test("foreground subagent limit and overload stops make no reservation without reading timeline or subscription", async () => {
+  let inspections = 0;
+  const { api, resumer, timelineReads, workspaceReads } = await setup({
+    sub: { provider: "codex", background: false, workspaceId: "wks-1", labels: SUBAGENT_LABEL },
+    csub: { provider: "claude", background: false, workspaceId: "wks-1", labels: SUBAGENT_LABEL },
+  }, {
+    readResumeSettings: async () => labs,
+    readSubscription: async () => {
+      inspections += 1;
+      return { auth: "subscription", status: "ready", identity: "account" };
+    },
+  });
+  timelineReads.length = 0;
+  await resumer.onTurnEnded(turnEnded("sub", "codex", failed(CODEX_LIMIT), undefined, "parent-1"), api);
+  await resumer.onTurnEnded(turnEnded("sub", "codex", failed(CAPACITY), undefined, "parent-1"), api);
+  await resumer.onTurnEnded(turnEnded("csub", "claude", { kind: "completed" }, claudeNotice(CLAUDE_LIMIT), "parent-1"), api);
+
+  assert.deepEqual(await store.list(), []);
+  assert.deepEqual(timelineReads, []);
+  assert.equal(workspaceReads(), 0);
+  assert.equal(inspections, 0);
+});
+
+test("defense-in-depth skips a subagent from its snapshot label even when turn_ended omits parentAgentId", async () => {
+  let inspections = 0;
+  const { api, resumer, workspaceReads } = await setup({
+    sub: { provider: "codex", background: false, workspaceId: "wks-1", labels: SUBAGENT_LABEL },
+  }, {
+    readResumeSettings: async () => labs,
+    readSubscription: async () => {
+      inspections += 1;
+      return { auth: "subscription", status: "ready", identity: "account" };
+    },
+  });
+  await resumer.onTurnEnded(turnEnded("sub", "codex", failed(CODEX_LIMIT)), api);
+  await resumer.onTurnEnded(turnEnded("sub", "codex", failed(CAPACITY)), api);
+
+  assert.deepEqual(await store.list(), []);
+  assert.equal(workspaceReads(), 0);
+  assert.equal(inspections, 0);
+});
+
+test("background subagents get no reservation even with Resume background agents turned on", async () => {
+  const on = { ...DEFAULT_PROVIDER_SETTINGS, resumeBackground: true };
+  const { api, resumer } = await setup({
+    bgSub: { provider: "codex", background: true, labels: SUBAGENT_LABEL },
+    wksSub: { provider: "codex", workspaceId: "wks-bg", labels: SUBAGENT_LABEL },
+  }, {
+    readSettings: async () => on,
+    backgroundWorkspaces: ["wks-bg"],
+  });
+  await resumer.onTurnEnded(turnEnded("bgSub", "codex", failed(CODEX_LIMIT), undefined, "parent-1"), api);
+  await resumer.onTurnEnded(turnEnded("wksSub", "codex", failed(CODEX_LIMIT)), api);
+
+  assert.deepEqual(await store.list(), []);
+});
+
+test("blank or whitespace-only parent-agent labels and IDs still schedule normally", async () => {
+  const { api, resumer } = await setup({
+    a1: { provider: "codex", labels: { "paseo.parent-agent-id": "" } },
+    a2: { provider: "codex", labels: { "paseo.parent-agent-id": "   " } },
+  });
+  await resumer.onTurnEnded(turnEnded("a1", "codex", failed(CODEX_LIMIT), undefined, ""), api);
+  await resumer.onTurnEnded(turnEnded("a2", "codex", failed(CODEX_LIMIT), undefined, " \t "), api);
+
+  assert.deepEqual(
+    (await store.list()).map((job) => [job.agentId, job.dueAt]).sort(),
+    [["a1", CODEX_DUE], ["a2", CODEX_DUE]],
+  );
+});
+
+test("a subagent that received a direct user message stays excluded", async () => {
+  const { api, resumer } = await setup({
+    sub: { provider: "codex", labels: SUBAGENT_LABEL, lastUserMessageAt: "2026-10-06T02:55:00.000Z" },
+  });
+  await resumer.onTurnEnded(turnEnded("sub", "codex", failed(CODEX_LIMIT), undefined, "parent-1"), api);
+  await resumer.onTurnEnded(turnEnded("sub", "codex", failed(CODEX_LIMIT)), api);
+
+  assert.deepEqual(await store.list(), []);
+});
+
+test("startup and rescan recovery skip subagents without reading workspaces or timelines, even with background agents on", async () => {
+  let settings = { ...DEFAULT_PROVIDER_SETTINGS };
+  const { agents, resumer, timelineReads, workspaceReads } = await setup({
+    subErr: { provider: "codex", status: "error", lastError: CODEX_LIMIT, workspaceId: "wks-sub", labels: SUBAGENT_LABEL },
+    subIdle: { provider: "claude", status: "idle", workspaceId: "wks-sub", labels: SUBAGENT_LABEL },
+    subBg: { provider: "codex", status: "error", lastError: CODEX_LIMIT, background: true, labels: SUBAGENT_LABEL },
+  }, {
+    readSettings: async () => settings,
+    timelines: { subIdle: claudeNotice(CLAUDE_LIMIT) },
+  });
+  assert.deepEqual(await store.list(), []);
+  assert.equal(workspaceReads(), 0);
+  assert.deepEqual(timelineReads, []);
+
+  settings = { ...DEFAULT_PROVIDER_SETTINGS, resumeBackground: true };
+  await resumer.scanIfAttached();
+  assert.deepEqual(await store.list(), []);
+  assert.equal(workspaceReads(), 0);
+  assert.deepEqual(timelineReads, []);
+
+  agents.set("top", { provider: "codex", status: "error", lastError: CODEX_LIMIT });
+  await resumer.scanIfAttached();
+  assert.deepEqual((await store.list()).map((job) => job.agentId), ["top"]);
+});
+
+test("due-time tick cancels pre-existing subagent reservations with reason subagent before background, state, or usage checks", async () => {
+  let inspections = 0;
+  let settings = { ...DEFAULT_PROVIDER_SETTINGS, resumeBackground: true };
+  const base = { provider: "codex", resetAt: null, dueAt: CODEX_DUE, baseline: "2026-10-06T02:00:00.000Z", attempts: 0, state: "pending" as const };
+  await writeFile(join(dir, "jobs.json"), JSON.stringify({
+    version: 1,
+    jobs: [
+      { ...base, agentId: "fg", enabled: true },
+      { ...base, agentId: "off", enabled: false },
+      { ...base, agentId: "busy", enabled: true },
+      { ...base, agentId: "bg", enabled: true, background: true },
+      { ...base, agentId: "goneBg", enabled: true, background: true },
+      { ...base, agentId: "gonePlain", enabled: true },
+    ],
+  }));
+  const { resumer, sent, workspaceReads } = await setup({
+    fg: { provider: "codex", title: "Foreground sub", workspaceId: "wks-1", labels: SUBAGENT_LABEL },
+    off: { provider: "codex", workspaceId: "wks-1", labels: SUBAGENT_LABEL },
+    busy: { provider: "codex", status: "running", workspaceId: "wks-1", labels: SUBAGENT_LABEL },
+    bg: { provider: "codex", background: true, workspaceId: "wks-bg", labels: SUBAGENT_LABEL },
+  }, {
+    readSettings: async () => settings,
+    backgroundWorkspaces: ["wks-bg"],
+    readSubscription: async () => {
+      inspections += 1;
+      return { auth: "subscription", status: "ready", identity: "account" };
+    },
+  });
+
+  // Flip background off without sweeping so deliver() itself must prioritize subagent over background_off.
+  settings = { ...DEFAULT_PROVIDER_SETTINGS };
+  clock = new Date(CODEX_DUE);
+  await resumer.tick();
+
+  assert.deepEqual(await store.list(), []);
+  assert.deepEqual(sent, []);
+  assert.equal(workspaceReads(), 0);
+  assert.equal(inspections, 0);
+  assert.deepEqual(await recorded(), [
+    "fg canceled/subagent",
+    "off canceled/subagent",
+    "busy canceled/subagent",
+    "bg canceled/subagent",
+    "goneBg canceled/background_off",
+    "gonePlain canceled/agent_missing",
+  ]);
+  assert.equal((await history.list()).find((entry) => entry.agentId === "fg")?.title, "Foreground sub");
+});
+
+test("Resume now cancels a pre-existing subagent reservation immediately with manual trigger and no usage check", async () => {
+  let inspections = 0;
+  let settings = { ...DEFAULT_PROVIDER_SETTINGS, resumeBackground: true };
+  await writeFile(join(dir, "jobs.json"), JSON.stringify({
+    version: 1,
+    jobs: [{
+      agentId: "sub", provider: "codex", resetAt: null, dueAt: CODEX_DUE,
+      baseline: "2026-10-06T02:00:00.000Z", attempts: 0, state: "pending", enabled: false, background: true,
+    }],
+  }));
+  const { api, resumer, sent, workspaceReads } = await setup({
+    sub: { provider: "codex", title: "Delegated worker", status: "running", background: true, workspaceId: "wks-bg", labels: SUBAGENT_LABEL },
+  }, {
+    readSettings: async () => settings,
+    backgroundWorkspaces: ["wks-bg"],
+    readSubscription: async () => {
+      inspections += 1;
+      return { auth: "subscription", status: "ready", identity: "account" };
+    },
+  });
+
+  settings = { ...DEFAULT_PROVIDER_SETTINGS };
+  assert.deepEqual(await resumer.resumeNow(api, "sub", await pinOf(store, "sub")), { result: "canceled", reason: "subagent" });
+  assert.deepEqual(await store.list(), []);
+  assert.deepEqual(sent, []);
+  assert.equal(workspaceReads(), 0);
+  assert.equal(inspections, 0);
+  assert.deepEqual(await recorded(), ["sub canceled/subagent (manual)"]);
+  assert.equal((await history.list())[0]?.title, "Delegated worker");
+});
+
+test("pre-existing pending, sent, and sending subagent rows still clean up accurately on turn_ended", async () => {
+  let inspections = 0;
+  const { api, agents, resumer, timelineReads } = await setup({
+    s1: { provider: "codex", labels: SUBAGENT_LABEL },
+    s2: { provider: "codex", labels: SUBAGENT_LABEL },
+    s3: { provider: "codex", labels: SUBAGENT_LABEL },
+    s4: { provider: "claude", labels: SUBAGENT_LABEL },
+    s5: { provider: "codex", labels: SUBAGENT_LABEL },
+  }, {
+    readSubscription: async () => {
+      inspections += 1;
+      return { auth: "subscription", status: "ready", identity: "account" };
+    },
+  });
+  const seed = (agentId: string, provider: string, state: "pending" | "sent" | "sending") =>
+    store.update(agentId, () => ({
+      id: `job-${agentId}`, agentId, provider, resetAt: "2026-10-06T05:00:00.000Z", dueAt: CODEX_DUE,
+      baseline: "2026-10-06T02:00:00.000Z", attempts: 0, retries: 0, state, enabled: true,
+    }));
+
+  // 1. pending + finished turn -> canceled/turn_finished
+  await seed("s1", "codex", "pending");
+  await resumer.onTurnEnded(turnEnded("s1", "codex", { kind: "completed" }, undefined, "parent-1"), api);
+  assert.equal((await store.list()).find((j) => j.agentId === "s1"), undefined);
+  assert.deepEqual(await recorded(), ["s1 canceled/turn_finished"]);
+
+  // 2. sent + finished turn -> cleared silently
+  await seed("s2", "codex", "sent");
+  await resumer.onTurnEnded(turnEnded("s2", "codex", { kind: "completed" }, undefined, "parent-1"), api);
+  assert.equal((await store.list()).find((j) => j.agentId === "s2"), undefined);
+  assert.deepEqual(await recorded(), ["s1 canceled/turn_finished"]);
+
+  // 3. pending + new_message + limit stop -> canceled/new_message and does not schedule
+  await seed("s3", "codex", "pending");
+  agents.set("s3", { provider: "codex", labels: SUBAGENT_LABEL, lastUserMessageAt: "2026-10-06T03:30:00.000Z" });
+  await resumer.onTurnEnded(turnEnded("s3", "codex", failed(CODEX_LIMIT), undefined, "parent-1"), api);
+  assert.equal((await store.list()).find((j) => j.agentId === "s3"), undefined);
+  assert.deepEqual(await recorded(), ["s1 canceled/turn_finished", "s3 canceled/new_message"]);
+
+  // 4. pending + limit stop without new message -> neither mis-canceled as turn_finished nor replanned
+  await seed("s4", "claude", "pending");
+  const beforeS4 = (await store.list()).find((j) => j.agentId === "s4");
+  await resumer.onTurnEnded(turnEnded("s4", "claude", { kind: "completed" }, claudeNotice(CLAUDE_LIMIT), "parent-1"), api);
+  assert.deepEqual((await store.list()).find((j) => j.agentId === "s4"), beforeS4);
+  assert.deepEqual(await recorded(), ["s1 canceled/turn_finished", "s3 canceled/new_message"]);
+
+  // 5. sending -> fast-path skips timeline read and leaves sending claim untouched
+  await seed("s5", "codex", "sending");
+  timelineReads.length = 0;
+  await resumer.onTurnEnded(turnEnded("s5", "codex", { kind: "completed" }, undefined, "parent-1"), api);
+  assert.deepEqual(timelineReads, []);
+  assert.equal((await store.list()).find((j) => j.agentId === "s5")?.state, "sending");
+
+  assert.equal(inspections, 0);
+});
+
+test("rememberSession skips caching launch context and automation tokens for subagents", async () => {
+  const seen = new Map<string, { launch: unknown; tokens: unknown }>();
+  const { api, resumer } = await setup({
+    "sub-id": { provider: "codex" },
+    "top-id": { provider: "codex" },
+  }, {
+    readSubscription: async (_api, agent, _source, _at, launch, _mode, tokens) => {
+      seen.set(agent.id, { launch, tokens });
+      return { auth: "subscription", status: "ready", identity: "account" };
+    },
+  });
+
+  resumer.rememberSession({
+    agentId: "sub-id",
+    purpose: "interactive",
+    env: { CODEX_HOME: join(dir, "sub-home"), CODEX_ACCESS_TOKEN: "tok-sub" },
+    labels: SUBAGENT_LABEL,
+  });
+  resumer.rememberSession({
+    agentId: "top-id",
+    purpose: "interactive",
+    env: { CODEX_HOME: join(dir, "top-home"), CODEX_ACCESS_TOKEN: "tok-top" },
+    labels: {},
+  });
+
+  await resumer.onTurnEnded(turnEnded("sub-id", "codex", failed(CODEX_LIMIT)), api);
+  await resumer.onTurnEnded(turnEnded("top-id", "codex", failed(CODEX_LIMIT)), api);
+
+  assert.deepEqual(seen.get("sub-id"), { launch: undefined, tokens: undefined });
+  const top = seen.get("top-id") as { launch?: { env: Record<string, string> }; tokens?: Record<string, string> };
+  assert.equal(top.launch?.env.CODEX_HOME, join(dir, "top-home"));
+  assert.equal(top.tokens?.CODEX_ACCESS_TOKEN, "tok-top");
 });
