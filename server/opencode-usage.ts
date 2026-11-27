@@ -128,15 +128,22 @@ async function selectCredentials(env: NodeJS.ProcessEnv, sessionId: string): Pro
   });
 }
 
-/** Whether a credential names OpenCode's own Console: no metadata, or its current or retired origin. */
-const isDefaultConsole = (value: Record<string, unknown>): boolean => {
+/** Which Console a credential names: OpenCode's own, another valid HTTP server, or unreadable metadata. */
+const consoleTarget = (value: Record<string, unknown>): "default" | "other" | "invalid" => {
   const metadata = value.metadata;
-  if (metadata === undefined || metadata === null) return true;
-  if (typeof metadata !== "object" || Array.isArray(metadata)) return false;
+  if (metadata === undefined || metadata === null) return "default";
+  if (typeof metadata !== "object" || Array.isArray(metadata)) return "invalid";
   const server = record(metadata).server;
-  if (server === undefined) return true;
-  if (typeof server !== "string") return false;
-  return server.replace(/^https:\/\/console\.opencode\.ai(?=\/|$)/, CONSOLE_SERVER) === CONSOLE_SERVER;
+  if (server === undefined) return "default";
+  if (typeof server !== "string") return "invalid";
+  const mapped = server.replace(/^https:\/\/console\.opencode\.ai(?=\/|$)/, CONSOLE_SERVER);
+  if (mapped === CONSOLE_SERVER) return "default";
+  try {
+    const url = new URL(server);
+    return url.protocol === "https:" || url.protocol === "http:" ? "other" : "invalid";
+  } catch {
+    return "invalid";
+  }
 };
 
 const parseValue = (raw: unknown): Record<string, unknown> => {
@@ -150,7 +157,9 @@ type CredentialRowClass = UnusableCredential | { kind: "candidate"; key: string;
 
 /** How one stored credential classifies as a Go key for OpenCode's own Console. */
 const classifyCredential = (value: Record<string, unknown>, keyType: string): CredentialClass => {
-  if (!isDefaultConsole(value)) return { kind: "other_server" };
+  const target = consoleTarget(value);
+  if (target === "other") return { kind: "other_server" };
+  if (target === "invalid") return { kind: "invalid" };
   if (value.type === "oauth") return { kind: "oauth" };
   return value.type === keyType && bearerKey(value.key)
     ? { kind: "candidate", key: value.key }
@@ -304,27 +313,29 @@ export function createOpenCodeUsageReader(deps: {
     }
 
     // Two possible keys bind only on the one a confirmed usage check used; none means no evidence.
-    const sole = consoleCandidate ?? goCandidate;
-    if (!sole) return unavailable(selection.go ? "invalid_credential" : "missing_credential");
     if (mode === "identity") {
-      return consoleCandidate && goCandidate
-        ? { auth: "subscription", status: "unknown" }
-        : { auth: "subscription", status: "unknown", identity: sole.identity };
-    }
-    // A dedicated opencode-go key answers alone; its own failure still belongs to it.
-    if (!consoleCandidate) {
-      const answer = await goAnswer(sole.key);
-      return parseGoResult(answer?.ok ? answer.body : null, sole.identity);
+      if (consoleCandidate && goCandidate) return { auth: "subscription", status: "unknown" };
+      const single = consoleCandidate ?? goCandidate;
+      if (!single) return unavailable(selection.go ? "invalid_credential" : "missing_credential");
+      return { auth: "subscription", status: "unknown", identity: single.identity };
     }
     // The Console key is checked first; only a rejected one falls back to the opencode-go key.
-    const answer = await goAnswer(consoleCandidate.key);
-    if (answer?.ok) return parseGoResult(answer.body, consoleCandidate.identity);
-    if (goCandidate && answer && (answer.status === 401 || answer.status === 403)) {
-      const retry = await goAnswer(goCandidate.key);
-      if (retry?.ok) return parseGoResult(retry.body, goCandidate.identity);
+    if (consoleCandidate) {
+      const answer = await goAnswer(consoleCandidate.key);
+      if (answer?.ok) return parseGoResult(answer.body, consoleCandidate.identity);
+      if (goCandidate && answer && (answer.status === 401 || answer.status === 403)) {
+        const retry = await goAnswer(goCandidate.key);
+        if (retry?.ok) return parseGoResult(retry.body, goCandidate.identity);
+      }
+      // A temporary failure, or a rejected Console key with a failed fallback, never binds a Console key.
+      reason("usage_unavailable");
+      return { auth: "subscription", status: "unknown" };
     }
-    // A temporary failure, or a rejected Console key with a failed fallback, never binds a Console key.
-    reason("usage_unavailable");
-    return { auth: "subscription", status: "unknown" };
+    // A dedicated opencode-go key answers alone; its own failure still belongs to it.
+    if (goCandidate) {
+      const answer = await goAnswer(goCandidate.key);
+      return parseGoResult(answer?.ok ? answer.body : null, goCandidate.identity);
+    }
+    return unavailable(selection.go ? "invalid_credential" : "missing_credential");
   };
 }
