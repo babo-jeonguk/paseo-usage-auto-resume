@@ -345,6 +345,9 @@ test("reader: an opencode Console OAuth login on the default Console blocks fall
     { orgID: "org_123" },
     { server: "https://opencode.ai/console", orgID: "org_123" },
     { server: "https://console.opencode.ai", orgID: "org_123" },
+    { server: "https://OPENCODE.AI:443/console", orgID: "org_123" },
+    { server: "https://CONSOLE.OPENCODE.AI:443/", orgID: "org_123" },
+    { server: "https://opencode.ai/console/", orgID: "org_123" },
   ]) {
     const data = await openCodeData(t);
     data.session(SESSION);
@@ -462,7 +465,7 @@ test("reader: credentials for another Console server are skipped, malformed meta
     assert.equal(fFile.calls.fetches, 0, `auth.json key with metadata ${JSON.stringify(rejectedMetadata)} must never be sent to opencode.ai`);
   }
 
-  for (const acceptedServer of ["https://opencode.ai/console", "https://console.opencode.ai"] as const) {
+  for (const acceptedServer of ["https://opencode.ai/console", "https://console.opencode.ai", "https://OPENCODE.AI:443/console", "https://CONSOLE.OPENCODE.AI:443/"] as const) {
     const validFile = await openCodeData(t);
     validFile.session(SESSION);
     await validFile.authFile({ "opencode-go": { type: "api", key: GO_KEY, metadata: { server: acceptedServer } } });
