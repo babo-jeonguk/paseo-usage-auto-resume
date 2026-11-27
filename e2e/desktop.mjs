@@ -109,8 +109,8 @@ await nativeRun('desktop', args, async ctx => {
     assert.equal(instance.desktopManaged, true);
     assert(Number.isSafeInteger(instance.pid) && instance.pid > 0, 'Desktop daemon PID');
     const executablePath = isWin
-      ? (await run('powershell.exe', ['-NoProfile', '-Command',
-        `(Get-CimInstance Win32_Process -Filter "ProcessId=${instance.pid}").ExecutablePath`], { timeout: 15_000, windowsHide: true })).stdout.trim()
+      ? (await run(launcher, ['--process-path', String(instance.pid)],
+        { env: environment, timeout: 15_000, windowsHide: true })).stdout.trim()
       : `/proc/${instance.pid}/exe`;
     const daemonPath = await realpath(executablePath);
     assert.equal(isWin ? daemonPath.toLowerCase() : daemonPath, isWin ? binary.toLowerCase() : binary);
@@ -209,9 +209,14 @@ await nativeRun('desktop', args, async ctx => {
 
   await check('Electron owns the version-matched daemon and loads the installed plugin', async () => {
     if (isWin) {
-      await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'RemoteSigned', '-File',
+      const buildLog = 'desktop-job-build.log';
+      artifacts[buildLog] = join(root, buildLog);
+      const build = spawnLogged('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'RemoteSigned', '-File',
         fileURLToPath(new URL('./desktop-job-build.ps1', import.meta.url)), '-Output', launcher],
-      { env: environment, cwd: root, timeout: 180_000, windowsHide: true });
+      { env: environment, cwd: root, log: artifacts[buildLog] });
+      dispose(() => build.pid && running(build) ? killTree(build) : undefined);
+      await waitFor(() => !running(build), 'Windows job launcher build');
+      assert.equal(build.exitCode, 0, `Windows launcher build failed. See ${buildLog}.`);
     }
     await startApp();
     report.daemon = await assertManaged();

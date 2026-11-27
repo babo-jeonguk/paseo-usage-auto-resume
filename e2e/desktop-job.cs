@@ -2,6 +2,7 @@ using System;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 
 public static class DesktopJob
@@ -48,11 +49,18 @@ public static class DesktopJob
 
     public static int Main(string[] args)
     {
-        ushort port;
-        if (args.Length != 2 || !ushort.TryParse(args[1], out port) || port == 0) {
-            Console.Error.WriteLine("Usage: desktop-job.exe <Paseo.exe> <debugging port>");
-            return 2;
+        int number;
+        if (args.Length != 2 || !int.TryParse(args[1], out number) || number <= 0) {
+            throw new ArgumentException("Expected <Paseo.exe> <debugging port> or --process-path <pid>");
         }
+        if (args[0] == "--process-path") {
+            using (Process process = Process.GetProcessById(number)) {
+                Console.OutputEncoding = new UTF8Encoding(false);
+                Console.WriteLine(process.MainModule.FileName);
+            }
+            return 0;
+        }
+        if (number > ushort.MaxValue) throw new ArgumentOutOfRangeException("debugging port");
 
         // Join the job before starting Electron so the kernel owns every descendant.
         IntPtr job = CreateJobObject(IntPtr.Zero, IntPtr.Zero);
@@ -68,7 +76,7 @@ public static class DesktopJob
 
         // The OS closes our noninheritable job handle on exit, including forced termination.
         using (Process app = Process.Start(new ProcessStartInfo(args[0],
-            "--no-sandbox --remote-debugging-port=" + port) { UseShellExecute = false })) {
+            "--no-sandbox --remote-debugging-port=" + number) { UseShellExecute = false })) {
             if (app == null) throw new InvalidOperationException("Could not start Paseo");
             Console.WriteLine("Started Paseo " + app.Id + " in the Desktop E2E job");
             Accounting accounting;
