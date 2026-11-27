@@ -502,42 +502,48 @@ export function createResumer(options: {
       if (on === null) return { result: "unavailable" };
       return on ? null : cancel({ ...canceled("overload_off", "overload retry turned off"), title });
     };
-    /**
-     * The eligibility checks in the table's order, shared by the pre-usage pass and the re-check
-     * just before the claim. `source` is passed back on the second pass so no config is read twice.
-     */
-    const checkGate = async (
-      source?: UsageSource,
-      fallbackTitle: string | null = null,
-    ): Promise<Delivery | { agent: PaseoAgent; source: UsageSource; title: string | null }> => {
-      const labs = await labsGate(fallbackTitle);
+    const checkSettings = async (title: string | null): Promise<Delivery | ProviderSettings> => {
+      const labs = await labsGate(title);
       if (labs) return labs;
       const settings = await readSettings();
       if (!settings) return { result: "unavailable" };
-      if (!isProviderOn(job.provider, settings)) return cancel({ ...providerOff(job.provider), title: fallbackTitle });
-      const resolved = source ?? cliFor((await api.config.get()).config, job.provider);
-      if (!resolved) {
-        return cancel({ ...canceled("unsupported_cli", `${job.provider} no longer runs Claude, Codex, Antigravity, or OpenCode`), title: fallbackTitle });
-      }
-      const agent = await loadAgent(api, job.agentId);
-      const title = (agent && titleOf(agent)) ?? fallbackTitle;
+      if (!isProviderOn(job.provider, settings)) return cancel({ ...providerOff(job.provider), title });
+      return settings;
+    };
+    // Workspace background is fixed when the agent is created, so it is read once per attempt.
+    let cachedBackground: boolean | undefined = job.background === true ? true : undefined;
+    const knownBackground = async (current: PaseoAgent): Promise<boolean> => {
+      cachedBackground ??= await isBackground(api, current);
+      return cachedBackground;
+    };
+    const checkAgent = async (
+      agent: PaseoAgent | null,
+      settings: ProviderSettings,
+      source: UsageSource,
+      title: string | null,
+    ): Promise<Delivery | PaseoAgent> => {
       // A subagent is the parent's to resume: a reservation made before this check ends here, ahead
       // of the background switch and every other check, like an agent that is gone.
       if (agent && isSubagent(agent)) return cancel({ ...subagentCanceled(), title });
       // Step 2 precedes the agent's state: the stored flag decides on its own, even when the agent
       // is gone, and a row written before the switch existed reads the agent when it still exists.
-      if (!settings.resumeBackground && (job.background === true || (agent && (await isBackground(api, agent))))) {
+      if (!settings.resumeBackground && (job.background === true || (agent && (await knownBackground(agent))))) {
         return cancel({ ...backgroundOff(), title });
       }
-      const gate = agentGate(job, agent, mode, resolved);
+      const gate = agentGate(job, agent, mode, source);
       if (gate) return gated(gate, title);
       // agentGate returned null, which it only does for an agent it found.
-      return { agent: agent!, source: resolved, title };
+      return agent!;
     };
 
-    const before = await checkGate();
-    if ("result" in before) return before;
-    const { agent, source, title } = before;
+    const settings = await checkSettings(null);
+    if ("result" in settings) return settings;
+    const source = cliFor((await api.config.get()).config, job.provider);
+    if (!source) return cancel(canceled("unsupported_cli", `${job.provider} no longer runs Claude, Codex, Antigravity, or OpenCode`));
+    const preAgent = await loadAgent(api, job.agentId);
+    const title = preAgent && titleOf(preAgent);
+    const agent = await checkAgent(preAgent, settings, source, title);
+    if ("result" in agent) return agent;
     const session = launchOf(job.agentId, job.launch);
     const check = await inspect(api, agent, source, at, session);
     if (check.auth === "api") return cancel({ ...API_ROUTE, title });
@@ -558,9 +564,22 @@ export function createResumer(options: {
       return { result: "postponed" };
     }
     // The usage lookup takes seconds, and Paseo's send unarchives an agent, clears its permission
-    // requests and replaces a running turn, so every check runs again just before the claim.
-    const after = await checkGate(source, title);
-    if ("result" in after) return after;
+    // requests and replaces a running turn, so the agent and the switches are read once more just
+    // before the claim. The async agent read finishes before the final settings read, so no RPC
+    // that changes the switches can land after them and before the write.
+    const latestAgent = await loadAgent(api, job.agentId);
+    const latestTitle = (latestAgent && titleOf(latestAgent)) ?? title;
+    const currentSettings = await checkSettings(latestTitle);
+    if ("result" in currentSettings) return currentSettings;
+    // A pre-upgrade row without the stored flag may need the workspace read in `checkAgent`, an RPC
+    // that would then sit between the settings read and the claim.
+    const needsWorkspace = cachedBackground === undefined && !currentSettings.resumeBackground && !!latestAgent && !isSubagent(latestAgent);
+    const verified = await checkAgent(latestAgent, currentSettings, source, latestTitle);
+    if ("result" in verified) return verified;
+    if (needsWorkspace) {
+      const finalSettings = await checkSettings(latestTitle);
+      if ("result" in finalSettings) return finalSettings;
+    }
     // Claim before sending so a crash mid-send, or a tick and Resume now at once, never delivers
     // a second continue. The current row decides: the job may have been turned off while the
     // agent was being checked, which only stops the tick.
@@ -589,14 +608,14 @@ export function createResumer(options: {
       if (isConnectionClosed(error)) throw error;
       await store.update(job.agentId, (current) => (current?.state === "sending" && current.id === job.id ? null : undefined));
       console.error(`[usage-auto-resume] could not continue ${job.agentId}`, String(error));
-      await record(job, { outcome: "send_failed", title: after.title, trigger });
+      await record(job, { outcome: "send_failed", title: latestTitle, trigger });
       return { result: "send_failed" };
     }
     // The sent row stays until the agent's next turn ends, which clears it without a report. The
     // note went with the continue, so the user's text is not kept any longer.
     await store.update(job.agentId, (current) => (current?.state === "sending" && current.id === job.id ? sent(current) : undefined));
     log(`continued ${job.agentId}${manual ? " on request" : ""}`);
-    await record(job, { outcome: "continued", title: after.title, trigger });
+    await record(job, { outcome: "continued", title: latestTitle, trigger });
     return { result: "sent" };
   }
 
