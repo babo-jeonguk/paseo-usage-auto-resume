@@ -1,8 +1,51 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { androidUi } from './android-device.mjs';
 import { PLUGIN } from './core.mjs';
 import { modelContinueRequests } from './native-fixture.mjs';
 import { scheduleWire } from './schedule-wire.mjs';
+
+const tree = (...nodes) => `<hierarchy>${nodes.map(attrs => `<node bounds="[1,1][10,10]" ${attrs}/>`).join('')}</hierarchy>`;
+const field = text => `package="sh.paseo" class="android.widget.EditText" content-desc="Host" text="${text}"`;
+const anrDialog = title => tree(`package="android" resource-id="android:id/alertTitle" text="${title}"`,
+  'package="android" resource-id="android:id/aerr_wait" enabled="true" text="Wait"');
+
+test('Android input completes after the intended field shows the entire value', async () => {
+  const snapshots = [tree(field('')), tree(field('127.'), 'package="sh.paseo" text="127.0.0.1"'), tree(field('127.0.0.1'))];
+  const commands = [];
+  const device = androidUi({ dump: async () => snapshots.shift(), tapNode: async () => {},
+    shell: async (...args) => commands.push(args), report: {} });
+  await device.type('Host', '127.0.0.1');
+  assert.equal(snapshots.length, 0);
+  assert.deepEqual(commands.filter(([, kind]) => kind === 'text'), [['input', 'text', '127.0.0.1']]);
+});
+
+test('Android auto-dismisses only System UI ANRs and records other dialogs', async () => {
+  const report = {};
+  let taps = 0;
+  let title = 'System UI isn’t responding';
+  const device = androidUi({ dump: async () => anrDialog(title), tapNode: async () => { taps++; }, report });
+  await device.nodes();
+  assert.equal(report.anrDismissed, 1);
+  title = 'Another app isn’t responding';
+  await device.nodes();
+  assert.deepEqual(report.anrDialogs, ['System UI isn’t responding', 'Another app isn’t responding']);
+  title = 'Paseo isn’t responding';
+  await assert.rejects(device.nodes(), /Paseo ANR/);
+  assert.equal(taps, 1);
+});
+
+test('Android failed UI waits preserve the dump outcome', async () => {
+  const report = {};
+  let attempts = 0;
+  const device = androidUi({ dump: async () => {
+    attempts++;
+    return 'ERROR: could not get idle state.';
+  }, report });
+  await assert.rejects(device.find('Direct connection', 10), /Android UI Direct connection/);
+  assert.ok(attempts > 0);
+  assert.deepEqual(report.uiWaitFailure.observations, { noHierarchy: attempts });
+});
 
 const send = (observer, fields) => observe(observer, 'sent', { pluginId: PLUGIN, ...fields });
 const receive = (observer, type, payload) => observe(observer, 'received', { type, payload });

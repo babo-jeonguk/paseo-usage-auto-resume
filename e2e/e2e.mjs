@@ -14,7 +14,7 @@ import { cp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { patchEntry } from './patch-plugin.mjs';
+import { patchEntry, storedJobsMethod } from './patch-plugin.mjs';
 import { cliBin, connectToDaemon, daemonErrors, DEFAULT_MARK, freePort, installedPlugin, isWin, iso, killTree, options,
   paseoCommand, patchInstalled as patchCopy, PLUGIN, pluginDirectory, providerEnvironment, replace, revisionOf,
   run, runHome, running, saveReport, sleep, SOURCE, spawnLogged, startModels, startProxy, waitFor } from './core.mjs';
@@ -73,11 +73,11 @@ const step = async (item, suite, name, fn) => {
 const note = (item, suite, name, ev) => { results.push({ item, suite, ok: null, name, ev }); log(`NOTE [${item}/${suite}] ${name} :: ${ev}`); };
 
 // ---- data files ---------------------------------------------------------------------------
-const readJobs = async () => existsSync(jobsFile) ? JSON.parse(await readFile(jobsFile, 'utf8')).jobs : [];
+const readJobsFile = async () => existsSync(jobsFile) ? JSON.parse(await readFile(jobsFile, 'utf8')).jobs : [];
 const readHistoryFile = async () => existsSync(historyFile) ? JSON.parse(await readFile(historyFile, 'utf8')).entries : [];
 const writeJobs = async (jobs) => { await mkdir(data, { recursive: true }); await replace(jobsFile, JSON.stringify({ version: 1, jobs }, null, 2)); };
-const jobOf = async (id) => (await readJobs()).find((j) => j.agentId === id);
-const editJob = async (id, patch) => writeJobs((await readJobs()).map((j) => j.agentId === id ? { ...j, ...patch } : j));
+const fileJob = async id => (await readJobsFile()).find(job => job.agentId === id);
+const editJob = async (id, patch) => writeJobs((await readJobsFile()).map((j) => j.agentId === id ? { ...j, ...patch } : j));
 const setUsage = (v) => replace(usageFile, JSON.stringify(v));
 let models, proxy;
 const setModel = (api, value) => models.set(api, value);
@@ -161,11 +161,20 @@ async function startDaemon() {
 }
 // ---- plugin helpers -----------------------------------------------------------------------
 const rpc = (method, input = {}) => client.invokePluginRpc(PLUGIN, method, input);
+const listJobs = async () => (await rpc('auto-resume.list')).jobs;
+const listedJob = async id => (await listJobs()).find(job => job.agentId === id);
+// The public list hides delivered rows. Read them through the queue that owns jobs.json.
+const storedJobs = async () => (await rpc(storedJobsMethod)).jobs;
+const storedJob = async id => (await storedJobs()).find(job => job.agentId === id);
+const waitForScan = (id, description) => waitFor(async () => {
+  const job = await listedJob(id).catch(() => undefined);
+  return job && !job.sending ? job : null;
+}, description, 240000, 3000);
 // The daemon serializes history reads with writes. A live external read can block the rename on Windows.
 const readHistory = async () => (await rpc('auto-resume.history')).entries;
 const pluginDir = async () => pluginDirectory(await installedPlugin(paseo));
 const pluginRevision = async () => revisionOf(await installedPlugin(paseo));
-const patchInstalled = () => patchCopy({ paseo, client, patch: source => patchEntry(source, usageFile) });
+const patchInstalled = () => patchCopy({ paseo, client, patch: source => patchEntry(source, usageFile, { storedJobs: true }) });
 const pluginLogLines = async () => (await readFile(daemonLog, 'utf8').catch(() => '')).split(/\r?\n/).filter((l) => l.includes('[usage-auto-resume]'));
 // The installed release's own provider list. A release that predates a provider cannot discover it,
 // so item 1 expects only the suites that release supports; item 2 checks the version under test.
@@ -210,12 +219,12 @@ const afterContinue = async (id, continuedId, waitMs) => {
     'continue turn ended', waitMs, 1000));
   // 2. The plugin handled that turn end: the delivered reservation is no longer `sent` or `sending`.
   const delivered = (row) => row?.id === continuedId && ['sent', 'sending'].includes(row.state);
-  const handledFailure = await outcome(waitFor(async () => !delivered(await jobOf(id)), 'turn end handled by the plugin', waitMs, 1000));
+  const handledFailure = await outcome(waitFor(async () => !delivered(await storedJob(id)), 'turn end handled by the plugin', waitMs, 1000));
   const ended = !endedFailure, handled = !handledFailure;
   // The final reads decide what is reported, whatever the waits saw.
   const { tail, answers, unknown } = await sinceContinue();
   const notice = unknown ? null : answers.some(isErrorNotice);
-  const row = (await jobOf(id)) ?? null;
+  const row = (await storedJob(id)) ?? null;
   const rowText = !row ? 'cleared' : `${row.id === continuedId ? 'the continued reservation' : 'a new reservation'} left (${row.state}, due ${row.dueAt})`;
   const text = `turn ended ${ended ? 'yes' : `NO (${endedFailure})`}; turn end handled ${handled ? 'yes' : `NO (${handledFailure})`}; `
     + `new limit notice ${notice === null ? `unknown (${unknown})` : notice ? 'YES' : 'no'}; row ${rowText}`;
@@ -251,12 +260,12 @@ const hit = async (a, suite, state = { mode: 'limit' }, timeout = 240000) => {
   await setModel(API[suite], state);
   const t0 = Date.now();
   const turnsBefore = await outcomeCount(a.id);
-  const rowsBefore = new Set((await readJobs()).map((job) => job.id));
+  const rowsBefore = new Set((await storedJobs()).map((job) => job.id));
   try {
     await client.sendAgentMessage(a.id, 'Work on the task.');
     await waitFor(async () => (await outcomeCount(a.id)) > turnsBefore, `turn end for ${a.title}`, timeout, 500);
     const job = await waitFor(async () => {
-      const j = await jobOf(a.id);
+      const j = await storedJob(a.id);
       return j?.state === 'pending' && !rowsBefore.has(j.id) ? j : null;
     }, `reservation for ${a.title}`, timeout, 1000);
     job._latencyMs = Date.now() - t0;
@@ -283,7 +292,7 @@ const checkProviderOff = (S, provider, title) => step(9, S, 'turning the provide
     await waitFor(async () => (await readHistory()).some((h) => h.agentId === f.id && h.reason === 'provider_off'), 'provider_off at due time', 200000, 1000);
   }
   await writeSettings('providers', 2, { disabledProviders: [] });
-  assert.equal(await jobOf(f.id), undefined);
+  assert.equal(await storedJob(f.id), undefined);
   return `${provider}: history canceled/provider_off, job gone, nothing sent: ${how}`;
 });
 const checkStartupScan = (S, provider, title) => step(11, S, 'startup scan: agent stopped at a limit while the plugin was disabled gets a reservation after enabling', async () => {
@@ -295,14 +304,14 @@ const checkStartupScan = (S, provider, title) => step(11, S, 'startup scan: agen
     await client.sendAgentMessage(h.id, 'Work on the task.');
     await waitFor(async () => (await agentStatus(h.id)) !== 'running' && (await timelineText(h.id)).some((l) => /limit|quota|429/i.test(l)), 'agent stopped at the limit', 240000, 1000);
     await sleep(3000);
-    assert.equal(await jobOf(h.id), undefined, 'reservation made while plugin disabled');
+    assert.equal(await fileJob(h.id), undefined, 'reservation made while plugin disabled');
   } finally {
     // A failure here must not leave the plugin off for the items after it.
     await setModel(API[S], { mode: 'text' });
     await client.enablePlugin(PLUGIN);
   }
   // A connected app polls the plugin's list RPC, which hands the plugin the Paseo API the scan needs.
-  const job = await waitFor(async () => { await rpc('auto-resume.list').catch(() => {}); const j = await jobOf(h.id); return j?.state === 'pending' ? j : null; }, 'scan reservation', 240000, 3000);
+  const job = await waitForScan(h.id, 'scan reservation');
   return `no job while disabled; after enable the scan created one: due ${job.dueAt} (resetAt ${job.resetAt})`;
 });
 
@@ -386,7 +395,7 @@ const stopAtLimit = async (agent, suite, state) => {
 };
 
 // ==========================================================================================
-const ctx = { step, note, results, rpc, client: () => client, mkAgent, hit, setModel, setUsage, jobOf, editJob, readJobs, readHistory, writeJobs, continues, writeSettings, waitFor, sleep, origin, out, jobsFile, historyFile, root, API, DEFAULT_MARK, timelineText, home };
+const ctx = { step, note, results, rpc, client: () => client, mkAgent, hit, setModel, setUsage, editJob, readHistory, continues, writeSettings, waitFor, sleep, origin, out, home, API, DEFAULT_MARK };
 try {
   models = await startModels(root);
   proxy = await startProxy(proxyLog);
@@ -436,7 +445,7 @@ try {
     const mark = (await pluginLogLines()).length;
     await setModel('claude', { mode: 'limit', resetInSec: 5 * 3600 });
     await client.sendAgentMessage(legacyAgent.id, 'Work on the task.');
-    legacyJob = await waitFor(async () => { const j = await jobOf(legacyAgent.id); return j?.state === 'pending' ? j : null; }, `${OLD_REF} reservation`, 90000, 1000).catch(() => null);
+    legacyJob = await waitFor(async () => { const j = await storedJob(legacyAgent.id); return j?.state === 'pending' ? j : null; }, `${OLD_REF} reservation`, 90000, 1000).catch(() => null);
     await setModel('claude', { mode: 'text' });
     await sleep(3000);
     const probe = (await pluginLogLines()).filter((l) => l.includes('e2e-probe') && l.includes(legacyAgent.id)).map((l) => l.replace(/^.*e2e-probe /, '').replace(/".*$/, '').trim());
@@ -459,7 +468,7 @@ try {
       await writeFile(historyFile, JSON.stringify({ version: 1, entries: [
         ...h, { id: 'e2e-h1', at: ago(90), agentId: legacyAgent.id, provider: 'claude', outcome: 'canceled', reason: 'new_message', title: 'Old canceled' },
         { id: 'e2e-h2', at: ago(30), agentId: 'gone-agent', provider: 'claude', outcome: 'continued', title: 'Old finished task' }] }, null, 2));
-      const jobBefore = await jobOf(legacyAgent.id), histBefore = await readFile(historyFile, 'utf8');
+      const jobBefore = await fileJob(legacyAgent.id), histBefore = await readFile(historyFile, 'utf8');
       const listBefore = (await rpc('auto-resume.list')).jobs.find((j) => j.agentId === legacyAgent.id);
       assert.ok(listBefore, `${OLD_REF} lists the reservation`);
       const upd = await paseo('plugin', 'update', PLUGIN, '--ref', NEW_REF, '--yes');
@@ -471,7 +480,7 @@ try {
         const ids = (await rpc('auto-resume.providers').catch(() => ({ providers: [] }))).providers.map((p) => p.id);
         return suites.every((s) => ids.includes(s)) ? ids : null;
       }, `providers ${suites.join(',')} after the update`, 120000, 3000);
-      const jobAfter = await jobOf(legacyAgent.id);
+      const jobAfter = await fileJob(legacyAgent.id);
       assert.deepEqual(jobAfter, jobBefore, 'job changed by the update');
       assert.ok((await rpc('auto-resume.list')).jobs.some((j) => j.agentId === legacyAgent.id), 'PR lists the reservation');
       const histAfter = await readFile(historyFile, 'utf8');
@@ -530,14 +539,14 @@ try {
           const want = iso(Date.parse(cur) + ms);
           const r = await rpc('auto-resume.reschedule', { agentId: a.id, id: jobA.id, dueAt: cur, newDueAt: want });
           assert.deepEqual(r, { changed: true, dueAt: want }, name + ' ' + JSON.stringify(r));
-          assert.equal((await jobOf(a.id)).dueAt, want); cur = want; seen.push(`${name}->${want.slice(11, 16)}`);
+          assert.equal((await listedJob(a.id)).dueAt, want); cur = want; seen.push(`${name}->${want.slice(11, 16)}`);
         }
         const custom = iso(Date.parse(jobA.dueAt) + 3 * 3600000 + 7 * 60000);
         const r2 = await rpc('auto-resume.reschedule', { agentId: a.id, id: jobA.id, dueAt: cur, newDueAt: custom });
         assert.deepEqual(r2, { changed: true, dueAt: custom });
         const early = await rpc('auto-resume.reschedule', { agentId: a.id, id: jobA.id, dueAt: custom, newDueAt: iso(Date.now() + 120000) });
-        assert.equal((await jobOf(a.id)).dueAt, custom, 'earlier than reset+2m must be refused: ' + JSON.stringify(early));
-        const j = await jobOf(a.id); assert.equal(j.enabled, true);
+        assert.equal((await listedJob(a.id)).dueAt, custom, 'earlier than reset+2m must be refused: ' + JSON.stringify(early));
+        const j = await listedJob(a.id); assert.equal(j.enabled, true);
         return `${seen.join(', ')}, Change time -> ${custom}; below reset+2m refused (${JSON.stringify(early)})`;
       });
     }
@@ -547,7 +556,7 @@ try {
       const jobB = await hit(b, S);
       const NOTE = 'E2E-NOTE-' + Math.random().toString(36).slice(2, 8), CUSTOM = 'E2E-CUSTOM-PROMPT-' + Math.random().toString(36).slice(2, 8) + ' please carry on.';
       assert.deepEqual(await rpc('auto-resume.set-note', { agentId: b.id, id: jobB.id, note: NOTE }), { changed: true });
-      assert.equal((await jobOf(b.id)).note, NOTE);
+      assert.equal((await listedJob(b.id)).note, NOTE);
       await writeSettings('resume', 1, { continuePrompt: CUSTOM });
       await sleep(1500);
       const before = continues(S, CUSTOM).length;
@@ -556,10 +565,11 @@ try {
       const req = continues(S, CUSTOM).at(-1);
       assert.ok(req.last.includes(NOTE), 'note missing in sent text');
       assert.ok(req.last.includes('Additional instructions from the user for this continue:'), 'heading missing');
-      const after = await jobOf(b.id);
+      const rows = await storedJobs();
+      const after = rows.find(job => job.agentId === b.id);
       assert.ok(!after || !after.note, 'note kept after sending: ' + JSON.stringify(after));
-      assert.ok(!(await readFile(jobsFile, 'utf8')).includes(NOTE), 'note still in jobs.json');
-      await waitFor(async () => !(await jobOf(b.id)), 'row cleared after next turn', 180000, 1000);
+      assert.ok(!rows.some(job => job.note?.includes(NOTE)), 'note still in stored jobs');
+      await waitFor(async () => !(await storedJob(b.id)), 'row cleared after next turn', 180000, 1000);
       await writeSettings('resume', 1, { continuePrompt: null });
       return `one continue with custom prompt + heading + note (${NOTE}); note absent from jobs.json after send; ${(await readHistory()).filter((h) => h.agentId === b.id).map((h) => h.outcome).join(',')}`;
     });
@@ -567,7 +577,7 @@ try {
     const c = await mkAgent('Resume now');
     await step(6, S, 'Resume now: used_up / unverified leave the reservation and send nothing; ready sends exactly one (manual)', async () => {
       const jobC = await hit(c, S);
-      const before = await jobOf(c.id), sentBefore = continues(S).length;
+      const before = await storedJob(c.id), sentBefore = continues(S).length;
       const until = iso(Date.now() + 40 * 60000);
       await setUsage({ usage: 'limited', until });
       const r1 = await rpc('auto-resume.resume-now', { agentId: c.id, id: jobC.id, dueAt: jobC.dueAt });
@@ -575,7 +585,7 @@ try {
       await setUsage({ usage: 'auth' });
       const r2 = await rpc('auto-resume.resume-now', { agentId: c.id, id: jobC.id, dueAt: jobC.dueAt });
       assert.equal(r2.result, 'unverified', JSON.stringify(r2));
-      assert.deepEqual(await jobOf(c.id), before, 'reservation changed by blocked Resume now');
+      assert.deepEqual(await storedJob(c.id), before, 'reservation changed by blocked Resume now');
       await sleep(2500);
       assert.equal(continues(S).length, sentBefore, 'a continue was sent while blocked');
       await setUsage({});
@@ -584,7 +594,7 @@ try {
       await waitFor(async () => continues(S).length === sentBefore + 1, 'continue reached the model', 180000, 1000);
       await sleep(5000);
       assert.equal(continues(S).length, sentBefore + 1, 'more than one continue');
-      await waitFor(async () => !(await jobOf(c.id)), 'row cleared', 180000, 1000);
+      await waitFor(async () => !(await storedJob(c.id)), 'row cleared', 180000, 1000);
       const h = (await readHistory()).find((e) => e.agentId === c.id && e.outcome === 'continued');
       assert.equal(h?.trigger, 'manual');
       return `used_up ${JSON.stringify(r1)}; unverified ${JSON.stringify(r2)}; job unchanged, 0 sent; ready -> ${JSON.stringify(r3)}, exactly 1 continue, history trigger=manual`;
@@ -598,7 +608,7 @@ try {
       await waitFor(async () => continues(S).length === sent0 + 1, 'tick continue', 240000, 1000);
       await sleep(6000);
       assert.equal(continues(S).length, sent0 + 1, 'more than one continue');
-      await waitFor(async () => !(await jobOf(d.id)), 'row cleared', 240000, 1000);
+      await waitFor(async () => !(await storedJob(d.id)), 'row cleared', 240000, 1000);
       const n1 = await agentCount();
       const tl = (await timelineText(d.id)).join('\n');
       assert.ok(tl.includes(DEFAULT_MARK), 'continue not in the same agent timeline');
@@ -615,7 +625,7 @@ try {
       await editJob(e.id, { resetAt: iso(Date.now() - 120000), dueAt: iso(Date.now() - 60000) });
       await waitFor(async () => (await readHistory()).some((h) => h.agentId === e.id && h.outcome === 'skipped'), 'skipped', 240000, 1000);
       assert.equal(continues(S).length, sent0);
-      assert.equal(await jobOf(e.id), undefined);
+      assert.equal(await storedJob(e.id), undefined);
       return 'history skipped, job removed, 0 continues';
     });
     if (!MIN) {
@@ -627,7 +637,7 @@ try {
         await hit(g, S);
         await client.sendAgentMessage(g.id, 'Actually, here is a new instruction.');
         await waitFor(async () => (await readHistory()).some((h) => h.agentId === g.id && h.outcome === 'canceled'), 'canceled', 120000, 1000);
-        assert.equal(await jobOf(g.id), undefined);
+        assert.equal(await storedJob(g.id), undefined);
         return 'history ' + (await readHistory()).filter((h) => h.agentId === g.id).map((h) => `${h.outcome}/${h.reason}`).join(',');
       });
       if (UI) { const m = await import(pathToFileURL(join(here, 'ui-steps.mjs'))); await m.uiPhase(ctx); }
@@ -742,7 +752,7 @@ try {
       assert.ok(lim, 'no claude limit request to compare the rescan row with');
       const expectedReset = Date.parse(lim.t) + resetInSec * 1000;
       const row = await waitFor(async () => {
-        const j = await jobOf(agentId);
+        const j = await storedJob(agentId);
         return j?.state === 'pending' && !idsBefore.has(j.id) ? j : null;
       }, `switch-on rescan for ${agentId}`, 30000, 500);
       assert.equal(row.background, true, 'rescan row background: ' + JSON.stringify(row));
@@ -756,29 +766,29 @@ try {
       assert.equal((await agentRecord(bgA.id)).background, true, 'stored agent record background');
       assert.equal(await listed(bgA.id), false, 'the background agent is in the default agent list');
       await stopAtLimit(bgA, 'claude', { mode: 'limit', resetInSec: 5400 });
-      assert.equal(await jobOf(bgA.id), undefined, 'reservation made while the switch was off');
+      assert.equal(await storedJob(bgA.id), undefined, 'reservation made while the switch was off');
       assert.ok(!(await readHistory()).some((h) => h.agentId === bgA.id), 'history written while the switch was off');
 
       // On through Paseo's settings API, then off again: the sweep runs from that notification.
-      const idsBeforeOn = new Set((await readJobs()).map((job) => job.id));
+      const idsBeforeOn = new Set((await storedJobs()).map((job) => job.id));
       await setResumeBackground(true);
       // Spec: turning the switch on looks for missed stops at once, so the stop made while it was
       // off must be reserved. This is also the row a naive wait would mistake for the next send's.
       const rescan = await waitForRescan(bgA.id, idsBeforeOn, 5400);
       const cancelsBefore = (await readHistory()).filter((h) => h.agentId === bgA.id && h.outcome === 'canceled' && h.reason === 'new_message').length;
       const job = await hit(bgA, 'claude', { mode: 'limit', resetInSec: 5400 });
-      assert.equal(job.background, true, 'stored row: ' + JSON.stringify({ background: job.background }));
+      assert.equal(job.background, true, 'stored background flag');
       assert.notEqual(job.id, rescan.row.id, 'the new stop kept the rescan row instead of replacing it');
       const cancelsAfter = (await readHistory()).filter((h) => h.agentId === bgA.id && h.outcome === 'canceled' && h.reason === 'new_message').length;
       assert.equal(cancelsAfter, cancelsBefore + 1, 'the rescan row was not canceled as a newer message');
       await setResumeBackground(false);
       await waitFor(async () => (await readHistory()).some((h) => h.agentId === bgA.id && h.reason === 'background_off'), 'background_off sweep', 30000, 1000);
-      assert.equal(await jobOf(bgA.id), undefined, 'row kept after the switch was turned off');
+      assert.equal(await storedJob(bgA.id), undefined, 'row kept after the switch was turned off');
       return `off: background limit made no reservation and wrote no history; switch on: rescan reserved the stop made while off (${rescan.row.resetAt}), then the new stop replaced it (canceled/new_message, id ${rescan.row.id.slice(0, 8)} -> ${job.id.slice(0, 8)}); off again: canceled/background_off at once, row gone`;
     });
     await step(17, 'claude-bg', '17b with the switch on, the tick continues a background agent exactly once, in the same agent', async () => {
       assert.ok(bgA, '17a did not create the background agent');
-      const idsBeforeOn = new Set((await readJobs()).map((job) => job.id));
+      const idsBeforeOn = new Set((await storedJobs()).map((job) => job.id));
       await setResumeBackground(true);
       // 17a's final switch-off swept its row; its last stop is still inside the scan window, so
       // the switch-on rescan must reserve it again. That row must not be taken for this send's.
@@ -794,7 +804,7 @@ try {
       await waitFor(async () => continues('claude').length === sent0 + 1, 'tick continue', 240000, 1000);
       await sleep(6000);
       assert.equal(continues('claude').length, sent0 + 1, 'more than one continue');
-      await waitFor(async () => !(await jobOf(bgA.id)), 'row cleared', 240000, 1000);
+      await waitFor(async () => !(await storedJob(bgA.id)), 'row cleared', 240000, 1000);
       assert.ok((await timelineText(bgA.id)).join('\n').includes(DEFAULT_MARK), 'continue not in the background agent timeline');
       return `switch on: rescan reserved 17a's last stop (${rescan.row.resetAt}), then the new stop replaced it; tick: 1 continue, row cleared, continue text in the same background agent timeline; still hidden from the default list: ${!(await listed(bgA.id))}`;
     });
@@ -805,13 +815,13 @@ try {
       await client.disablePlugin(PLUGIN);
       try {
         await stopAtLimit(bgC, 'claude', { mode: 'limit', resetInSec: 4 * 3600 });
-        assert.equal(await jobOf(bgC.id), undefined, 'reservation made while the plugin was disabled');
+        assert.equal(await fileJob(bgC.id), undefined, 'reservation made while the plugin was disabled');
       } finally {
         await setModel('claude', { mode: 'text' });
         await client.enablePlugin(PLUGIN);
       }
-      const job = await waitFor(async () => { await rpc('auto-resume.list').catch(() => {}); const j = await jobOf(bgC.id); return j?.state === 'pending' ? j : null; }, 'scan reservation for a background agent', 240000, 3000);
-      assert.equal(job.background, true, 'stored row: ' + JSON.stringify({ background: job.background }));
+      const job = await waitForScan(bgC.id, 'scan reservation for a background agent');
+      assert.equal((await storedJob(bgC.id))?.background, true, 'stored background flag');
       return `no job while disabled; after enable the scan created one with background=true: due ${job.dueAt} (resetAt ${job.resetAt})`;
     });
     try {
@@ -848,7 +858,7 @@ try {
     await client.enablePlugin(PLUGIN);
     // Let the plugin's startup scan finish before the stop.
     await sleep(8000);
-    const kept = await jobOf(a.id);
+    const kept = await storedJob(a.id);
     assert.ok(kept && kept.id === rId, 'the reservation was lost while the plugin was off: ' + JSON.stringify(kept));
     const before = await agentRecord(a.id);
     await writeDaemonConfig({ resumeOnStartup: recovery, resumePrompt: RECOVERY_MARK });
@@ -871,7 +881,7 @@ try {
       case: name, provider, recovery, crash, due,
       recoveryPrompts: recoveryPrompts(provider) - rec0,
       pluginContinues: continues(provider).length - sent0,
-      reservationLeft: await jobOf(a.id).then((j) => j ? `${j.id} due ${j.dueAt}` : null),
+      reservationLeft: await storedJob(a.id).then((j) => j ? `${j.id} due ${j.dueAt}` : null),
       history: (await readHistory()).filter((h) => h.agentId === a.id).map((h) => `${h.outcome}${h.reason ? '/' + h.reason : ''}`),
       recordBefore: { lastStatus: before.lastStatus, resumeOnStartup: before.resumeOnStartup, lastError: before.lastError ?? null },
       recordAfter: await agentRecord(a.id).then((r) => ({ lastStatus: r.lastStatus, resumeOnStartup: r.resumeOnStartup, lastError: r.lastError ?? null })).catch(() => null),
@@ -922,7 +932,7 @@ try {
       await waitFor(async () => continues('opencode').length === sent0 + 1, 'tick continue', 240000, 1000);
       await sleep(6000);
       assert.equal(continues('opencode').length, sent0 + 1, 'more than one continue');
-      await waitFor(async () => !(await jobOf(ocA.id)), 'row cleared', 240000, 1000);
+      await waitFor(async () => !(await storedJob(ocA.id)), 'row cleared', 240000, 1000);
       assert.ok((await timelineText(ocA.id)).join('\n').includes(DEFAULT_MARK), 'continue not in the same agent timeline');
       return `1 continue, row cleared, continue in the same OpenCode agent timeline; history ${(await readHistory()).filter((h) => h.agentId === ocA.id).map((h) => h.outcome).join(',')}`;
     });
@@ -934,12 +944,12 @@ try {
         await client.sendAgentMessage(b.id, 'Work on the task.');
         await waitFor(async () => (await agentStatus(b.id)) !== 'running' && (await timelineText(b.id)).some((l) => /limit|free/i.test(l)), 'opencode stopped at the limit', 240000, 1000);
         await sleep(3000);
-        assert.equal(await jobOf(b.id), undefined, 'reservation made while the plugin was disabled');
+        assert.equal(await fileJob(b.id), undefined, 'reservation made while the plugin was disabled');
       } finally {
         await setModel('opencode', { mode: 'text' });
         await client.enablePlugin(PLUGIN);
       }
-      const job = await waitFor(async () => { await rpc('auto-resume.list').catch(() => {}); const j = await jobOf(b.id); return j?.state === 'pending' ? j : null; }, 'scan reservation', 240000, 3000);
+      const job = await waitForScan(b.id, 'scan reservation');
       return `no job while disabled; after enable the scan created one: due ${job.dueAt} (resetAt ${job.resetAt})`;
     });
   }

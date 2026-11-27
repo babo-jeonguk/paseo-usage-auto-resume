@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { access } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { createInterface } from 'node:readline/promises';
 import { androidDevice, matchNode, PACKAGE, within } from './android-device.mjs';
 import { DEFAULT_CONTINUE_PROMPT } from '../shared/prompt.ts';
 import { cliBin, DEFAULT_MARK, iso, killTree, nativeRun, options, running, spawnLogged, waitFor } from './core.mjs';
@@ -9,7 +10,7 @@ import { assertDaemonLogs, editSavedJobs, localClock, nativeDefaults, nativeFixt
 import { patchEntry } from './patch-plugin.mjs';
 import { FALLBACK_REFRESH_MS, observeAndroidWire, scheduleWire } from './schedule-wire.mjs';
 
-const args = options(['cli', 'apk'], { ...nativeDefaults, port: '5584',
+const args = options(['cli', 'apk'], { ...nativeDefaults, port: '5584', visual: '0',
   sdk: process.env.ANDROID_HOME ?? join(homedir(), 'Android', 'Sdk'),
   'system-image': 'system-images;android-34;google_apis;x86_64',
 });
@@ -17,6 +18,26 @@ const args = options(['cli', 'apk'], { ...nativeDefaults, port: '5584',
 await nativeRun('android', args, async ctx => {
   const { root, out, artifacts, dispose, check, report } = ctx;
   assert.equal(process.platform, 'linux', 'The Android runner uses a Linux SDK and emulator');
+  assert(['0', '1'].includes(args.visual), 'Use --visual 0 or 1');
+  const visual = args.visual === '1';
+  assert(!visual || (process.stdin.isTTY && process.stdout.isTTY && process.env.DISPLAY),
+    '--visual 1 requires a terminal and a graphical display');
+  const terminal = visual ? createInterface({ input: process.stdin, output: process.stdout }) : null;
+  if (terminal) dispose(() => terminal.close());
+  report.manualVisualChecks = {
+    'resume-blocked': { status: 'not-run' },
+    'resume-sent': { status: 'not-run' },
+    'labs-tooltip': { status: 'not-run' },
+  };
+  const ask = prompt => terminal.question(prompt, { signal: AbortSignal.timeout(300_000) });
+  const recordVisual = async (name, prompt) => {
+    if (!terminal) return;
+    const answer = (await ask(`${prompt}\nEnter "pass <observation>", "fail <observation>", or "skip": `)).trim();
+    if (answer === 'skip') return;
+    const match = answer.match(/^(pass|fail)\s+(\S.*)$/);
+    assert(match, 'Record pass or fail with the observed content, or enter skip');
+    report.manualVisualChecks[name] = { status: match[1], observation: match[2] };
+  };
   await access(args.apk);
   const fixture = await nativeFixture(ctx, args);
   await fixture.configure({ claude: { env: { ...fixture.claudeEnv, CLAUDE_CODE_OAUTH_TOKEN: 'e2e-fixture-only' } } });
@@ -71,6 +92,8 @@ await nativeRun('android', args, async ctx => {
 
   const confirmResume = async (reservation, expectedResult, screenshot) => {
     await device.tap('Resume now');
+    const expectedToast = expectedResult === 'used_up' ? 'Usage is still used up until …' : 'Continue sent';
+    if (terminal) await ask(`Watch the emulator for "${expectedToast}". Press Enter to let the runner tap Send. `);
     const send = await device.find('Send');
     const client = await wire.ready(1);
     const mark = wire.checkpoint(await wire.settled(client));
@@ -79,9 +102,9 @@ await nativeRun('android', args, async ctx => {
     assert.equal(response.result, expectedResult, 'Android Resume now returned an unexpected result');
     (report.resumeNow ??= []).push({ reservationId: reservation.id, result: response.result, screenshot: screenshot + '.png' });
     await device.shot(screenshot);
+    await recordVisual(screenshot, 'Record the toast text you saw, or say what was missing or clipped.');
   };
 
-  report.manualVisualChecks = ['Resume now toast wording and visibility', 'Labs tooltip clipping'];
   const primaryTitle = 'Android live limit';
   let primary, primaryJob, liveList;
   await check('Clean AVD, APK version match, Direct connection, Hermes bundle and live push', async () => {
@@ -283,6 +306,7 @@ await nativeRun('android', args, async ctx => {
     await device.find(body);
     await device.find(details);
     await device.shot('labs-tooltip');
+    await recordVisual('labs-tooltip', 'Inspect both lines of the Labs tooltip in the emulator for clipping.');
     await device.tap('resume-labs-info');
     const labs = matchNode('resume-labs-toggle');
     const initial = (await device.find(labs)).checked;

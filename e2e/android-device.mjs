@@ -40,6 +40,92 @@ export function within(node, ancestor) {
   return false;
 }
 
+export function androidUi({ dump, shell, tapNode, report, emulatorExited = () => false }) {
+  report.anrDismissed = 0;
+
+  async function nodes(timeout = 60_000, observe) {
+    let xml;
+    try {
+      xml = await dump(timeout);
+    } catch (error) {
+      if (emulatorExited()) throw new Error('Emulator exited during UI polling', { cause: error });
+      observe?.(error.killed && error.signal === 'SIGTERM' ? 'dumpTimeout' : 'dumpError');
+      return [];
+    }
+    if (!xml.includes('<hierarchy')) {
+      observe?.('noHierarchy');
+      return [];
+    }
+    const list = hierarchy(xml);
+    const dialog = list.find(node => node.pkg === 'android' && node.id === 'android:id/alertTitle' &&
+      / isn['’]t responding$/i.test(node.text));
+    if (dialog) {
+      const titles = report.anrDialogs ??= [];
+      if (!titles.includes(dialog.text)) titles.push(dialog.text);
+      if (/^(?:Paseo|sh\.paseo) isn['’]t responding$/i.test(dialog.text)) {
+        throw new Error('Paseo ANR: ' + dialog.text);
+      }
+      // Android owns the dialog window for every app. Only the title identifies System UI.
+      const wait = /^System UI isn['’]t responding$/i.test(dialog.text) &&
+        list.find(node => node.pkg === 'android' && node.id === 'android:id/aerr_wait' && node.enabled);
+      if (wait) {
+        await tapNode(wait);
+        report.anrDismissed++;
+      }
+      observe?.(wait ? 'systemUiAnrDismissed' : 'unhandledAnr');
+      return [];
+    }
+    return list;
+  }
+
+  async function find(label, timeout = 120_000, description = String(label)) {
+    const start = performance.now();
+    const observations = {};
+    const observe = outcome => { observations[outcome] = (observations[outcome] ?? 0) + 1; };
+    const matches = matchNode(label);
+    try {
+      return await waitFor(async () => {
+        const remaining = Math.max(1, timeout - (performance.now() - start));
+        let outcome = 'noMatch';
+        const list = await nodes(Math.min(60_000, remaining), result => { outcome = result; });
+        const match = list.find(matches);
+        observe(match ? 'matched' : outcome);
+        return match;
+      }, `Android UI ${description}`, timeout, 100);
+    } catch (error) {
+      report.uiWaitFailure = { description, elapsedMs: Math.round(performance.now() - start), observations };
+      throw error;
+    }
+  }
+
+  async function tap(label, timeout) {
+    const matches = matchNode(label);
+    await tapNode(await find(node => node.enabled && matches(node), timeout, `enabled ${label}`));
+  }
+
+  async function type(label, value) {
+    const input = node => node.pkg === PACKAGE && node.class === 'android.widget.EditText' && node.desc === label;
+    const field = await find(input, undefined, `${label} field`);
+    assert(/^[ -~]*$/.test(value) && !value.includes('%s'), 'adb input text requires ASCII and reserves %s for a space');
+    await tapNode(field);
+    await shell('input', 'keyevent', 'KEYCODE_MOVE_END', ...Array(Math.max(1, field.text?.length ?? 0)).fill('KEYCODE_DEL'));
+    if (value) await shell('input', 'text', value.replaceAll(' ', '%s'));
+    let lastValue;
+    try {
+      await find(node => {
+        if (!input(node)) return false;
+        lastValue = node.text;
+        return lastValue === value;
+      }, undefined, `entered value for ${label}`);
+    } catch (error) {
+      report.inputFailure = { label, expected: value, lastValue };
+      throw error;
+    }
+  }
+
+  return { nodes, find, tap, type };
+}
+
 export async function androidDevice(ctx, fixture, args) {
   const { report, root, out, dispose, artifacts } = ctx;
   const sdk = resolve(args.sdk), apk = resolve(args.apk);
@@ -65,51 +151,8 @@ export async function androidDevice(ctx, fixture, args) {
   const tapNode = (node, timeout) => shellCommand(['input', 'tap',
     Math.floor((node.left + node.right) / 2), Math.floor((node.top + node.bottom) / 2)], timeout);
   let emulator;
-  report.anrDismissed = 0;
-
   const dump = timeout => adb(['exec-out', 'uiautomator', 'dump', '/dev/tty'], { timeout });
-  async function nodes(timeout = 60_000) {
-    let xml;
-    try {
-      xml = await dump(timeout);
-      if (!xml.includes('<hierarchy')) return [];
-    } catch (error) {
-      if (emulator && !running(emulator)) throw new Error('Emulator exited during UI polling', { cause: error });
-      return [];
-    }
-    const list = hierarchy(xml);
-    const dialog = list.find(node => node.pkg === 'android' && node.id === 'android:id/alertTitle' &&
-      / isn.t responding$/i.test(node.text));
-    const wait = dialog && list.find(node => node.pkg === dialog.pkg && node.id === 'android:id/aerr_wait');
-    if (wait) {
-      await tapNode(wait);
-      report.anrDismissed++;
-      return [];
-    }
-    return list;
-  }
-
-  function find(label, timeout = 120_000, description = String(label)) {
-    const start = performance.now();
-    return waitFor(async () => {
-      const remaining = Math.max(1, timeout - (performance.now() - start));
-      return (await nodes(Math.min(60_000, remaining))).find(matchNode(label));
-    }, `Android UI ${description}`, timeout, 100);
-  }
-  const tap = async (label, timeout) => {
-    const matches = matchNode(label);
-    await tapNode(await find(node => node.enabled && matches(node), timeout, `enabled ${label}`));
-  };
-  async function type(label, value) {
-    const matches = matchNode(label);
-    const input = node => node.pkg === PACKAGE && node.class === 'android.widget.EditText' &&
-      matches({ ...node, text: undefined, id: undefined });
-    const field = await find(input, undefined, `${label} field`);
-    assert(/^[ -~]*$/.test(value) && !value.includes('%s'), 'adb input text requires ASCII and reserves %s for a space');
-    await tapNode(field);
-    await shell('input', 'keyevent', 'KEYCODE_MOVE_END', ...Array(Math.max(1, field.text?.length ?? 0)).fill('KEYCODE_DEL'));
-    if (value) await shell('input', 'text', value.replaceAll(' ', '%s'));
-  }
+  const ui = androidUi({ dump, shell, tapNode, report, emulatorExited: () => emulator && !running(emulator) });
 
   const swipe = (x, y, endY) => shell('input', 'swipe', x, y, x, endY, 500);
   async function scrollTo(label, direction = 'down') {
@@ -117,7 +160,7 @@ export async function androidDevice(ctx, fixture, args) {
     const size = (await shell('wm', 'size')).trim().split('\n').at(-1).match(/(\d+)x(\d+)/);
     const width = Number(size[1]), height = Number(size[2]);
     for (let i = 0; i <= 7; i++) {
-      const node = (await nodes()).find(matches);
+      const node = (await ui.nodes()).find(matches);
       if (node) return node;
       if (i < 7) {
         const high = Math.floor(height * 0.23), low = Math.floor(height * 0.72);
@@ -155,7 +198,7 @@ export async function androidDevice(ctx, fixture, args) {
     artifacts['emulator.log'] = log;
     const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     emulator = spawnLogged(join(sdk, 'emulator', 'emulator'),
-      ['-avd', avd, '-port', String(port), '-wipe-data', '-no-window', '-no-audio', '-no-snapshot',
+      ['-avd', avd, '-port', String(port), '-wipe-data', ...(args.visual === '1' ? [] : ['-no-window']), '-no-audio', '-no-snapshot',
         '-no-boot-anim', '-gpu', 'swiftshader_indirect', '-cores', '2', '-memory', '2048', '-timezone', timezone,
         '-no-metrics', '-crash-report-mode', 'disabled'],
       { env, log });
@@ -198,7 +241,8 @@ export async function androidDevice(ctx, fixture, args) {
         const js = line.match(/\s(\d+)\s+\d+\s+([EF]) ReactNativeJS\s*:\s*(.*)/);
         return js && appPids.has(js[1]) && (js[2] === 'F' || /^(?:Fatal|Unhandled JS Exception)\b/i.test(js[3]));
       });
-      assert.deepEqual(report.fatalLogcat, [], 'Paseo Android logged a fatal error');
+      report.paseoAnrs = records.split('\n').filter(line => /\bActivityManager\s*:\s*ANR in sh\.paseo(?=[:\s(]|$)/.test(line));
+      assert(report.fatalLogcat.length === 0 && report.paseoAnrs.length === 0, 'Paseo Android logged a fatal error or ANR');
     });
   }
 
@@ -213,13 +257,15 @@ export async function androidDevice(ctx, fixture, args) {
     if (Number((await shell('getprop', 'ro.build.version.sdk')).trim()) >= 33)
       await shell('pm', 'grant', PACKAGE, 'android.permission.POST_NOTIFICATIONS');
     await adb(['reverse', `tcp:${fixture.port}`, `tcp:${observerPort}`]);
+    report.connectionLaunchAt = new Date().toISOString();
     await launch();
-    await tap('Direct connection', 120_000);
-    await type('Host', '127.0.0.1');
-    await type('Port', String(fixture.port));
-    await tap('Connect');
-    await find('Open menu', 120_000);
+    await ui.tap('Direct connection', 120_000);
+    report.directConnectionTappedAt = new Date().toISOString();
+    await ui.type('Host', '127.0.0.1');
+    await ui.type('Port', String(fixture.port));
+    await ui.tap('Connect');
+    await ui.find('Open menu', 120_000);
   }
 
-  return { boot, connect, nodes, find, tap, tapNode, type, shell, scrollTo, shot, launch, swipe };
+  return { ...ui, boot, connect, tapNode, shell, scrollTo, shot, launch, swipe };
 }

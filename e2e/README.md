@@ -122,7 +122,7 @@ For Paseo 0.16 to 0.17, Codex needs CLI 0.121.0 or later to reopen a conversatio
 ## Known issues
 
 - **Background agents in the agent list.** `fetchAgents({ includeBackground: true })` may not return an agent-level background agent even though the plugin's own list and its scan see it; item 17d records what the connected client sees and is a NOTE, not a failure.
-- **Windows: an item that saves a reservation or history entry fails now and then.** The plugin saves `jobs.json` and `history.json` by renaming a temporary file over them. Windows refuses that rename while another process has the file open, and a concurrent file read can make that save fail. Browser checks read reservation and history state through daemon RPCs. The CLI persistence checks still inspect the files directly. On a Windows host this failed 1.8% of saves with a reader polling every second and 3.6% every 0.3 seconds (the old UI file-polling pace); no save failed out of 1000 without one. The failed save is lost, so the item waiting for it times out (seen in 8, the UI phase's 4, 9 and 15). The daemon log then holds an `EPERM: operation not permitted, rename '…jobs.json.….tmp' -> '…jobs.json'` (or `history.json`) line from the same moment; rerun the item. The plugin keeps a single rename because no other program normally reads these files. Item 14 does not catch a failure on an RPC path, which the daemon logs as `Error handling message` rather than as plugin output.
+- **Windows: a reservation or history save reports `EPERM` on rename.** The plugin renames a temporary file over `jobs.json` or `history.json`. A concurrent external read can block the rename on Windows. Live CLI and browser checks read through daemon RPCs. The CLI fixture exposes a queued read of stored rows for lifecycle assertions because the public list omits sent rows. Direct file reads are used for disk compatibility, disabled-plugin assertions and intentional on-disk fixture edits. Before the switch to RPCs, a Windows host reproduced save failures at 1.8% with an external reader polling every second and 3.6% at 0.3 seconds. All 1,000 saves succeeded without the reader. Check the daemon log for a rename error at the time of a missing result. RPC errors can appear there under `Error handling message`.
 
 ## Native apps
 
@@ -139,17 +139,19 @@ Point `--app` at the extracted `Paseo-<version>-x64.tar.gz` directory on Linux o
 In WSL:
 
 ```sh
+revision=main  # Set to the pushed branch, tag, or commit under test.
 PW_ROOT=/tmp/uar-tools/node_modules xvfb-run -a -s '-screen 0 1440x900x24' \
   node e2e/desktop.mjs --cli /tmp/paseo-0.17.1/node_modules/@getpaseo/cli \
-  --app /path/to/Paseo-0.17.1-x64 --to <ref> --path "$HOME/.local/bin" --out /tmp/uar-results
+  --app /path/to/Paseo-0.17.1-x64 --to "$revision" --path "$HOME/.local/bin" --out /tmp/uar-results
 ```
 
 On Windows, use an interactive Windows session, Windows Node 24 and a checkout on the Windows drive, such as `C:\src\paseo-usage-auto-resume`. You can invoke Windows PowerShell from WSL and run the same command there. Include Git or MinGit and the provider shims in `--path`.
 
 ```powershell
+$revision = 'main'  # Set to the pushed branch, tag, or commit under test.
 $env:PW_ROOT = 'C:\uar-tools\node_modules'
 node.exe e2e\desktop.mjs --expect-platform win32 --cli C:\uar-tools\node_modules\@getpaseo\cli `
-  --app C:\Paseo-0.17.1-x64 --to <ref> --path 'C:\provider-bin;C:\MinGit\cmd' --out C:\uar-results
+  --app C:\Paseo-0.17.1-x64 --to "$revision" --path 'C:\provider-bin;C:\MinGit\cmd' --out C:\uar-results
 ```
 
 Electron and its daemon use temporary profiles. On Windows the runner builds the launcher with the .NET Framework 4.x compiler included with Windows, and a Job Object tracks the app process tree until shutdown. Chromium uses an independent refusing proxy to block self-updates. The report includes attempted requests and checks that it downloaded no update files.
@@ -161,11 +163,22 @@ Desktop verifies the version-matched managed daemon, real Claude and Codex subsc
 Use the WSL Android SDK with `platform-tools`, `emulator`, `cmdline-tools/latest`, Java and `/dev/kvm`. Install the default `system-images;android-34;google_apis;x86_64` image and use the matching `paseo-v<version>-android.apk` release.
 
 ```sh
+revision=main  # Set to the pushed branch, tag, or commit under test.
 node e2e/android.mjs --cli /tmp/paseo-0.17.1/node_modules/@getpaseo/cli \
-  --apk /path/to/paseo-v0.17.1-android.apk --to <ref> \
+  --apk /path/to/paseo-v0.17.1-android.apk --to "$revision" \
   --path "$HOME/.local/bin" --out /tmp/uar-results
 ```
 
 The runner creates a temporary AVD and its own adb server, wipes the AVD on boot and stops both when done. The released app connects by Direct connection through `adb reverse`. Select a different installed image with `--system-image`, SDK with `--sdk`, or unused even emulator port with `--port`.
 
-UI Automator drives the native controls and reads the accessibility tree. The runner checks native list updates, sheet edits, the correlated Resume now RPCs, reservation state and exact model-request counts, Settings and recovery after force-stop. It saves screenshots and `logcat` for inspection. The report lists two manual visual checks: the wording and visibility of short Resume now toasts, and whether Android clips the Labs tooltip. The automated check verifies the tooltip’s accessible text and the Resume now outcomes.
+UI Automator drives the native controls and reads the accessibility tree. The runner checks native list updates, sheet edits, the correlated Resume now RPCs, reservation state and exact model-request counts, Settings and recovery after force-stop. It saves screenshots and `logcat` for inspection. The runner taps **Wait** on System UI ANR dialogs and counts them. A Paseo ANR fails the run. On a UI wait failure, `results.json` includes the observation counts for that wait.
+
+#### Manual visual verification
+
+Run the same Android command with `--visual 1` from a terminal with an emulator window available through WSLg or an X server. The runner uses the same temporary emulator and test data and pauses at the two **Resume now** confirmations.
+
+1. Watch the emulator and press Enter in the terminal when ready. The runner taps **Send** with usage still limited. Check that the toast says **Usage is still used up until …** and includes the reset time.
+2. Repeat the observation at the next prompt. Usage is now available. Check that the toast says **Continue sent**.
+3. When the Labs tooltip appears, check that both lines are visible without clipping. The runner holds the tooltip open for inspection.
+
+At each prompt enter `pass` or `fail` followed by what you saw, for example `pass Continue sent`. Enter `skip` if you could not inspect the display. Keep the `manualVisualChecks` entries from `results.json` with the release evidence. Headless runs and skipped checks report `not-run`. The automated result covers the RPC outcomes, reservation and model effects, and the tooltip’s accessibility text. The visual results go in the release record separately.

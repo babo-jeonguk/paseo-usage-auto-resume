@@ -231,19 +231,23 @@ export async function uiPhase(ctx) {
       await expect(row).toBeVisible({ timeout: 30000 });
       await expect(page.getByText('Claude Sub', { exact: true }).first()).toBeVisible();
       assert.equal(await page.getByText('claude-sub', { exact: true }).count(), 0);
-      // The chip shrinks before the row's switch leaves the screen.
-      await page.setViewportSize({ width: 390, height: 844 });
+      const phoneWidth = 390;
+      await page.setViewportSize({ width: phoneWidth, height: 844 });
       try {
+        // Measure horizontal fit before Playwright scrolls to the control to check visibility.
         await expect.poll(async () => {
           const bounds = await row.boundingBox();
-          return Boolean(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 390);
+          return Boolean(bounds && bounds.x >= 0 && bounds.x + bounds.width <= phoneWidth);
         }, { timeout: 15000 }).toBe(true);
+        // The trial scrolls to the switch and re-resolves it if the responsive layout remounts it.
+        await row.click({ trial: true, timeout: 15000 });
+        await expect(row).toBeInViewport({ ratio: 1, timeout: 15000 });
         await expect(page.getByText('Claude Sub', { exact: true }).first()).toBeVisible();
         await shot('ui-5-provider-label-phone');
       } finally {
         await page.setViewportSize({ width: 1440, height: 960 });
       }
-      return 'row chip "Claude Sub", no raw ID; switch fits horizontally at 390px';
+      return 'row chip "Claude Sub", no raw ID; switch fits horizontally and is fully visible at 390px';
     });
     await guarded(9, 'Settings switch turns Claude Sub off: its pending reservation is canceled at once', async () => {
       if (!(await jobOf(u4.id))) await hit(u4, 'claude');
