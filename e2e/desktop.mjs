@@ -211,10 +211,15 @@ await nativeRun('desktop', args, async ctx => {
     if (isWin) {
       const buildLog = 'desktop-job-build.log';
       artifacts[buildLog] = join(root, buildLog);
-      const build = spawnLogged('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'RemoteSigned', '-File',
-        fileURLToPath(new URL('./desktop-job-build.ps1', import.meta.url)), '-Output', launcher],
-      { env: environment, cwd: root, log: artifacts[buildLog] });
-      dispose(() => build.pid && running(build) ? killTree(build) : undefined);
+      const compiler = join(environment.SystemRoot, 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe');
+      // The direct compiler handles the Unicode fixture path and can be stopped through its own handle.
+      const build = spawnLogged(compiler, ['/nologo', '/target:exe', `/out:${launcher}`,
+        fileURLToPath(new URL('./desktop-job.cs', import.meta.url))], { env: environment, cwd: root, log: artifacts[buildLog] });
+      dispose(async () => {
+        if (!build.pid || !running(build)) return;
+        build.kill();
+        await waitFor(() => !running(build), 'Windows compiler exit', 20_000);
+      });
       await waitFor(() => !running(build), 'Windows job launcher build');
       assert.equal(build.exitCode, 0, `Windows launcher build failed. See ${buildLog}.`);
     }
