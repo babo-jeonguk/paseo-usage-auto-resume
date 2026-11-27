@@ -84,6 +84,8 @@ interface FakeOptions {
   workspaceFailure?: boolean;
   /** Runs while a workspace is being read, as a concurrent change would. */
   duringWorkspaceRead?: () => Promise<void>;
+  /** Runs while a timeline is being read, as a concurrent change would. */
+  duringTimelineRead?: (agentId: string) => Promise<void>;
   listError?: Error;
   /** Thrown by an agent read, an agent send, a workspace read or a timeline read. Mutable after setup. */
   refreshError?: Error;
@@ -148,6 +150,7 @@ function fakePaseo(agents: Map<string, Partial<PaseoAgent>>, options: FakeOption
         timeline: {
           refetch: async (query: unknown) => {
             timelineReads.push({ agentId, query });
+            await options.duringTimelineRead?.(agentId);
             if (options.timelineError) throw options.timelineError;
             if (options.timelineFailure === "throw") throw new Error("timeline unavailable");
             if (options.timelineFailure === "page") return { error: "timeline unavailable", entries: [] };
@@ -3852,4 +3855,119 @@ test("rememberSession skips caching launch context and automation tokens for sub
   const top = seen.get("top-id") as { launch?: { env: Record<string, string> }; tokens?: Record<string, string> };
   assert.equal(top.launch?.env.CODEX_HOME, join(dir, "top-home"));
   assert.equal(top.tokens?.CODEX_ACCESS_TOKEN, "tok-top");
+});
+
+test("startup attach and background-off reconciliation cancel pre-existing background subagent rows with subagent", async () => {
+  let inspections = 0;
+  let settings: ProviderSettings = { ...DEFAULT_PROVIDER_SETTINGS, disabledProviders: ["claude"] };
+  const base = { resetAt: null, dueAt: CODEX_DUE, baseline: "2026-10-06T02:00:00.000Z", attempts: 0, state: "pending" as const, enabled: true, background: true };
+  await writeFile(join(dir, "jobs.json"), JSON.stringify({
+    version: 1,
+    jobs: [
+      { ...base, agentId: "bgSub", provider: "codex" },
+      { ...base, agentId: "offProviderSub", provider: "claude" },
+      { ...base, agentId: "goneBg", provider: "codex" },
+    ],
+  }));
+  const { resumer, workspaceReads } = await setup({
+    bgSub: { provider: "codex", title: "Background worker", background: true, workspaceId: "wks-bg", labels: SUBAGENT_LABEL },
+    offProviderSub: { provider: "claude", title: "Off-provider sub", background: true, workspaceId: "wks-bg", labels: SUBAGENT_LABEL },
+    toggleSub: { provider: "codex", title: "Toggled worker", background: true, workspaceId: "wks-bg", labels: SUBAGENT_LABEL },
+  }, {
+    readSettings: async () => settings,
+    backgroundWorkspaces: ["wks-bg"],
+    readSubscription: async () => {
+      inspections += 1;
+      return { auth: "subscription", status: "ready", identity: "account" };
+    },
+  });
+
+  assert.deepEqual(await store.list(), []);
+  assert.equal(workspaceReads(), 0);
+  assert.equal(inspections, 0);
+  assert.deepEqual(await recorded(), [
+    "bgSub canceled/subagent",
+    "offProviderSub canceled/provider_off",
+    "goneBg canceled/background_off",
+  ]);
+  assert.equal((await history.list()).find((entry) => entry.agentId === "bgSub")?.title, "Background worker");
+
+  // Also verify toggling Resume background agents off after attach prioritizes subagent over background_off.
+  settings = { ...DEFAULT_PROVIDER_SETTINGS, resumeBackground: true };
+  await store.update("toggleSub", () => ({
+    id: "job-toggleSub", agentId: "toggleSub", provider: "codex", resetAt: null, dueAt: CODEX_DUE,
+    baseline: "2026-10-06T02:00:00.000Z", attempts: 0, retries: 0, state: "pending", enabled: true, background: true,
+  }));
+  settings = { ...DEFAULT_PROVIDER_SETTINGS };
+  await resumer.reconcileProviders();
+
+  assert.deepEqual(await store.list(), []);
+  assert.equal(workspaceReads(), 0);
+  assert.equal(inspections, 0);
+  assert.deepEqual(await recorded(), [
+    "bgSub canceled/subagent",
+    "offProviderSub canceled/provider_off",
+    "goneBg canceled/background_off",
+    "toggleSub canceled/subagent",
+  ]);
+  assert.equal((await history.list()).find((entry) => entry.agentId === "toggleSub")?.title, "Toggled worker");
+});
+
+test("hook parentAgentId prevents replanning a legacy subagent row even when the refreshed snapshot omits labels", async () => {
+  let inspections = 0;
+  const { api, resumer } = await setup({
+    p1: { provider: "codex" },
+    s1: { provider: "codex" },
+    p2: { provider: "codex", lastUserMessageAt: "2026-10-06T03:30:00.000Z" },
+  }, {
+    readSubscription: async () => {
+      inspections += 1;
+      return { auth: "subscription", status: "ready", identity: "account" };
+    },
+  });
+  const seed = (agentId: string, state: "pending" | "sent") =>
+    store.update(agentId, () => ({
+      id: `job-${agentId}`, agentId, provider: "codex", resetAt: "2026-10-06T04:00:00.000Z", dueAt: "2026-10-06T04:02:00.000Z",
+      baseline: "2026-10-06T02:00:00.000Z", attempts: 0, retries: 0, state, enabled: true,
+    }));
+
+  await seed("p1", "pending");
+  const beforeP1 = (await store.list()).find((job) => job.agentId === "p1");
+  await resumer.onTurnEnded(turnEnded("p1", "codex", failed(CODEX_LIMIT), undefined, "parent-1"), api);
+  assert.deepEqual((await store.list()).find((job) => job.agentId === "p1"), beforeP1);
+
+  await seed("s1", "sent");
+  const beforeS1 = (await store.list()).find((job) => job.agentId === "s1");
+  await resumer.onTurnEnded(turnEnded("s1", "codex", failed(CODEX_LIMIT), undefined, "parent-1"), api);
+  assert.deepEqual((await store.list()).find((job) => job.agentId === "s1"), beforeS1);
+
+  await seed("p2", "pending");
+  await resumer.onTurnEnded(turnEnded("p2", "codex", failed(CODEX_LIMIT), undefined, "parent-1"), api);
+  assert.equal((await store.list()).find((job) => job.agentId === "p2"), undefined);
+  assert.deepEqual(await recorded(), ["p2 canceled/new_message"]);
+  assert.equal(inspections, 0);
+});
+
+test("legacy subagent turn-end cleanup acts only on the reservation seen before reading the timeline", async () => {
+  let replaced = false;
+  const { api, resumer } = await setup({
+    sub: { provider: "codex", labels: SUBAGENT_LABEL },
+  }, {
+    duringTimelineRead: async (agentId) => {
+      if (agentId !== "sub" || replaced) return;
+      replaced = true;
+      await store.update("sub", () => ({
+        id: "replacement-2", agentId: "sub", provider: "codex", resetAt: "2026-10-06T05:00:00.000Z", dueAt: CODEX_DUE,
+        baseline: "2026-10-06T02:00:00.000Z", attempts: 0, retries: 0, state: "pending", enabled: true,
+      }));
+    },
+  });
+  await store.update("sub", () => ({
+    id: "legacy-1", agentId: "sub", provider: "codex", resetAt: "2026-10-06T05:00:00.000Z", dueAt: CODEX_DUE,
+    baseline: "2026-10-06T02:00:00.000Z", attempts: 0, retries: 0, state: "pending", enabled: true,
+  }));
+
+  await resumer.onTurnEnded(turnEnded("sub", "codex", { kind: "completed" }, undefined, "parent-1"), api);
+  assert.equal((await store.list()).find((job) => job.agentId === "sub")?.id, "replacement-2");
+  assert.deepEqual(await recorded(), []);
 });
