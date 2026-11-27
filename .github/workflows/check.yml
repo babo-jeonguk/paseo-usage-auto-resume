@@ -59,10 +59,15 @@ jobs:
         shell: bash
         run: |
           tools="$RUNNER_TEMP/uar-tools"
+          tool_path="$tools/node_modules/.bin"
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            git_dir=$(cygpath -am "$(dirname "$(command -v git)")")
+            tool_path="$tool_path;$git_dir"
+          fi
           export PW_ROOT="$tools/node_modules"
           source_url=$(node -p 'require("node:url").pathToFileURL(process.cwd()).href')
           node --no-maglev e2e/e2e.mjs --cli "$tools/node_modules/@getpaseo/cli" \
-            --path "$tools/node_modules/.bin" --root "$RUNNER_TEMP/uar-simulation" \
+            --path "$tool_path" --root "$RUNNER_TEMP/uar-simulation" \
             --from v1.4.1 --to "$GITHUB_SHA" --source "$source_url" \
             --suites claude,codex --ui 1 --out test-results/simulation \
             2>&1 | tee test-results/simulation/run.log
