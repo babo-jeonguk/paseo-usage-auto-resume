@@ -85,8 +85,8 @@ paseo plugin remove usage-auto-resume
 
 ## 내 데이터
 
-- 데몬 호스트에서 에이전트 상태, 최근 한도 안내, provider CLI 로그인 정보, OpenCode의 로컬 데이터베이스를 읽습니다.
-- Codex·Claude·OpenCode Go 사용량 확인은 provider의 계정 서비스에 요청하며, 모델을 실행하지 않습니다. 로그인 토큰과 OpenCode의 Go 키는 저장하거나 로그에 남기지 않습니다.
+- 데몬 호스트에서 에이전트 상태, 최근 한도 안내, provider CLI 로그인 정보, OpenCode의 로컬 데이터베이스와 인증 파일을 읽습니다.
+- Codex·Claude·OpenCode Go 사용량 확인은 provider의 계정 서비스에 요청하며, 모델을 실행하지 않습니다. 로그인 토큰과 OpenCode의 Console·Go 키는 저장하거나 로그에 남기지 않습니다.
 - OpenCode 무료 모델은 OpenCode가 로컬 데이터베이스에 기록한 한도 시각을 사용합니다.
 - 예약, 추가 지시, 바꾼 Continue prompt는 데몬 호스트에 저장합니다. 추가 지시는 전송한 뒤 지웁니다.
 - 재개 메시지는 직접 보내는 메시지처럼 Paseo를 거쳐 기존 에이전트에게 전달됩니다.

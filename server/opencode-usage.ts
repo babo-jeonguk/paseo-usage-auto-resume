@@ -123,10 +123,11 @@ async function selectCredentials(env: NodeJS.ProcessEnv, sessionId: string): Pro
   });
 }
 
-/** The Console URL OpenCode would use, with its retired origin mapped forward. */
-const consoleServer = (value: Record<string, unknown>): string => {
-  const server = string(record(value.metadata).server);
-  if (!server) return CONSOLE_SERVER;
+/** The Console URL OpenCode would use, with its retired origin mapped forward; null is not ours. */
+const consoleServer = (value: Record<string, unknown>): string | null => {
+  const server = record(value.metadata).server;
+  if (server === undefined) return CONSOLE_SERVER;
+  if (typeof server !== "string") return null;
   return server.replace(/^https:\/\/console\.opencode\.ai(?=\/|$)/, CONSOLE_SERVER);
 };
 
@@ -194,7 +195,7 @@ export function createOpenCodeUsageReader(deps: {
     try {
       const auth = record(JSON.parse(await readFile(join(openCodeDataDir(env), "auth.json"), "utf8")));
       const entry = record(auth["opencode-go"]), key = string(entry.key);
-      return entry.type === "api" ? key : undefined;
+      return entry.type === "api" && consoleServer(entry) === CONSOLE_SERVER ? key : undefined;
     } catch {
       return undefined;
     }
@@ -240,55 +241,56 @@ export function createOpenCodeUsageReader(deps: {
 
     // The Console credential is OpenCode's first choice; a different Console server is not ours.
     // Selecting one that cannot serve Go stops here rather than falling back to another account.
-    const first: GoCandidate[] = [];
+    let consoleCandidate: GoCandidate | undefined;
     if (selection.console) {
       const value = parseValue(selection.console.value);
       if (consoleServer(value) === CONSOLE_SERVER) {
         const id = string(selection.console.id), key = string(value.key);
         if (value.type === "oauth") return unavailable("oauth_credential");
         if (value.type !== "key" || !id || !key) return unavailable("invalid_credential");
-        first.push({ key, identity: dbIdentity(id, key, model) });
+        consoleCandidate = { key, identity: dbIdentity(id, key, model) };
       }
     }
 
     // A present opencode-go row is authoritative: auth.json is only read when the table has none.
-    const second: GoCandidate[] = [];
+    let goCandidate: GoCandidate | undefined;
     if (selection.go) {
       const value = parseValue(selection.go.value), id = string(selection.go.id), key = string(value.key);
       if (consoleServer(value) === CONSOLE_SERVER && value.type === "key" && id && key) {
-        second.push({ key, identity: dbIdentity(id, key, model) });
+        goCandidate = { key, identity: dbIdentity(id, key, model) };
       }
     } else {
       const key = await readAuthKey(launch.env);
-      if (key) second.push({ key, identity: fileIdentity(key, model) });
+      if (key) goCandidate = { key, identity: fileIdentity(key, model) };
     }
 
-    const [primary, fallback] = [...first, ...second];
+    // The Console key, when present, is primary and the opencode-go/auth.json key is its fallback.
+    const primary = consoleCandidate ?? goCandidate;
+    const fallback = consoleCandidate ? goCandidate : undefined;
     if (!primary) return unavailable(selection.go ? "invalid_credential" : "missing_credential");
     // Two possible keys bind only on the one a confirmed usage check used.
     if (mode === "identity") {
       return fallback ? { auth: "subscription", status: "unknown" } : { auth: "subscription", status: "unknown", identity: primary.identity };
     }
+    // Resolve the key a confirmed answer belongs to; an unconfirmed key is never returned.
     const answer = await goAnswer(primary.key);
+    let resolved: { candidate: GoCandidate; body: unknown } | undefined;
     if (!fallback) {
-      const check = answer?.ok ? goUsage(answer.body, primary.identity) : goUsage(null, primary.identity);
-      if (check.status === "unknown") reason("usage_unavailable");
-      return check;
-    }
-    // A successful answer is the Console key's, whatever its body says; only a rejected key falls back.
-    if (answer?.ok) {
-      const check = goUsage(answer.body, primary.identity);
-      if (check.status === "unknown") reason("usage_unavailable");
-      return check;
-    }
-    if (answer && (answer.status === 401 || answer.status === 403)) {
+      resolved = { candidate: primary, body: answer?.ok ? answer.body : null };
+    } else if (answer?.ok) {
+      // A successful answer is the Console key's, whatever its body says; only a rejected key falls back.
+      resolved = { candidate: primary, body: answer.body };
+    } else if (answer && (answer.status === 401 || answer.status === 403)) {
       const retry = await goAnswer(fallback.key);
-      const check = retry?.ok ? goUsage(retry.body, fallback.identity) : goUsage(null, fallback.identity);
-      if (check.status === "unknown") reason("usage_unavailable");
-      return check;
+      if (retry?.ok) resolved = { candidate: fallback, body: retry.body };
     }
-    // A temporary failure says nothing about which key is bound.
-    reason("usage_unavailable");
-    return { auth: "subscription", status: "unknown" };
+    // A temporary failure, or a rejected primary with a failed fallback, says nothing about the key.
+    if (!resolved) {
+      reason("usage_unavailable");
+      return { auth: "subscription", status: "unknown" };
+    }
+    const check = goUsage(resolved.body, resolved.candidate.identity);
+    if (check.status === "unknown") reason("usage_unavailable");
+    return check;
   };
 }

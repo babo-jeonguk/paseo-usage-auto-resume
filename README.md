@@ -85,8 +85,8 @@ This also deletes the plugin's settings. Reservations and recent activity stay i
 
 ## Your data
 
-- The plugin reads your agents' state, their recent limit messages, your provider CLI sign-ins and OpenCode's local database on the daemon host.
-- Codex, Claude and OpenCode Go usage checks contact the provider's account service and don't use any model turns. Sign-in tokens and OpenCode's Go key are never saved or logged.
+- The plugin reads your agents' state, their recent limit messages, your provider CLI sign-ins and OpenCode's local database and auth file on the daemon host.
+- Codex, Claude and OpenCode Go usage checks contact the provider's account service and don't use any model turns. Sign-in tokens and OpenCode's Console or Go keys are never saved or logged.
 - Free OpenCode models use the limit time OpenCode recorded in its local database.
 - Reservations, extra instructions and a changed continue prompt are stored on the daemon host. Extra instructions are deleted once sent.
 - The continue message goes through Paseo to your existing agent, like a message you send yourself.

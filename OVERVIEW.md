@@ -12,4 +12,4 @@ Sending your own message to an agent, or archiving it, cancels its resume, as do
 
 ## Your data
 
-The plugin reads agent state, recent limit messages, provider CLI sign-ins and OpenCode's local database on the daemon host. Usage checks contact the provider's account service without using model turns. Sign-in tokens and OpenCode's Go key are never saved or logged. Reservations, extra instructions and a changed continue message are stored on the daemon host; extra instructions are deleted once sent. The continue message reaches your existing agent through Paseo, like a message you send yourself.
+The plugin reads agent state, recent limit messages, provider CLI sign-ins and OpenCode's local database and auth file on the daemon host. Usage checks contact the provider's account service without using model turns. Sign-in tokens and OpenCode's Console or Go keys are never saved or logged. Reservations, extra instructions and a changed continue message are stored on the daemon host; extra instructions are deleted once sent. The continue message reaches your existing agent through Paseo, like a message you send yourself.
