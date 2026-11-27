@@ -412,7 +412,8 @@ try {
     await client.installPluginSource({ source });
     await patchInstalled();
     const { runOverload } = await import('./overload.mjs');
-    await runOverload({ ...ctx, suites, paseoVersion, daemonLog, binaries: { claude: args.claude, codex: args.codex, antigravity: args.agy }, run, baseEnv });
+    await runOverload({ ...ctx, storedJob, suites, paseoVersion, daemonLog,
+      binaries: { claude: args.claude, codex: args.codex, antigravity: args.agy }, run, baseEnv });
   } else {
   // ---- 1. install the older release from GitHub ------------------------------------------------------
   await step(1, 'claude', `install ${OLD_REF} through paseo plugin install (git source + ref)`, async () => {

@@ -65,14 +65,14 @@ export function androidUi({ dump, shell, tapNode, report, emulatorExited = () =>
       if (/^(?:Paseo|sh\.paseo) isn['’]t responding$/i.test(dialog.text)) {
         throw new Error('Paseo ANR: ' + dialog.text);
       }
-      // Android owns the dialog window for every app. Only the title identifies System UI.
-      const wait = /^System UI isn['’]t responding$/i.test(dialog.text) &&
+      // Android owns every ANR dialog window. The title identifies the stalled process.
+      const wait = /^(?:System UI|com\.android\.systemui|Process system) isn['’]t responding$/i.test(dialog.text) &&
         list.find(node => node.pkg === 'android' && node.id === 'android:id/aerr_wait' && node.enabled);
       if (wait) {
         await tapNode(wait);
         report.anrDismissed++;
       }
-      observe?.(wait ? 'systemUiAnrDismissed' : 'unhandledAnr');
+      observe?.(wait ? 'systemAnrDismissed' : 'unhandledAnr');
       return [];
     }
     return list;

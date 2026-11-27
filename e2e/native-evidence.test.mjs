@@ -20,19 +20,25 @@ test('Android input completes after the intended field shows the entire value', 
   assert.deepEqual(commands.filter(([, kind]) => kind === 'text'), [['input', 'text', '127.0.0.1']]);
 });
 
-test('Android auto-dismisses only System UI ANRs and records other dialogs', async () => {
+test('Android auto-dismisses known system ANRs and records other dialogs', async () => {
   const report = {};
   let taps = 0;
   let title = 'System UI isn’t responding';
   const device = androidUi({ dump: async () => anrDialog(title), tapNode: async () => { taps++; }, report });
   await device.nodes();
   assert.equal(report.anrDismissed, 1);
+  title = 'Process system isn&apos;t responding';
+  await device.nodes();
+  title = 'com.android.systemui isn’t responding';
+  await device.nodes();
+  assert.equal(report.anrDismissed, 3);
   title = 'Another app isn’t responding';
   await device.nodes();
-  assert.deepEqual(report.anrDialogs, ['System UI isn’t responding', 'Another app isn’t responding']);
+  assert.deepEqual(report.anrDialogs, ['System UI isn’t responding', "Process system isn't responding",
+    'com.android.systemui isn’t responding', 'Another app isn’t responding']);
   title = 'Paseo isn’t responding';
   await assert.rejects(device.nodes(), /Paseo ANR/);
-  assert.equal(taps, 1);
+  assert.equal(taps, 3);
 });
 
 test('Android failed UI waits preserve the dump outcome', async () => {

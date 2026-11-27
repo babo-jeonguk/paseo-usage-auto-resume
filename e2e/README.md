@@ -171,7 +171,7 @@ node e2e/android.mjs --cli /tmp/paseo-0.17.1/node_modules/@getpaseo/cli \
 
 The runner creates a temporary AVD and its own adb server, wipes the AVD on boot and stops both when done. The released app connects by Direct connection through `adb reverse`. Select a different installed image with `--system-image`, SDK with `--sdk`, or unused even emulator port with `--port`.
 
-UI Automator drives the native controls and reads the accessibility tree. The runner checks native list updates, sheet edits, the correlated Resume now RPCs, reservation state and exact model-request counts, Settings and recovery after force-stop. It saves screenshots and `logcat` for inspection. The runner taps **Wait** on System UI ANR dialogs and counts them. A Paseo ANR fails the run. On a UI wait failure, `results.json` includes the observation counts for that wait.
+UI Automator drives the native controls and reads the accessibility tree. The runner checks native list updates, sheet edits, the correlated Resume now RPCs, reservation state and exact model-request counts, Settings and recovery after force-stop. It saves screenshots and `logcat` for inspection. The runner taps **Wait** on ANR dialogs for System UI or the Android system process and counts them. A Paseo ANR fails the run. On a UI wait failure, `results.json` includes the observation counts for that wait.
 
 #### Manual visual verification
 
