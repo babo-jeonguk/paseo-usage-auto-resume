@@ -4197,3 +4197,69 @@ test("delivery re-reads provider, background and Labs settings after the final a
     "l1 canceled/overload_off (manual)",
   ]);
 });
+
+test("delivery retries a failed workspace background check in Step 11 for pre-upgrade rows", async () => {
+  await writeFile(join(dir, "jobs.json"), JSON.stringify({
+    version: 1,
+    jobs: [
+      { agentId: "w1", provider: "codex", resetAt: null, dueAt: CODEX_DUE, baseline: "2026-10-06T02:00:00.000Z", attempts: 0, state: "pending", enabled: true },
+      { agentId: "w2", provider: "codex", resetAt: null, dueAt: CODEX_DUE, baseline: "2026-10-06T02:00:00.000Z", attempts: 0, state: "pending", enabled: true },
+    ],
+  }));
+  const workspaceFailOnce = new Set(["w1", "w2"]);
+  let currentWorkspaceError: Error | undefined;
+  let activeAgent: string | null = null;
+  const { api, resumer, sent } = await setup({
+    w1: { provider: "codex", workspaceId: "wks-bg" },
+    w2: { provider: "codex", workspaceId: "wks-bg" },
+  }, {
+    backgroundWorkspaces: ["wks-bg"],
+    readSettings: async () => ({ ...DEFAULT_PROVIDER_SETTINGS }),
+    duringAgentRefresh: async (agentId) => { activeAgent = agentId; },
+    duringWorkspaceRead: async () => {
+      if (activeAgent && workspaceFailOnce.delete(activeAgent)) throw new Error("transient workspace failure");
+      if (currentWorkspaceError) throw currentWorkspaceError;
+    },
+    readSubscription: async () => ({ auth: "subscription", status: "ready", identity: "account" }),
+  });
+
+  // Manual Resume now: Step 2 workspace read fails (fallback false), Step 11 retries and sees background.
+  assert.deepEqual(await resumer.resumeNow(api, "w1", await pinOf(store, "w1")), { result: "canceled", reason: "background_off" });
+  assert.deepEqual(sent, []);
+
+  // Automatic due-time tick: same recovery in Step 11.
+  clock = new Date(CODEX_DUE);
+  await resumer.tick();
+  assert.deepEqual(await store.list(), []);
+  assert.deepEqual(sent, []);
+  assert.deepEqual(await recorded(), [
+    "w1 canceled/background_off (manual)",
+    "w2 canceled/background_off",
+  ]);
+});
+
+test("delivery checks Labs after the final provider-settings read before claiming", async () => {
+  let resumeSettings: ResumeSettings = labs;
+  let readSettingsCalls = 0;
+  let flipOnFinalSettingsRead = false;
+  const { api, resumer, sent } = await setup({
+    o1: { provider: "codex", title: "Overload job" },
+  }, {
+    readSettings: async () => {
+      readSettingsCalls += 1;
+      if (flipOnFinalSettingsRead && readSettingsCalls === 2) {
+        resumeSettings = { ...labs, overloadRetry: false };
+      }
+      return DEFAULT_PROVIDER_SETTINGS;
+    },
+    readResumeSettings: async () => resumeSettings,
+    readSubscription: async () => ({ auth: "subscription", status: "ready", identity: "account" }),
+  });
+
+  await resumer.onTurnEnded(turnEnded("o1", "codex", failed(CAPACITY)), api);
+  readSettingsCalls = 0;
+  flipOnFinalSettingsRead = true;
+  assert.deepEqual(await resumer.resumeNow(api, "o1", await pinOf(store, "o1")), { result: "canceled", reason: "overload_off" });
+  assert.deepEqual(sent, []);
+  assert.deepEqual(await recorded(), ["o1 canceled/overload_off (manual)"]);
+});
