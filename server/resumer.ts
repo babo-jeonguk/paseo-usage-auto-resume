@@ -502,19 +502,11 @@ export function createResumer(options: {
       if (on === null) return { result: "unavailable" };
       return on ? null : cancel({ ...canceled("overload_off", "overload retry turned off"), title });
     };
-    const checkSettings = async (title: string | null): Promise<Delivery | ProviderSettings> => {
-      const labs = await labsGate(title);
-      if (labs) return labs;
+    const checkProvider = async (title: string | null): Promise<Delivery | ProviderSettings> => {
       const settings = await readSettings();
       if (!settings) return { result: "unavailable" };
       if (!isProviderOn(job.provider, settings)) return cancel({ ...providerOff(job.provider), title });
       return settings;
-    };
-    // Workspace background is fixed when the agent is created, so it is read once per attempt.
-    let cachedBackground: boolean | undefined = job.background === true ? true : undefined;
-    const knownBackground = async (current: PaseoAgent): Promise<boolean> => {
-      cachedBackground ??= await isBackground(api, current);
-      return cachedBackground;
     };
     const checkAgent = async (
       agent: PaseoAgent | null,
@@ -527,7 +519,7 @@ export function createResumer(options: {
       if (agent && isSubagent(agent)) return cancel({ ...subagentCanceled(), title });
       // Step 2 precedes the agent's state: the stored flag decides on its own, even when the agent
       // is gone, and a row written before the switch existed reads the agent when it still exists.
-      if (!settings.resumeBackground && (job.background === true || (agent && (await knownBackground(agent))))) {
+      if (!settings.resumeBackground && (job.background === true || (agent && (await isBackground(api, agent))))) {
         return cancel({ ...backgroundOff(), title });
       }
       const gate = agentGate(job, agent, mode, source);
@@ -536,7 +528,9 @@ export function createResumer(options: {
       return agent!;
     };
 
-    const settings = await checkSettings(null);
+    const labs = await labsGate(null);
+    if (labs) return labs;
+    const settings = await checkProvider(null);
     if ("result" in settings) return settings;
     const source = cliFor((await api.config.get()).config, job.provider);
     if (!source) return cancel(canceled("unsupported_cli", `${job.provider} no longer runs Claude, Codex, Antigravity, or OpenCode`));
@@ -565,21 +559,16 @@ export function createResumer(options: {
     }
     // The usage lookup takes seconds, and Paseo's send unarchives an agent, clears its permission
     // requests and replaces a running turn, so the agent and the switches are read once more just
-    // before the claim. The async agent read finishes before the final settings read, so no RPC
-    // that changes the switches can land after them and before the write.
+    // before the claim. The agent is read first, then the provider settings and the workspace's
+    // background flag, and Labs last, so a switch turned off during any of them is seen.
     const latestAgent = await loadAgent(api, job.agentId);
     const latestTitle = (latestAgent && titleOf(latestAgent)) ?? title;
-    const currentSettings = await checkSettings(latestTitle);
+    const currentSettings = await checkProvider(latestTitle);
     if ("result" in currentSettings) return currentSettings;
-    // A pre-upgrade row without the stored flag may need the workspace read in `checkAgent`, an RPC
-    // that would then sit between the settings read and the claim.
-    const needsWorkspace = cachedBackground === undefined && !currentSettings.resumeBackground && !!latestAgent && !isSubagent(latestAgent);
     const verified = await checkAgent(latestAgent, currentSettings, source, latestTitle);
     if ("result" in verified) return verified;
-    if (needsWorkspace) {
-      const finalSettings = await checkSettings(latestTitle);
-      if ("result" in finalSettings) return finalSettings;
-    }
+    const latestLabs = await labsGate(latestTitle);
+    if (latestLabs) return latestLabs;
     // Claim before sending so a crash mid-send, or a tick and Resume now at once, never delivers
     // a second continue. The current row decides: the job may have been turned off while the
     // agent was being checked, which only stops the tick.
